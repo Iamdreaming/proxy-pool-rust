@@ -13,3 +13,4 @@ bytes = { workspace = true }
 tokio-util = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
+rand = { workspace = true }

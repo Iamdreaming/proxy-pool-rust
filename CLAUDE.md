@@ -16,7 +16,7 @@ Rust workspace 代理池服务，包含代理获取、验证、网关路由、MC
 - 异步：`tokio` runtime，`async-trait` 用于 trait 异步方法
 - 日志：`tracing` + `tracing-subscriber`，不用 `log` crate
 - 序列化：`serde` + `serde_json`/`serde_yaml`
-- 测试：每个 crate 的 `tests/` 目录，`cargo test` 运行
+- 测试：每个 crate 的 `tests/` 目录，`cargo test` 运行；新增功能须覆盖 happy-path + 关键 error-path；`cargo test` 零失败方可提交
 - Lint：`cargo clippy -- -D warnings`
 
 ## 常用命令

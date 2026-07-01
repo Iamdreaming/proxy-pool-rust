@@ -1,42 +1,30 @@
 //! proxy-gateway: SOCKS5/HTTP CONNECT proxy gateway in pure Rust.
 //!
-//! Replaces the Python mitmproxy-based gateway with a native Rust implementation
-//! that supports:
+//! Supports:
 //! - HTTP CONNECT proxying
 //! - SOCKS5 proxying
-//! - Upstream selection via Router + UpstreamSelector
-//! - Smart fallback: free_pool → WARP → 502
+//! - Upstream selection via Router + GeoIP + UpstreamSelector
+//! - Smart fallback: free_pool → WARP → Xray → NoProxy
 
 mod http_connect;
 mod socks5;
 mod upstream;
 
 use proxy_core::config::GatewaySettings;
-use proxy_core::store::ProxyStore;
-use proxy_core::warp::balancer::WarpBalancer;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-pub use upstream::UpstreamSelector;
+pub use upstream::{UpstreamSelector, connect_via_socks5};
 
 /// The proxy gateway server.
 pub struct ProxyGateway {
     settings: GatewaySettings,
-    store: Arc<ProxyStore>,
-    balancer: Option<Arc<WarpBalancer>>,
+    selector: Arc<UpstreamSelector>,
 }
 
 impl ProxyGateway {
-    pub fn new(
-        settings: GatewaySettings,
-        store: Arc<ProxyStore>,
-        balancer: Option<Arc<WarpBalancer>>,
-    ) -> Self {
-        Self {
-            settings,
-            store,
-            balancer,
-        }
+    pub fn new(settings: GatewaySettings, selector: Arc<UpstreamSelector>) -> Self {
+        Self { settings, selector }
     }
 
     /// Start the gateway server.
@@ -76,22 +64,10 @@ impl ProxyGateway {
 
         if buf[0] == 0x05 {
             // SOCKS5
-            socks5::handle(
-                stream,
-                client_addr,
-                self.store.clone(),
-                self.balancer.clone(),
-            )
-            .await
+            socks5::handle(stream, client_addr, self.selector.clone()).await
         } else {
             // HTTP CONNECT
-            http_connect::handle(
-                stream,
-                client_addr,
-                self.store.clone(),
-                self.balancer.clone(),
-            )
-            .await
+            http_connect::handle(stream, client_addr, self.selector.clone()).await
         }
     }
 }

@@ -16,6 +16,31 @@ pub struct GatewaySettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct XraySettings {
+    /// Whether xray integration is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the xray-core binary.
+    #[serde(default = "default_xray_binary")]
+    pub binary_path: String,
+    /// gRPC API port for xray-core's HandlerService.
+    #[serde(default = "default_xray_api_port")]
+    pub api_port: u16,
+    /// Port range start for local SOCKS5 inbounds (inclusive).
+    #[serde(default = "default_xray_port_start")]
+    pub port_range_start: u16,
+    /// Port range end for local SOCKS5 inbounds (inclusive).
+    #[serde(default = "default_xray_port_end")]
+    pub port_range_end: u16,
+    /// Interval in seconds for the pending-to-active sync loop.
+    #[serde(default = "default_xray_sync_interval")]
+    pub sync_interval_sec: u64,
+    /// Maximum number of active encrypted nodes.
+    #[serde(default = "default_xray_max_nodes")]
+    pub max_active_nodes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiSettings {
     #[serde(default = "default_listen_host")]
     pub listen_host: String,
@@ -216,6 +241,8 @@ pub struct Settings {
     pub free_pool: FreePoolSettings,
     #[serde(default)]
     pub subscription: SubscriptionConfig,
+    #[serde(default)]
+    pub xray: XraySettings,
 }
 
 impl Default for Settings {
@@ -383,6 +410,24 @@ fn default_sub_timeout() -> u64 {
 fn default_cache_ttl() -> u64 {
     1800
 }
+fn default_xray_binary() -> String {
+    "xray".into()
+}
+fn default_xray_api_port() -> u16 {
+    10085
+}
+fn default_xray_port_start() -> u16 {
+    20000
+}
+fn default_xray_port_end() -> u16 {
+    29999
+}
+fn default_xray_sync_interval() -> u64 {
+    30
+}
+fn default_xray_max_nodes() -> usize {
+    5000
+}
 
 // Default impls for sub-configs that need explicit Default
 impl Default for GatewaySettings {
@@ -451,6 +496,11 @@ impl Default for GitHubDiscoverConfig {
     }
 }
 impl Default for SubscriptionConfig {
+    fn default() -> Self {
+        serde_yaml::from_str("{}").unwrap()
+    }
+}
+impl Default for XraySettings {
     fn default() -> Self {
         serde_yaml::from_str("{}").unwrap()
     }

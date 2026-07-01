@@ -5,6 +5,8 @@
 //! - REST API (axum)
 //! - Proxy gateway (HTTP CONNECT + SOCKS5)
 //! - MCP Server (stdio and/or HTTP transport)
+//! - Subscription refresh loop
+//! - Xray outbound sync (if xray.enabled)
 
 use proxy_api::AppState;
 use proxy_core::config::load_settings;
@@ -16,13 +18,19 @@ use proxy_core::validator::Validator;
 use proxy_core::warp::balancer::WarpBalancer;
 use proxy_core::warp::health::WarpHealthChecker;
 use proxy_gateway::ProxyGateway;
+use proxy_gateway::UpstreamSelector;
 use proxy_mcp::ProxyPoolMcp;
 use proxy_sub::pending::PendingStore;
 use proxy_sub::refresh::{build_discoverers, subscription_refresh_loop};
 use proxy_sub::source::SubscriptionSource;
+use proxy_xray::config_gen::ConfigGenerator;
+use proxy_xray::outbound_sync::OutboundSync;
+use proxy_xray::port_manager::PortManager;
+use proxy_xray::process::XrayProcess;
+use proxy_xray::xray_client::XrayClient;
 
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 fn setup_logging() {
     tracing_subscriber::fmt()
@@ -49,8 +57,7 @@ async fn main() -> anyhow::Result<()> {
     let redis_multiplexed = redis_client.get_multiplexed_async_connection().await?;
     tracing::info!("connected to Redis at {}", settings.redis.url);
 
-    // Clone before moving into ProxyStore — PendingStore also needs a connection.
-    let redis_for_pending = redis_multiplexed.clone();
+    let redis_for_geoip = redis_multiplexed.clone();
 
     // Build the proxy store
     let store = Arc::new(ProxyStore::new(
@@ -86,23 +93,107 @@ async fn main() -> anyhow::Result<()> {
         settings.pool.clone(),
     ));
 
+    // Build UpstreamSelector with optional Router and GeoIP
+    let router = None; // TODO: load from settings.routes_path if configured
+    let geoip = if settings.geoip.database_path
+        != proxy_core::config::GeoIpSettings::default().database_path
+        || std::path::Path::new(&settings.geoip.database_path).exists()
+    {
+        Some(Arc::new(Mutex::new(proxy_core::geoip::GeoIPLookup::new(
+            redis_for_geoip,
+            &settings.geoip,
+        ))))
+    } else {
+        tracing::info!("geoip: database not found, skipping GeoIP-based routing");
+        None
+    };
+
+    let selector = Arc::new(UpstreamSelector::new(
+        store.clone(),
+        Some(balancer.clone()),
+        router,
+        geoip,
+    ));
+
     // Build API
     let api_state = AppState {
         store: store.clone(),
     };
     let api_app = proxy_api::create_app(api_state);
 
-    // Build Gateway
+    // Build Gateway (now uses UpstreamSelector)
     let gateway = Arc::new(ProxyGateway::new(
         settings.gateway.clone(),
-        store.clone(),
-        Some(balancer.clone()),
+        selector.clone(),
     ));
 
     // Build MCP server
     let mcp_server = ProxyPoolMcp::new(store.clone(), Some(balancer.clone()));
 
     tracing::info!("starting proxy-pool services");
+
+    // --- Xray integration (conditional) ---
+    let xray_sync_handle = if settings.xray.enabled {
+        tracing::info!("xray integration enabled");
+
+        // 1. Generate bootstrap config
+        let xray_config_path = std::env::temp_dir().join("proxy-pool-xray-config.json");
+        if let Err(e) =
+            ConfigGenerator::write_bootstrap_config(&xray_config_path, settings.xray.api_port)
+        {
+            tracing::error!("xray: failed to write bootstrap config: {e}");
+        }
+
+        // 2. Start xray-core process
+        match XrayProcess::start(
+            &settings.xray.binary_path,
+            &xray_config_path,
+            settings.xray.api_port,
+        )
+        .await
+        {
+            Ok(_xray_process) => {
+                tracing::info!("xray-core process started");
+            }
+            Err(e) => {
+                tracing::error!("xray: failed to start process: {e}");
+            }
+        }
+
+        // 3. Create port manager
+        let port_manager = Arc::new(PortManager::new(
+            settings.xray.port_range_start,
+            settings.xray.port_range_end,
+        ));
+
+        // 4. Create gRPC client
+        let xray_client = Arc::new(RwLock::new(XrayClient::new(settings.xray.api_port)));
+
+        // 5. Create a separate PendingStore for outbound sync
+        let redis_for_xray = redis_client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| anyhow::anyhow!("Redis connection for xray failed: {e}"))?;
+        let pending_for_xray = PendingStore::new(redis_for_xray);
+
+        // 6. Create outbound sync
+        let outbound_sync = Arc::new(OutboundSync::new(
+            pending_for_xray,
+            store.clone(),
+            xray_client,
+            port_manager,
+            settings.xray.clone(),
+        ));
+
+        // 7. Spawn outbound sync loop
+        {
+            let s = outbound_sync.clone();
+            Some(tokio::spawn(async move { s.run().await }))
+        }
+    } else {
+        tracing::info!("xray integration disabled (set xray.enabled=true to enable)");
+        None
+    };
 
     // Launch all services concurrently
     let scheduler_handle = {
@@ -120,7 +211,15 @@ async fn main() -> anyhow::Result<()> {
         let discoverers = build_discoverers(&sub_config);
         let sub_source =
             SubscriptionSource::new(sub_config.cache_ttl_sec, sub_config.fetch_timeout_sec);
-        let pending = Arc::new(PendingStore::new(redis_for_pending));
+        let pending = Arc::new(PendingStore::new(
+            redis_client
+                .get_multiplexed_async_connection()
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!("Redis connection for subscription failed: {e}");
+                    panic!("Redis connection failed");
+                }),
+        ));
         tokio::spawn(subscription_refresh_loop(
             sub_config,
             discoverers,
@@ -183,6 +282,7 @@ async fn main() -> anyhow::Result<()> {
         r = api_handle => tracing::info!("API server stopped: {:?}", r),
         r = gateway_handle => tracing::info!("gateway stopped: {:?}", r),
         r = mcp_handle => tracing::info!("MCP server stopped: {:?}", r),
+        _r = async { if let Some(h) = xray_sync_handle { h.await } else { std::future::pending().await } } => tracing::info!("xray sync stopped"),
     }
 
     Ok(())

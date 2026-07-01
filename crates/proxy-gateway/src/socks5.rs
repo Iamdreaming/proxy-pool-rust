@@ -1,7 +1,6 @@
 //! SOCKS5 proxy handler (RFC 1928).
 
-use proxy_core::store::ProxyStore;
-use proxy_core::warp::balancer::WarpBalancer;
+use crate::upstream::{Upstream, UpstreamSelector, connect_via_socks5};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -11,8 +10,7 @@ use tokio::net::TcpStream;
 pub async fn handle(
     mut stream: TcpStream,
     _client_addr: SocketAddr,
-    _store: Arc<ProxyStore>,
-    _balancer: Option<Arc<WarpBalancer>>,
+    selector: Arc<UpstreamSelector>,
 ) -> anyhow::Result<()> {
     // --- Phase 1: Method selection ---
     let mut buf = [0u8; 2];
@@ -90,33 +88,85 @@ pub async fn handle(
         }
     };
 
-    // --- Phase 3: Connect to target ---
-    // TODO: Use UpstreamSelector for upstream routing
-    match TcpStream::connect(&target_addr).await {
-        Ok(mut remote) => {
-            let local_addr = remote.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap());
-            let reply = socks5_reply_from_addr(0x00, &local_addr);
-            stream.write_all(&reply).await?;
+    // --- Phase 3: Upstream selection ---
+    let host = target_addr.split(':').next().unwrap_or(&target_addr);
+    let upstream = selector.select(host, "socks5").await;
 
-            let (mut ri, mut wi) = stream.split();
-            let (mut ro, mut wo) = remote.split();
-
-            let client_to_server = tokio::io::copy(&mut ri, &mut wo);
-            let server_to_client = tokio::io::copy(&mut ro, &mut wi);
-
-            tokio::select! {
-                r = client_to_server => { if let Err(e) = r { tracing::debug!("SOCKS5 client→server: {e}"); } }
-                r = server_to_client => { if let Err(e) = r { tracing::debug!("SOCKS5 server→client: {e}"); } }
+    match upstream {
+        Upstream::Direct => match TcpStream::connect(&target_addr).await {
+            Ok(mut remote) => {
+                let local_addr = remote.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap());
+                let reply = socks5_reply_from_addr(0x00, &local_addr);
+                stream.write_all(&reply).await?;
+                bidirectional_copy(stream, &mut remote).await;
+            }
+            Err(e) => {
+                tracing::warn!("SOCKS5: cannot connect to {target_addr}: {e}");
+                let reply = socks5_reply(0x05, "0.0.0.0:0"); // connection refused
+                stream.write_all(&reply).await?;
+            }
+        },
+        Upstream::Proxy(proxy) => {
+            let upstream_addr = format!("{}:{}", proxy.host, proxy.port);
+            match connect_via_socks5(&upstream_addr, &target_addr).await {
+                Ok(mut remote) => {
+                    let local_addr = remote.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap());
+                    let reply = socks5_reply_from_addr(0x00, &local_addr);
+                    stream.write_all(&reply).await?;
+                    bidirectional_copy(stream, &mut remote).await;
+                }
+                Err(e) => {
+                    tracing::warn!("SOCKS5: SOCKS5 chain via {} failed: {e}", upstream_addr);
+                    let reply = socks5_reply(0x05, "0.0.0.0:0");
+                    stream.write_all(&reply).await?;
+                }
             }
         }
-        Err(e) => {
-            tracing::warn!("SOCKS5: cannot connect to {target_addr}: {e}");
+        Upstream::Warp { socks5_port }
+        | Upstream::Xray {
+            local_socks5_port: socks5_port,
+        } => {
+            let upstream_addr = format!("127.0.0.1:{socks5_port}");
+            match connect_via_socks5(&upstream_addr, &target_addr).await {
+                Ok(mut remote) => {
+                    let local_addr = remote.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap());
+                    let reply = socks5_reply_from_addr(0x00, &local_addr);
+                    stream.write_all(&reply).await?;
+                    bidirectional_copy(stream, &mut remote).await;
+                }
+                Err(e) => {
+                    tracing::warn!("SOCKS5: SOCKS5 chain via {upstream_addr} failed: {e}");
+                    let reply = socks5_reply(0x05, "0.0.0.0:0");
+                    stream.write_all(&reply).await?;
+                }
+            }
+        }
+        Upstream::WarpChain { .. } => {
+            // Reserved: not yet implemented
+            let reply = socks5_reply(0x07, "0.0.0.0:0"); // command not supported
+            stream.write_all(&reply).await?;
+        }
+        Upstream::NoProxy => {
             let reply = socks5_reply(0x05, "0.0.0.0:0"); // connection refused
             stream.write_all(&reply).await?;
         }
     }
 
     Ok(())
+}
+
+/// Bidirectional copy between client stream and remote stream.
+async fn bidirectional_copy(mut stream: TcpStream, remote: &mut TcpStream) {
+    let (mut ri, mut wi) = stream.split();
+    let (mut ro, mut wo) = remote.split();
+
+    let client_to_server = tokio::io::copy(&mut ri, &mut wo);
+    let server_to_client = tokio::io::copy(&mut ro, &mut wi);
+
+    tokio::select! {
+        r = client_to_server => { if let Err(e) = r { tracing::debug!("SOCKS5 client→server: {e}"); } }
+        r = server_to_client => { if let Err(e) = r { tracing::debug!("SOCKS5 server→client: {e}"); } }
+    }
 }
 
 fn socks5_reply(reply_code: u8, _bind_addr: &str) -> Vec<u8> {

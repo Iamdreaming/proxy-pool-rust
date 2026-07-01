@@ -7,6 +7,7 @@ members = [
     "crates/proxy-mcp",
     "crates/proxy-server",
     "crates/proxy-sub",
+    "crates/proxy-xray",
 ]
 
 [workspace.package]
@@ -74,7 +75,13 @@ proxy-api = { path = "crates/proxy-api" }
 proxy-gateway = { path = "crates/proxy-gateway" }
 proxy-mcp = { path = "crates/proxy-mcp" }
 proxy-sub = { path = "crates/proxy-sub" }
+proxy-xray = { path = "crates/proxy-xray" }
 
 # Subscription
 url = "2"
 base64 = "0.22"
+
+# gRPC (proxy-xray)
+tonic = "0.12"
+prost = "0.13"
+tonic-build = "0.12"
