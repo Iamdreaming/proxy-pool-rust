@@ -1,0 +1,15 @@
+[package]
+name = "proxy-gateway"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+proxy-core = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }

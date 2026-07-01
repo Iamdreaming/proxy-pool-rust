@@ -1,0 +1,82 @@
+{
+  "outbounds": [
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "10.0.0.1",
+            "port": 1080
+          }
+        ]
+      },
+      "tag": "socks-proxy"
+    },
+    {
+      "protocol": "vmess",
+      "settings": {
+        "vnext": [
+          {
+            "address": "10.0.0.3",
+            "port": 443,
+            "users": [
+              {
+                "id": "a3482e88-686a-4a58-8126-99c9df64b7bf",
+                "alterId": 0,
+                "security": "auto"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "sni.example.com"
+        },
+        "wsSettings": {
+          "path": "/v2",
+          "headers": {
+            "Host": "vmess.example.com"
+          }
+        }
+      },
+      "tag": "vmess-proxy"
+    },
+    {
+      "protocol": "trojan",
+      "settings": {
+        "servers": [
+          {
+            "address": "10.0.0.7",
+            "port": 443,
+            "password": "trojan-pass"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "trojan.example.com"
+        }
+      },
+      "tag": "trojan-proxy"
+    },
+    {
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [
+          {
+            "address": "10.0.0.6",
+            "port": 8388,
+            "method": "aes-256-gcm",
+            "password": "ss-pass"
+          }
+        ]
+      },
+      "tag": "ss-proxy"
+    }
+  ]
+}

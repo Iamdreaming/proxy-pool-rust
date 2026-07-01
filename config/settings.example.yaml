@@ -1,0 +1,65 @@
+# proxy-pool-rust configuration
+# All fields have defaults; only override what you need.
+
+gateway:
+  listen_host: "0.0.0.0"
+  listen_port: 9080
+
+api:
+  listen_host: "0.0.0.0"
+  listen_port: 8000
+
+mcp:
+  transport: "both"          # stdio | http | both
+  http_port: 9000
+
+redis:
+  url: "redis://localhost:6379/0"
+
+pool:
+  fetch_interval_sec: 300
+  validate_interval_sec: 60
+  validate_concurrency: 100
+  validate_timeout_sec: 10
+  validate_target_url: "https://httpbin.org/ip"
+  min_score: 0.1
+  pace_rate_per_sec: 0       # 0 = unlimited
+  score_weights:
+    latency: 0.5
+    success: 0.3
+    anonymity: 0.2
+  fetchers:
+    proxyscrape: { enabled: true }
+    thespeedx: { enabled: true }
+    free_proxy_list: { enabled: true }
+    clarketm: { enabled: true }
+    geonode: { enabled: true }
+
+warp:
+  instances:
+    - { id: 1, port: 1081 }
+    - { id: 2, port: 1082 }
+    - { id: 3, port: 1083 }
+  health_check_interval_sec: 30
+  health_check_timeout_sec: 10
+  health_check_url: "https://www.cloudflare.com/cdn-cgi/trace"
+  health_check_fail_threshold: 3
+  optimizer:
+    enabled: true
+    interval_sec: 21600           # 6h
+    scan_ports: [2408, 500, 1701, 4500]
+    max_loss_pct: 10
+    scan_threads: 100
+    assign: distinct              # distinct | shared
+    compose_file: deploy/warp/docker-compose.yml
+    scan_data_dir: deploy/warp/scan-data
+    state_path: deploy/warp/state.json
+    health_timeout_sec: 30
+
+geoip:
+  database_path: "/app/geoip/GeoLite2-Country.mmdb"
+  cache_ttl_sec: 86400
+  domestic_countries: ["CN"]
+
+free_pool:
+  max_retry: 3

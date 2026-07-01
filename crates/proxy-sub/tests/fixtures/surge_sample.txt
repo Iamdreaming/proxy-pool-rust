@@ -1,0 +1,5 @@
+socks5-proxy = socks5, 10.0.0.1, 1080
+http-proxy = http, 10.0.0.2, 8080
+ss-proxy = ss, 10.0.0.3, 8388, encrypt-method=aes-256-gcm, password=mypassword
+vmess-proxy = vmess, 10.0.0.4, 443, username=a3482e88-686a-4a58-8126-99c9df64b7bf, tls=true, ws=true, ws-path=/v2ray, ws-host=vmess.example.com, sni=vmess.example.com
+trojan-proxy = trojan, 10.0.0.5, 443, password=trojanpass, sni=trojan.example.com

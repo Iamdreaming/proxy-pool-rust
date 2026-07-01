@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+*.swp
+*.swo
+*~
+.env
+config/settings.yaml
+config/routes.yaml
+deploy/warp/scan-data/
+deploy/warp/state.json
+geoip/
+node_modules/
+web/dist/
+.DS_Store

@@ -1,0 +1,19 @@
+# Route rules: map request hosts to exit groups.
+#
+# Each group lists domain suffixes. A bare domain like "github.com"
+# matches that host and any subdomain (api.github.com).
+# A "*.cn" entry matches any host ending in ".cn".
+# The special entry "default" marks the fallback group.
+
+groups:
+  direct:
+    - "*.cn"         # All .cn domains → direct (no proxy)
+    - default        # Fallback for unmatched domains
+
+  warp:
+    - "cloudflare.com"
+
+  free_pool:
+    - "github.com"
+    - "google.com"
+    - "*.googleapis.com"

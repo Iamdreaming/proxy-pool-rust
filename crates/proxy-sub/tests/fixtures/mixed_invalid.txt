@@ -1,0 +1,3 @@
+this is not a proxy config
+random text here
+no valid format detected

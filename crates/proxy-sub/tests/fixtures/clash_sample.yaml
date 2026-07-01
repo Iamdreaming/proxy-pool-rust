@@ -1,0 +1,39 @@
+proxies:
+  - name: "socks5-node"
+    type: socks5
+    server: 10.0.0.1
+    port: 1080
+  - name: "http-node"
+    type: http
+    server: 10.0.0.2
+    port: 8080
+    tls: false
+  - name: "ss-node"
+    type: ss
+    server: 10.0.0.3
+    port: 8388
+    cipher: aes-256-gcm
+    password: "mypassword"
+  - name: "vmess-node"
+    type: vmess
+    server: 10.0.0.4
+    port: 443
+    uuid: "a3482e88-686a-4a58-8126-99c9df64b7bf"
+    alterId: 0
+    cipher: auto
+    network: ws
+    ws-opts:
+      path: /v2ray
+      headers:
+        Host: vmess.example.com
+  - name: "trojan-node"
+    type: trojan
+    server: 10.0.0.5
+    port: 443
+    password: "trojanpass"
+    sni: trojan.example.com
+  - name: "hysteria2-node"
+    type: hysteria2
+    server: 10.0.0.6
+    port: 443
+    password: "hypass"

@@ -1,0 +1,80 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/proxy-core",
+    "crates/proxy-api",
+    "crates/proxy-gateway",
+    "crates/proxy-mcp",
+    "crates/proxy-server",
+    "crates/proxy-sub",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["NightRain"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Database
+redis = { version = "0.27", features = ["tokio-comp"] }
+
+# MCP
+rmcp = { version = "0.16", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
+schemars = "0.8"
+
+# GeoIP
+maxminddb = "0.24"
+
+# HTML parsing
+scraper = "0.22"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Configuration
+config = "0.14"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async trait
+async-trait = "0.1"
+
+# Networking
+rand = "0.9"
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+
+# Internal crates
+proxy-core = { path = "crates/proxy-core" }
+proxy-api = { path = "crates/proxy-api" }
+proxy-gateway = { path = "crates/proxy-gateway" }
+proxy-mcp = { path = "crates/proxy-mcp" }
+proxy-sub = { path = "crates/proxy-sub" }
+
+# Subscription
+url = "2"
+base64 = "0.22"
