@@ -93,7 +93,7 @@ impl Scheduler {
 
             for p in &reset {
                 if !working_keys.contains(&p.key())
-                    && let Err(e) = self.store.mark_failed(p).await
+                    && let Err(e) = self.store.mark_failed_with_circuit(p).await
                 {
                     tracing::warn!("failed to mark {} as failed: {e}", p.key());
                 }

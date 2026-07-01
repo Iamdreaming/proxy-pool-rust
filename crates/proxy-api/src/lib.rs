@@ -4,11 +4,14 @@ mod routes;
 
 use proxy_core::store::ProxyStore;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 /// Shared application state injected into all route handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<ProxyStore>,
+    /// Number of active xray encrypted nodes (updated by OutboundSync).
+    pub xray_active_count: Arc<AtomicUsize>,
 }
 
 /// Build the axum router with all API routes.

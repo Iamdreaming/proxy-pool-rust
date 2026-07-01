@@ -9,9 +9,11 @@
 //! - Xray outbound sync (if xray.enabled)
 
 use proxy_api::AppState;
+use proxy_core::circuit::CircuitBreakerConfig;
 use proxy_core::config::load_settings;
 use proxy_core::fetcher::build_fetchers;
 use proxy_core::models::WarpInstance;
+use proxy_core::pacing::ConnectionPacer;
 use proxy_core::scheduler::Scheduler;
 use proxy_core::store::ProxyStore;
 use proxy_core::validator::Validator;
@@ -60,10 +62,12 @@ async fn main() -> anyhow::Result<()> {
     let redis_for_geoip = redis_multiplexed.clone();
 
     // Build the proxy store
+    let circuit_config = CircuitBreakerConfig::default();
     let store = Arc::new(ProxyStore::new(
         redis_multiplexed,
         settings.pool.score_weights.clone(),
         settings.pool.min_score,
+        circuit_config,
     ));
 
     // Build WARP instances
@@ -82,10 +86,19 @@ async fn main() -> anyhow::Result<()> {
 
     // Build the fetchers and scheduler
     let fetchers = build_fetchers(&settings.pool.fetchers);
-    let validator = Validator::new(
-        &settings.pool.validate_target_url,
-        settings.pool.validate_timeout_sec,
-    );
+    let validator = {
+        let v = Validator::new(
+            &settings.pool.validate_target_url,
+            settings.pool.validate_timeout_sec,
+        );
+        if settings.pool.pace_rate_per_sec > 0.0 {
+            v.with_pacer(Arc::new(ConnectionPacer::new(
+                settings.pool.pace_rate_per_sec,
+            )))
+        } else {
+            v
+        }
+    };
     let scheduler = Arc::new(Scheduler::new(
         fetchers,
         validator,
@@ -116,8 +129,11 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // Build API
+    let xray_active_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     let api_state = AppState {
         store: store.clone(),
+        xray_active_count: xray_active_count.clone(),
     };
     let api_app = proxy_api::create_app(api_state);
 
@@ -188,7 +204,22 @@ async fn main() -> anyhow::Result<()> {
         // 7. Spawn outbound sync loop
         {
             let s = outbound_sync.clone();
-            Some(tokio::spawn(async move { s.run().await }))
+            let counter = xray_active_count.clone();
+            let interval = settings.xray.sync_interval_sec;
+            Some(tokio::spawn(async move {
+                loop {
+                    let stats = s.sync_once().await;
+                    counter.store(stats.total_active, std::sync::atomic::Ordering::Relaxed);
+                    tracing::info!(
+                        "outbound_sync: cycle complete -- added: {}, removed: {}, failed: {}, total_active: {}",
+                        stats.added,
+                        stats.removed,
+                        stats.failed,
+                        stats.total_active
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                }
+            }))
         }
     } else {
         tracing::info!("xray integration disabled (set xray.enabled=true to enable)");
