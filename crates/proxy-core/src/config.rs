@@ -241,6 +241,9 @@ pub struct Settings {
     pub free_pool: FreePoolSettings,
     #[serde(default)]
     pub subscription: SubscriptionConfig,
+    /// Path to the routing rules YAML file (optional).
+    #[serde(default)]
+    pub routes_path: Option<String>,
     #[serde(default)]
     pub xray: XraySettings,
 }

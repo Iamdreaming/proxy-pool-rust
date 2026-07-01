@@ -218,7 +218,7 @@ impl OutboundSync {
                     self.port_manager.release(node.local_socks5_port).await;
 
                     // Remove from xray via gRPC.
-                    let client = self.xray_client.read().await;
+                    let mut client = self.xray_client.write().await;
                     if client.is_connected() {
                         if let Err(e) = client.remove_inbound(&node.inbound_tag()).await {
                             tracing::warn!("outbound_sync: remove_inbound failed: {e}");

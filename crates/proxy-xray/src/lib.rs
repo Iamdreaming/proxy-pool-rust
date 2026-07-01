@@ -9,4 +9,5 @@ pub mod models;
 pub mod outbound_sync;
 pub mod port_manager;
 pub mod process;
+pub mod proto;
 pub mod xray_client;

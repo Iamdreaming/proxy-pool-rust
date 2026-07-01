@@ -120,6 +120,50 @@ impl XrayProcess {
         self.child = None;
     }
 
+    /// Run the supervision loop: monitor the subprocess and restart on crash.
+    ///
+    /// Uses exponential backoff (1s -> 2s -> 4s -> ... -> 60s max) between
+    /// restarts.  Returns when the shutdown signal is received (all senders
+    /// dropped or `true` sent).
+    pub async fn supervise(&mut self, mut shutdown_rx: tokio::sync::watch::Receiver<bool>) {
+        let mut backoff_secs: f64 = 1.0;
+        const MAX_BACKOFF: f64 = 60.0;
+        const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+        tracing::info!("xray supervisor started");
+
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(CHECK_INTERVAL) => {
+                    if !self.is_running() {
+                        let delay = std::time::Duration::from_secs_f64(backoff_secs);
+                        tracing::warn!(
+                            "xray-core died, restarting in {:.1}s (restart #{})",
+                            backoff_secs,
+                            self.restart_count() + 1
+                        );
+                        tokio::time::sleep(delay).await;
+                        match self.restart().await {
+                            Ok(()) => {
+                                backoff_secs = 1.0;
+                                tracing::info!("xray-core restarted successfully");
+                            }
+                            Err(e) => {
+                                backoff_secs = (backoff_secs * 2.0).min(MAX_BACKOFF);
+                                tracing::error!("xray-core restart failed: {e}");
+                            }
+                        }
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    tracing::info!("xray supervisor shutting down");
+                    self.kill().await;
+                    return;
+                }
+            }
+        }
+    }
+
     /// Get the number of restarts performed.
     pub fn restart_count(&self) -> u32 {
         self.restart_count.load(Ordering::Relaxed)

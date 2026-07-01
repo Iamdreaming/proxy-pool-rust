@@ -14,6 +14,7 @@ use proxy_core::config::load_settings;
 use proxy_core::fetcher::build_fetchers;
 use proxy_core::models::WarpInstance;
 use proxy_core::pacing::ConnectionPacer;
+use proxy_core::router::Router;
 use proxy_core::scheduler::Scheduler;
 use proxy_core::store::ProxyStore;
 use proxy_core::validator::Validator;
@@ -107,7 +108,21 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // Build UpstreamSelector with optional Router and GeoIP
-    let router = None; // TODO: load from settings.routes_path if configured
+    let router = if let Some(ref path) = settings.routes_path {
+        match Router::from_yaml(path) {
+            Ok(r) => {
+                tracing::info!("loaded routing rules from {path}");
+                Some(Arc::new(r))
+            }
+            Err(e) => {
+                tracing::error!("failed to load routing rules from {path}: {e}");
+                None
+            }
+        }
+    } else {
+        tracing::info!("no routes_path configured, using default routing");
+        None
+    };
     let geoip = if settings.geoip.database_path
         != proxy_core::config::GeoIpSettings::default().database_path
         || std::path::Path::new(&settings.geoip.database_path).exists()
@@ -149,7 +164,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("starting proxy-pool services");
 
     // --- Xray integration (conditional) ---
-    let xray_sync_handle = if settings.xray.enabled {
+    let xray_sync_handle: Option<tokio::task::JoinHandle<()>>;
+    let xray_supervisor_handle: Option<tokio::task::JoinHandle<()>>;
+    let mut _xray_shutdown_guard: Option<tokio::sync::watch::Sender<bool>> = None;
+
+    if settings.xray.enabled {
         tracing::info!("xray integration enabled");
 
         // 1. Generate bootstrap config
@@ -160,21 +179,28 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!("xray: failed to write bootstrap config: {e}");
         }
 
-        // 2. Start xray-core process
-        match XrayProcess::start(
+        // 2. Start xray-core process and supervisor
+        let (xray_shutdown_tx, xray_shutdown_rx) = tokio::sync::watch::channel(false);
+        _xray_shutdown_guard = Some(xray_shutdown_tx);
+
+        xray_supervisor_handle = match XrayProcess::start(
             &settings.xray.binary_path,
             &xray_config_path,
             settings.xray.api_port,
         )
         .await
         {
-            Ok(_xray_process) => {
+            Ok(mut xray_process) => {
                 tracing::info!("xray-core process started");
+                Some(tokio::spawn(async move {
+                    xray_process.supervise(xray_shutdown_rx).await;
+                }))
             }
             Err(e) => {
                 tracing::error!("xray: failed to start process: {e}");
+                None
             }
-        }
+        };
 
         // 3. Create port manager
         let port_manager = Arc::new(PortManager::new(
@@ -183,7 +209,10 @@ async fn main() -> anyhow::Result<()> {
         ));
 
         // 4. Create gRPC client
-        let xray_client = Arc::new(RwLock::new(XrayClient::new(settings.xray.api_port)));
+        let xray_client = Arc::new(RwLock::new(XrayClient::new(
+            settings.xray.api_port,
+            &settings.xray.binary_path,
+        )));
 
         // 5. Create a separate PendingStore for outbound sync
         let redis_for_xray = redis_client
@@ -206,7 +235,7 @@ async fn main() -> anyhow::Result<()> {
             let s = outbound_sync.clone();
             let counter = xray_active_count.clone();
             let interval = settings.xray.sync_interval_sec;
-            Some(tokio::spawn(async move {
+            xray_sync_handle = Some(tokio::spawn(async move {
                 loop {
                     let stats = s.sync_once().await;
                     counter.store(stats.total_active, std::sync::atomic::Ordering::Relaxed);
@@ -219,11 +248,12 @@ async fn main() -> anyhow::Result<()> {
                     );
                     tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
                 }
-            }))
+            }));
         }
     } else {
         tracing::info!("xray integration disabled (set xray.enabled=true to enable)");
-        None
+        xray_sync_handle = None;
+        xray_supervisor_handle = None;
     };
 
     // Launch all services concurrently
@@ -313,6 +343,7 @@ async fn main() -> anyhow::Result<()> {
         r = api_handle => tracing::info!("API server stopped: {:?}", r),
         r = gateway_handle => tracing::info!("gateway stopped: {:?}", r),
         r = mcp_handle => tracing::info!("MCP server stopped: {:?}", r),
+        _r = async { if let Some(h) = xray_supervisor_handle { h.await } else { std::future::pending().await } } => tracing::info!("xray supervisor stopped"),
         _r = async { if let Some(h) = xray_sync_handle { h.await } else { std::future::pending().await } } => tracing::info!("xray sync stopped"),
     }
 
