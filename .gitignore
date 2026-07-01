@@ -14,3 +14,4 @@ web/dist/
 .DS_Store
 temp/
 protoc.exe
+.superpowers/
