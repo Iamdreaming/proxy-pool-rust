@@ -9,6 +9,7 @@ proxy-api = { workspace = true }
 proxy-gateway = { workspace = true }
 proxy-mcp = { workspace = true }
 proxy-sub = { workspace = true }
+proxy-xray = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

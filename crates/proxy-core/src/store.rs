@@ -1,5 +1,6 @@
 //! Redis-backed proxy storage with ZSet scoring per protocol.
 
+use crate::circuit::{self, CircuitBreakerConfig};
 use crate::config::ScoreWeights;
 use crate::models::{Protocol, Proxy};
 use redis::AsyncCommands;
@@ -61,14 +62,21 @@ pub struct ProxyStore {
     conn: Arc<MultiplexedConnection>,
     weights: ScoreWeights,
     min_score: f64,
+    circuit_config: CircuitBreakerConfig,
 }
 
 impl ProxyStore {
-    pub fn new(conn: MultiplexedConnection, weights: ScoreWeights, min_score: f64) -> Self {
+    pub fn new(
+        conn: MultiplexedConnection,
+        weights: ScoreWeights,
+        min_score: f64,
+        circuit_config: CircuitBreakerConfig,
+    ) -> Self {
         Self {
             conn: Arc::new(conn),
             weights,
             min_score,
+            circuit_config,
         }
     }
 
@@ -88,18 +96,22 @@ impl ProxyStore {
         Ok(())
     }
 
-    /// Get the highest-scored proxy for a protocol.
+    /// Get the highest-scored proxy for a protocol, excluding circuit-open proxies.
     pub async fn get_best(&self, protocol: Protocol) -> anyhow::Result<Option<Proxy>> {
         let key = redis_key(&protocol);
         let mut conn = self.conn();
-        let members: Vec<String> = conn.zrevrange(&key, 0, 0).await?;
-        match members.first() {
-            Some(m) => Ok(Some(serde_json::from_str(m)?)),
-            None => Ok(None),
+        // Fetch top 10 candidates and filter circuit-open ones
+        let members: Vec<String> = conn.zrevrange(&key, 0, 9).await?;
+        for m in members {
+            let proxy: Proxy = serde_json::from_str(&m)?;
+            if !circuit::is_circuit_open(&proxy) {
+                return Ok(Some(proxy));
+            }
         }
+        Ok(None)
     }
 
-    /// Get a random proxy (biased toward top half).
+    /// Get a random proxy (biased toward higher scores), excluding circuit-open proxies.
     pub async fn get_random(&self, protocol: Protocol) -> anyhow::Result<Option<Proxy>> {
         let key = redis_key(&protocol);
         let mut conn = self.conn();
@@ -107,10 +119,17 @@ impl ProxyStore {
         if members.is_empty() {
             return Ok(None);
         }
-        // Prefer top half but allow some spread
-        let top_n = (members.len() / 2).max(1);
-        let idx = (rand::random::<u64>() as usize) % top_n;
-        Ok(Some(serde_json::from_str(&members[idx])?))
+        // Parse and filter circuit-open proxies
+        let proxies: Vec<Proxy> = members
+            .iter()
+            .filter_map(|m| serde_json::from_str::<Proxy>(m).ok())
+            .filter(|p| !circuit::is_circuit_open(p))
+            .collect();
+        if proxies.is_empty() {
+            return Ok(None);
+        }
+        let score_fn = |p: &Proxy| score(p, &self.weights);
+        Ok(weighted_random_choice(&proxies, score_fn))
     }
 
     /// Get overseas proxies (is_overseas == true).
@@ -165,6 +184,56 @@ impl ProxyStore {
         self.remove_existing(&proxy.protocol, proxy).await?;
         let mut updated = proxy.clone();
         updated.success_count += 1;
+        let s = score(&updated, &self.weights);
+        let member = serde_json::to_string(&updated)?;
+        let mut conn = self.conn();
+        let _: () = conn.zadd(redis_key(&updated.protocol), &member, s).await?;
+        Ok(())
+    }
+
+    /// Mark a proxy as failed and update circuit breaker state.
+    ///
+    /// If the net failure count exceeds the circuit breaker threshold,
+    /// the proxy is tripped (circuit opened). Otherwise, the proxy is
+    /// updated with incremented fail_count and re-scored.
+    pub async fn mark_failed_with_circuit(&self, proxy: &Proxy) -> anyhow::Result<()> {
+        self.remove_existing(&proxy.protocol, proxy).await?;
+        let mut updated = proxy.clone();
+        updated.fail_count += 1;
+
+        // Check circuit breaker
+        if circuit::should_trip(&updated, &self.circuit_config) {
+            updated = circuit::trip(&updated, &self.circuit_config);
+            tracing::info!("circuit tripped for {}", updated.key());
+        }
+
+        // Hard eviction: too many failures
+        let hard_evict = updated.fail_count > std::cmp::max(5, updated.success_count * 2);
+        if hard_evict || score(&updated, &self.weights) < self.min_score {
+            return Ok(()); // already removed, stays dropped
+        }
+
+        let s = score(&updated, &self.weights);
+        let member = serde_json::to_string(&updated)?;
+        let mut conn = self.conn();
+        let _: () = conn.zadd(redis_key(&updated.protocol), &member, s).await?;
+        Ok(())
+    }
+
+    /// Mark a proxy as successful and reset circuit breaker if half-open.
+    ///
+    /// If the proxy was in half-open state, this resets the circuit to closed.
+    pub async fn mark_success_with_circuit(&self, proxy: &Proxy) -> anyhow::Result<()> {
+        self.remove_existing(&proxy.protocol, proxy).await?;
+        let mut updated = proxy.clone();
+        updated.success_count += 1;
+
+        // Reset circuit breaker if it was half-open
+        if circuit::is_half_open(&updated) {
+            updated = circuit::reset(&updated);
+            tracing::info!("circuit reset for {} — back to closed", updated.key());
+        }
+
         let s = score(&updated, &self.weights);
         let member = serde_json::to_string(&updated)?;
         let mut conn = self.conn();

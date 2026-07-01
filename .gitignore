@@ -12,3 +12,5 @@ geoip/
 node_modules/
 web/dist/
 .DS_Store
+temp/
+protoc.exe

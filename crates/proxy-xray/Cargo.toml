@@ -1,0 +1,21 @@
+[package]
+name = "proxy-xray"
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+tonic-build = { workspace = true }
+
+[dependencies]
+proxy-core = { workspace = true }
+proxy-sub = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }

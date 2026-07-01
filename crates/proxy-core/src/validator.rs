@@ -1,6 +1,7 @@
 //! Proxy validation engine: connectivity, latency, anonymity detection.
 
 use crate::models::{Anonymity, Proxy};
+use crate::pacing::ConnectionPacer;
 use std::sync::Arc;
 
 /// Validates proxies concurrently: connectivity, latency, anonymity.
@@ -9,6 +10,8 @@ pub struct Validator {
     target_url: String,
     timeout_secs: u64,
     real_ip: Option<String>,
+    /// Optional connection rate pacer.
+    pacer: Option<Arc<ConnectionPacer>>,
 }
 
 impl Validator {
@@ -17,6 +20,7 @@ impl Validator {
             target_url: target_url.to_string(),
             timeout_secs,
             real_ip: None,
+            pacer: None,
         }
     }
 
@@ -25,8 +29,19 @@ impl Validator {
         self
     }
 
+    /// Attach a connection rate pacer to this validator.
+    pub fn with_pacer(mut self, pacer: Arc<ConnectionPacer>) -> Self {
+        self.pacer = Some(pacer);
+        self
+    }
+
     /// Validate a single proxy. Returns `Some(updated Proxy)` if alive, `None` if dead.
     pub async fn validate_one(&self, proxy: &Proxy) -> Option<Proxy> {
+        // Rate-limit if pacer is configured
+        if let Some(ref pacer) = self.pacer {
+            pacer.acquire().await;
+        }
+
         let start = std::time::Instant::now();
 
         let client = reqwest::Client::builder()

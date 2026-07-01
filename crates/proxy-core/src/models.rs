@@ -136,6 +136,14 @@ pub struct Proxy {
 
     // -- Source tracking --
     pub source: Option<String>,
+
+    // -- Encrypted proxy state (xray integration) --
+    /// For encrypted-protocol nodes: tracks the xray integration state.
+    #[serde(default)]
+    pub encrypted_state: Option<EncryptedProxyState>,
+    /// The original encrypted node configuration (for recovery/re-sync on xray restart).
+    #[serde(default)]
+    pub encrypted_config: Option<serde_json::Value>,
 }
 
 impl Proxy {
@@ -159,6 +167,8 @@ impl Proxy {
             circuit_open: false,
             circuit_open_until: None,
             source: None,
+            encrypted_state: None,
+            encrypted_config: None,
         }
     }
 

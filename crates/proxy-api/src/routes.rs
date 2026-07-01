@@ -9,6 +9,7 @@ use axum::{
 };
 use proxy_core::models::{Protocol, Proxy};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
 
 use crate::AppState;
 
@@ -61,6 +62,11 @@ pub struct SimpleResponse {
     pub status: String,
 }
 
+#[derive(Serialize)]
+pub struct XrayStatusResponse {
+    pub active_nodes: usize,
+}
+
 // ---------------------------------------------------------------------------
 // Route builder
 // ---------------------------------------------------------------------------
@@ -74,6 +80,7 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/proxies/refresh", post(refresh_pool))
         .route("/api/proxy/{key}", delete(delete_proxy))
         .route("/api/metrics", get(metrics))
+        .route("/api/xray/status", get(xray_status))
 }
 
 // ---------------------------------------------------------------------------
@@ -183,4 +190,11 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
          proxy_pool_size{{protocol=\"socks5\"}} {socks5_count}\n"
     );
     ([("content-type", "text/plain")], lines)
+}
+
+async fn xray_status(State(state): State<AppState>) -> impl IntoResponse {
+    let active = state.xray_active_count.load(Ordering::Relaxed);
+    Json(XrayStatusResponse {
+        active_nodes: active,
+    })
 }
