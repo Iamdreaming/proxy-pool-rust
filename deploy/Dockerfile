@@ -33,6 +33,15 @@ COPY crates/proxy-server/Cargo.toml crates/proxy-server/
 COPY crates/proxy-sub/Cargo.toml crates/proxy-sub/
 COPY crates/proxy-xray/Cargo.toml crates/proxy-xray/
 
+# Create dummy source files so cargo chef prepare can compute the dependency recipe
+RUN mkdir -p crates/proxy-core/src && echo "" > crates/proxy-core/src/lib.rs \
+ && mkdir -p crates/proxy-api/src && echo "" > crates/proxy-api/src/lib.rs \
+ && mkdir -p crates/proxy-gateway/src && echo "" > crates/proxy-gateway/src/lib.rs \
+ && mkdir -p crates/proxy-mcp/src && echo "" > crates/proxy-mcp/src/lib.rs \
+ && mkdir -p crates/proxy-server/src && echo "fn main(){}" > crates/proxy-server/src/main.rs \
+ && mkdir -p crates/proxy-sub/src && echo "" > crates/proxy-sub/src/lib.rs \
+ && mkdir -p crates/proxy-xray/src && echo "" > crates/proxy-xray/src/lib.rs
+
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ──────────────────────────────────────────────
