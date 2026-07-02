@@ -4,9 +4,18 @@
 FROM rust:1.87-slim AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && cargo install cargo-chef
+    pkg-config libssl-dev curl xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cargo-chef from GitHub release (avoids MSRV mismatch with cargo install)
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+      amd64) CHEF_ARCH="x86_64-unknown-linux-gnu" ;; \
+      arm64) CHEF_ARCH="aarch64-unknown-linux-gnu" ;; \
+      *) echo "unsupported arch: ${TARGETARCH}"; exit 1 ;; \
+    esac \
+ && curl -sL "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-${CHEF_ARCH}.tar.xz" \
+    | tar xJ -C /usr/local/bin/
 
 WORKDIR /app
 
