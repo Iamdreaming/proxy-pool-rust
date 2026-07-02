@@ -1,0 +1,28 @@
+[Unit]
+Description=Proxy Pool Service
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=simple
+User=proxy-pool
+Group=proxy-pool
+WorkingDirectory=/opt/proxy-pool
+ExecStart=/opt/proxy-pool/proxy-server /opt/proxy-pool/settings.yaml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Environment
+Environment=RUST_LOG=info
+Environment=PROXY_POOL_CONFIG=/opt/proxy-pool/settings.yaml
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/proxy-pool
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
