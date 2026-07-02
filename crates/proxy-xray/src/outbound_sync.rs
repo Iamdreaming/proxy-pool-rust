@@ -1,5 +1,8 @@
 //! Background loop that reads pending encrypted nodes from Redis,
 //! configures xray-core outbounds, and creates active Proxy entries.
+//!
+//! The sync loop pauses when the xray gRPC connection is lost and
+//! resumes automatically on reconnection.
 
 use crate::config_gen::ConfigGenerator;
 use crate::models::{SyncStats, XrayNode};
@@ -12,13 +15,18 @@ use proxy_sub::models::SubscriptionProxy;
 use proxy_sub::pending::PendingStore;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::RwLock;
+use tokio::sync::watch;
 
 /// Background sync: pending encrypted nodes -> active xray outbounds.
 ///
 /// Reads pending `SubscriptionProxy` nodes from Redis, allocates local SOCKS5
 /// ports, generates xray inbound/outbound configs, and registers `Proxy`
 /// entries in the pool with `EncryptedProxyState::Active`.
+///
+/// The sync is paused when the xray gRPC connection is lost (tracked via
+/// `connected_rx` watch channel) and resumes on reconnect.
 pub struct OutboundSync {
     pending_store: PendingStore,
     proxy_store: Arc<ProxyStore>,
@@ -26,16 +34,22 @@ pub struct OutboundSync {
     port_manager: Arc<PortManager>,
     active_nodes: Arc<RwLock<HashMap<String, XrayNode>>>,
     config: XraySettings,
+    /// Watch receiver for xray gRPC connection state.
+    connected_rx: watch::Receiver<bool>,
 }
 
 impl OutboundSync {
     /// Create a new `OutboundSync`.
+    ///
+    /// `connected_rx` is a watch channel receiver that tracks the xray gRPC
+    /// connection state. The sync loop will pause when disconnected.
     pub fn new(
         pending_store: PendingStore,
         proxy_store: Arc<ProxyStore>,
         xray_client: Arc<RwLock<XrayClient>>,
         port_manager: Arc<PortManager>,
         config: XraySettings,
+        connected_rx: watch::Receiver<bool>,
     ) -> Self {
         Self {
             pending_store,
@@ -44,6 +58,7 @@ impl OutboundSync {
             port_manager,
             active_nodes: Arc::new(RwLock::new(HashMap::new())),
             config,
+            connected_rx,
         }
     }
 
@@ -218,6 +233,7 @@ impl OutboundSync {
                     self.port_manager.release(node.local_socks5_port).await;
 
                     // Remove from xray via gRPC.
+                    // Use write lock because remove_inbound takes &mut self.
                     let mut client = self.xray_client.write().await;
                     if client.is_connected() {
                         if let Err(e) = client.remove_inbound(&node.inbound_tag()).await {
@@ -240,25 +256,75 @@ impl OutboundSync {
         stats
     }
 
-    /// Run the sync loop continuously.
-    pub async fn run(self: Arc<Self>) {
+    /// Run the sync loop continuously, respecting gRPC connection state.
+    ///
+    /// * If the `connected_rx` watch channel reports `false` (disconnected),
+    ///   the sync is skipped with a debug log.
+    /// * When the watch channel transitions to `true` (reconnected), an
+    ///   immediate sync cycle is triggered.
+    /// * Regular sync cycles run at the configured interval.
+    pub async fn run(self: Arc<Self>, active_count: Arc<AtomicUsize>) {
         let interval = std::time::Duration::from_secs(self.config.sync_interval_sec);
         tracing::info!(
             "outbound_sync: starting (interval={}s)",
             self.config.sync_interval_sec
         );
 
-        loop {
+        let mut connected_rx = self.connected_rx.clone();
+
+        // Run an initial sync if already connected.
+        if *connected_rx.borrow() {
             let stats = self.sync_once().await;
+            active_count.store(stats.total_active, Ordering::Relaxed);
             tracing::info!(
-                "outbound_sync: cycle complete -- added: {}, removed: {}, failed: {}, total_active: {}",
+                "outbound_sync: initial cycle complete -- added: {}, removed: {}, failed: {}, total_active: {}",
                 stats.added,
                 stats.removed,
                 stats.failed,
                 stats.total_active
             );
-            tokio::time::sleep(interval).await;
         }
+
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(interval) => {
+                    if !*connected_rx.borrow() {
+                        tracing::debug!("outbound_sync: xray disconnected, skipping sync");
+                        continue;
+                    }
+                    let stats = self.sync_once().await;
+                    active_count.store(stats.total_active, Ordering::Relaxed);
+                    tracing::info!(
+                        "outbound_sync: cycle complete -- added: {}, removed: {}, failed: {}, total_active: {}",
+                        stats.added,
+                        stats.removed,
+                        stats.failed,
+                        stats.total_active
+                    );
+                }
+                result = connected_rx.changed() => {
+                    if result.is_err() {
+                        // Sender dropped — connection tracking ended, stop.
+                        tracing::info!("outbound_sync: connection tracking ended, stopping");
+                        break;
+                    }
+                    if *connected_rx.borrow() {
+                        tracing::info!("outbound_sync: xray reconnected, running immediate sync");
+                        let stats = self.sync_once().await;
+                        active_count.store(stats.total_active, Ordering::Relaxed);
+                        tracing::info!(
+                            "outbound_sync: reconnection cycle complete -- added: {}, removed: {}, failed: {}, total_active: {}",
+                            stats.added,
+                            stats.removed,
+                            stats.failed,
+                            stats.total_active
+                        );
+                    }
+                }
+            }
+        }
+
+        tracing::info!("outbound_sync: stopped");
     }
 
     /// Get a reference to active nodes (for re-sync on xray restart).
