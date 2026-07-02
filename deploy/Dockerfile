@@ -1,7 +1,7 @@
 # ──────────────────────────────────────────────
 # Stage 1: Prepare recipe (dependency fingerprint)
 # ──────────────────────────────────────────────
-FROM rust:1.85-slim AS chef
+FROM rust:1.87-slim AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev \
