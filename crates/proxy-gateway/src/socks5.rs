@@ -1,6 +1,6 @@
 //! SOCKS5 proxy handler (RFC 1928).
 
-use crate::upstream::{Upstream, UpstreamSelector, connect_via_socks5};
+use crate::upstream::{Upstream, UpstreamSelector, connect_via_socks5, connect_via_warp_chain};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -141,10 +141,24 @@ pub async fn handle(
                 }
             }
         }
-        Upstream::WarpChain { .. } => {
-            // Reserved: not yet implemented
-            let reply = socks5_reply(0x07, "0.0.0.0:0"); // command not supported
-            stream.write_all(&reply).await?;
+        Upstream::WarpChain { proxy, socks5_port } => {
+            match connect_via_warp_chain(&proxy, socks5_port, &target_addr).await {
+                Ok(mut remote) => {
+                    let local_addr = remote.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap());
+                    let reply = socks5_reply_from_addr(0x00, &local_addr);
+                    stream.write_all(&reply).await?;
+                    bidirectional_copy(stream, &mut remote).await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "SOCKS5: WarpChain via {}->WARP:{} failed: {e}",
+                        proxy.host,
+                        socks5_port
+                    );
+                    let reply = socks5_reply(0x05, "0.0.0.0:0");
+                    stream.write_all(&reply).await?;
+                }
+            }
         }
         Upstream::NoProxy => {
             let reply = socks5_reply(0x05, "0.0.0.0:0"); // connection refused

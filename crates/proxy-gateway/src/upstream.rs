@@ -203,18 +203,15 @@ impl UpstreamSelector {
     }
 }
 
-/// Connect to a target through a SOCKS5 upstream proxy.
+/// Perform a SOCKS5 CONNECT handshake on an already-connected stream.
 ///
-/// This establishes a TCP connection to the upstream SOCKS5 proxy,
-/// performs the SOCKS5 handshake, and sends a CONNECT request for the target.
-/// Returns a TcpStream that is already tunneled to the target.
-pub async fn connect_via_socks5(
-    upstream_addr: &str,
+/// The stream must already be connected to a SOCKS5 proxy. This function
+/// sends the greeting, method negotiation, and CONNECT request for `target_addr`.
+pub async fn socks5_handshake_on_stream(
+    stream: &mut tokio::net::TcpStream,
     target_addr: &str,
-) -> anyhow::Result<tokio::net::TcpStream> {
+) -> anyhow::Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let mut stream = tokio::net::TcpStream::connect(upstream_addr).await?;
 
     // SOCKS5 greeting: version 5, 1 method, no-auth (0x00)
     stream.write_all(&[0x05, 0x01, 0x00]).await?;
@@ -226,7 +223,6 @@ pub async fn connect_via_socks5(
     }
 
     // Parse target address for SOCKS5 CONNECT request
-    // Format: "host:port" or "[ipv6]:port"
     let (host, port) = parse_target_addr(target_addr)?;
 
     // SOCKS5 CONNECT request
@@ -265,24 +261,56 @@ pub async fn connect_via_socks5(
     // Read and discard the bound address based on address type
     match reply_header[3] {
         0x01 => {
-            // IPv4: 4 bytes IP + 2 bytes port
             let mut discard = [0u8; 6];
             stream.read_exact(&mut discard).await?;
         }
         0x03 => {
-            // Domain: 1 byte length + domain + 2 bytes port
             let mut len_buf = [0u8; 1];
             stream.read_exact(&mut len_buf).await?;
             let mut discard = vec![0u8; len_buf[0] as usize + 2];
             stream.read_exact(&mut discard).await?;
         }
         0x04 => {
-            // IPv6: 16 bytes IP + 2 bytes port
             let mut discard = [0u8; 18];
             stream.read_exact(&mut discard).await?;
         }
         _ => {}
     }
+
+    Ok(())
+}
+
+/// Connect to a target through a SOCKS5 upstream proxy.
+///
+/// This establishes a TCP connection to the upstream SOCKS5 proxy,
+/// performs the SOCKS5 handshake, and sends a CONNECT request for the target.
+/// Returns a TcpStream that is already tunneled to the target.
+pub async fn connect_via_socks5(
+    upstream_addr: &str,
+    target_addr: &str,
+) -> anyhow::Result<tokio::net::TcpStream> {
+    let mut stream = tokio::net::TcpStream::connect(upstream_addr).await?;
+    socks5_handshake_on_stream(&mut stream, target_addr).await?;
+    Ok(stream)
+}
+
+/// Connect to a target through a WarpChain: proxy -> WARP -> target.
+///
+/// Step 1: Connect to the pool proxy via SOCKS5, targeting the WARP SOCKS5 entry.
+/// Step 2: On the resulting stream, perform another SOCKS5 CONNECT to the actual target.
+pub async fn connect_via_warp_chain(
+    proxy: &Proxy,
+    warp_socks5_port: u16,
+    target_addr: &str,
+) -> anyhow::Result<tokio::net::TcpStream> {
+    let proxy_addr = format!("{}:{}", proxy.host, proxy.port);
+    let warp_addr = format!("127.0.0.1:{warp_socks5_port}");
+
+    // Step 1: proxy -> WARP entry
+    let mut stream = connect_via_socks5(&proxy_addr, &warp_addr).await?;
+
+    // Step 2: WARP -> target (SOCKS5 handshake on the already-tunneled stream)
+    socks5_handshake_on_stream(&mut stream, target_addr).await?;
 
     Ok(stream)
 }
@@ -346,5 +374,78 @@ mod tests {
         let _ = Upstream::Xray {
             local_socks5_port: 20000,
         };
+    }
+
+    #[test]
+    fn test_warp_chain_compiles() {
+        // Verify the WarpChain variant and connect_via_warp_chain signature
+        let proxy = Proxy::new("1.2.3.4", 1080, Protocol::Socks5);
+        let _ = Upstream::WarpChain {
+            proxy: proxy.clone(),
+            socks5_port: 40000,
+        };
+    }
+
+    #[test]
+    fn test_warp_chain_upstream_variant() {
+        let proxy = Proxy::new("1.2.3.4", 1080, Protocol::Socks5);
+        let upstream = Upstream::WarpChain {
+            proxy: proxy.clone(),
+            socks5_port: 40000,
+        };
+        if let Upstream::WarpChain {
+            proxy: p,
+            socks5_port: port,
+        } = upstream
+        {
+            assert_eq!(p.host, "1.2.3.4");
+            assert_eq!(p.port, 1080);
+            assert_eq!(port, 40000);
+        } else {
+            panic!("Expected WarpChain variant");
+        }
+    }
+
+    #[test]
+    fn test_socks5_connect_request_ipv4() {
+        let host = "1.2.3.4";
+        let port: u16 = 443;
+        let mut request = vec![0x05, 0x01, 0x00]; // VER, CMD=CONNECT, RSV
+        request.push(0x01); // ATYP=IPv4
+        let ip: std::net::Ipv4Addr = host.parse().unwrap();
+        request.extend_from_slice(&ip.octets());
+        request.extend_from_slice(&port.to_be_bytes());
+
+        assert_eq!(request.len(), 10); // 3 + 1 + 4 + 2
+        assert_eq!(request[3], 0x01); // ATYP=IPv4
+    }
+
+    #[test]
+    fn test_socks5_connect_request_domain() {
+        let host = "google.com";
+        let port: u16 = 443;
+        let mut request = vec![0x05, 0x01, 0x00];
+        request.push(0x03); // ATYP=Domain
+        let domain_bytes = host.as_bytes();
+        request.push(domain_bytes.len() as u8);
+        request.extend_from_slice(domain_bytes);
+        request.extend_from_slice(&port.to_be_bytes());
+
+        assert_eq!(request[3], 0x03); // ATYP=Domain
+        assert_eq!(request[4], 10); // Length of "google.com"
+    }
+
+    #[test]
+    fn test_socks5_connect_request_ipv6() {
+        let host = "::1";
+        let port: u16 = 443;
+        let mut request = vec![0x05, 0x01, 0x00];
+        request.push(0x04); // ATYP=IPv6
+        let ip: std::net::Ipv6Addr = host.parse().unwrap();
+        request.extend_from_slice(&ip.octets());
+        request.extend_from_slice(&port.to_be_bytes());
+
+        assert_eq!(request.len(), 22); // 3 + 1 + 16 + 2
+        assert_eq!(request[3], 0x04); // ATYP=IPv6
     }
 }

@@ -1,6 +1,6 @@
 //! HTTP CONNECT proxy handler.
 
-use crate::upstream::{Upstream, UpstreamSelector, connect_via_socks5};
+use crate::upstream::{Upstream, UpstreamSelector, connect_via_socks5, connect_via_warp_chain};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -94,10 +94,23 @@ pub async fn handle(
                 }
             }
         }
-        Upstream::WarpChain { .. } => {
-            // Reserved: not yet implemented
-            let resp = "HTTP/1.1 501 Not Implemented\r\n\r\n";
-            stream.write_all(resp.as_bytes()).await?;
+        Upstream::WarpChain { proxy, socks5_port } => {
+            match connect_via_warp_chain(&proxy, socks5_port, &target).await {
+                Ok(mut remote) => {
+                    let resp = "HTTP/1.1 200 Connection Established\r\n\r\n";
+                    stream.write_all(resp.as_bytes()).await?;
+                    bidirectional_copy(stream, &mut remote).await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "HTTP CONNECT: WarpChain via {}->WARP:{} failed: {e}",
+                        proxy.host,
+                        socks5_port
+                    );
+                    let resp = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
+                    stream.write_all(resp.as_bytes()).await?;
+                }
+            }
         }
         Upstream::NoProxy => {
             let resp = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
