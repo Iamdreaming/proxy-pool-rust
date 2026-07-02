@@ -15,5 +15,10 @@ web/dist/
 temp/
 protoc.exe
 .superpowers/
-.trellis/
+# .trellis — only ignore runtime/cache/worktree paths; keep tasks/archive/spec tracked
+.trellis/.backup-*
+.trellis/worktrees/
+.trellis/.template-hashes.json
+.trellis/.runtime/
+.trellis/.cache/
 .claude/
