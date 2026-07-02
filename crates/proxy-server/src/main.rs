@@ -15,7 +15,7 @@ use proxy_core::fetcher::build_fetchers;
 use proxy_core::models::WarpInstance;
 use proxy_core::pacing::ConnectionPacer;
 use proxy_core::router::Router;
-use proxy_core::scheduler::Scheduler;
+use proxy_core::scheduler::{Scheduler, SchedulerCommand, SchedulerHandle};
 use proxy_core::store::ProxyStore;
 use proxy_core::validator::Validator;
 use proxy_core::warp::balancer::WarpBalancer;
@@ -33,7 +33,7 @@ use proxy_xray::process::XrayProcess;
 use proxy_xray::xray_client::XrayClient;
 
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 
 fn setup_logging() {
     tracing_subscriber::fmt()
@@ -107,6 +107,10 @@ async fn main() -> anyhow::Result<()> {
         settings.pool.clone(),
     ));
 
+    // Create scheduler command channel so external tasks can trigger refreshes
+    let (cmd_tx, cmd_rx) = mpsc::channel::<SchedulerCommand>(8);
+    let scheduler_handle = SchedulerHandle::new(cmd_tx);
+
     // Build UpstreamSelector with optional Router and GeoIP
     let router = if let Some(ref path) = settings.routes_path {
         match Router::from_yaml(path) {
@@ -136,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    let mcp_geoip = geoip.clone();
     let selector = Arc::new(UpstreamSelector::new(
         store.clone(),
         Some(balancer.clone()),
@@ -149,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
     let api_state = AppState {
         store: store.clone(),
         xray_active_count: xray_active_count.clone(),
+        scheduler_handle: scheduler_handle.clone(),
     };
     let api_app = proxy_api::create_app(api_state);
 
@@ -158,8 +164,13 @@ async fn main() -> anyhow::Result<()> {
         selector.clone(),
     ));
 
-    // Build MCP server
-    let mcp_server = ProxyPoolMcp::new(store.clone(), Some(balancer.clone()));
+    // Build MCP server with geoip lookup and scheduler handle
+    let mcp_server = ProxyPoolMcp::new(
+        store.clone(),
+        Some(balancer.clone()),
+        mcp_geoip,
+        scheduler_handle,
+    );
 
     tracing::info!("starting proxy-pool services");
 
@@ -182,6 +193,9 @@ async fn main() -> anyhow::Result<()> {
         // 2. Start xray-core process and supervisor
         let (xray_shutdown_tx, xray_shutdown_rx) = tokio::sync::watch::channel(false);
         _xray_shutdown_guard = Some(xray_shutdown_tx);
+
+        // Clone the shutdown receiver for the reconnect loop.
+        let xray_shutdown_for_reconnect = xray_shutdown_rx.clone();
 
         xray_supervisor_handle = match XrayProcess::start(
             &settings.xray.binary_path,
@@ -214,6 +228,17 @@ async fn main() -> anyhow::Result<()> {
             &settings.xray.binary_path,
         )));
 
+        // 4a. Connect gRPC client (may fail — reconnect loop will retry)
+        if let Err(e) = xray_client.write().await.connect().await {
+            tracing::warn!("xray gRPC initial connect failed: {e} (reconnect loop will retry)");
+        }
+
+        // 4b. Get connection state receiver for outbound sync
+        let connected_rx = xray_client.read().await.connected_rx();
+
+        // 4c. Clone the client for the reconnect loop (OutboundSync takes the original)
+        let xray_client_for_reconnect = xray_client.clone();
+
         // 5. Create a separate PendingStore for outbound sync
         let redis_for_xray = redis_client
             .get_multiplexed_async_connection()
@@ -228,26 +253,23 @@ async fn main() -> anyhow::Result<()> {
             xray_client,
             port_manager,
             settings.xray.clone(),
+            connected_rx,
         ));
 
-        // 7. Spawn outbound sync loop
+        // 7. Spawn reconnect loop
+        {
+            tokio::spawn(async move {
+                XrayClient::reconnect_loop(xray_client_for_reconnect, xray_shutdown_for_reconnect)
+                    .await;
+            });
+        }
+
+        // 8. Spawn outbound sync loop
         {
             let s = outbound_sync.clone();
             let counter = xray_active_count.clone();
-            let interval = settings.xray.sync_interval_sec;
             xray_sync_handle = Some(tokio::spawn(async move {
-                loop {
-                    let stats = s.sync_once().await;
-                    counter.store(stats.total_active, std::sync::atomic::Ordering::Relaxed);
-                    tracing::info!(
-                        "outbound_sync: cycle complete -- added: {}, removed: {}, failed: {}, total_active: {}",
-                        stats.added,
-                        stats.removed,
-                        stats.failed,
-                        stats.total_active
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
-                }
+                s.run(counter).await;
             }));
         }
     } else {
@@ -257,9 +279,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Launch all services concurrently
-    let scheduler_handle = {
+    let scheduler_task = {
         let s = scheduler.clone();
-        tokio::spawn(async move { s.run().await })
+        tokio::spawn(async move { s.run(Some(cmd_rx)).await })
     };
 
     let health_handle = {
@@ -337,7 +359,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Wait for any service to finish (or error)
     tokio::select! {
-        r = scheduler_handle => tracing::info!("scheduler stopped: {:?}", r),
+        r = scheduler_task => tracing::info!("scheduler stopped: {:?}", r),
         r = health_handle => tracing::info!("health checker stopped: {:?}", r),
         r = sub_handle => tracing::info!("subscription refresh stopped: {:?}", r),
         r = api_handle => tracing::info!("API server stopped: {:?}", r),

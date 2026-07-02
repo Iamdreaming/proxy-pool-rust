@@ -14,7 +14,9 @@ use proxy_core::config::GatewaySettings;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-pub use upstream::{UpstreamSelector, connect_via_socks5};
+pub use upstream::{
+    UpstreamSelector, connect_via_socks5, connect_via_warp_chain, socks5_handshake_on_stream,
+};
 
 /// The proxy gateway server.
 pub struct ProxyGateway {
