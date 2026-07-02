@@ -9,6 +9,8 @@
 //!
 //! Supports both stdio and Streamable HTTP transports.
 
+use proxy_core::geoip::GeoIPLookup;
+use proxy_core::scheduler::SchedulerHandle;
 use proxy_core::store::ProxyStore;
 use proxy_core::warp::balancer::WarpBalancer;
 use rmcp::handler::server::tool::ToolRouter;
@@ -18,6 +20,7 @@ use rmcp::{ServerHandler, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Tool parameter structs
@@ -61,14 +64,23 @@ pub struct RemoveProxyParam {
 pub struct ProxyPoolMcp {
     store: Arc<ProxyStore>,
     balancer: Option<Arc<WarpBalancer>>,
+    geoip: Option<Arc<Mutex<GeoIPLookup>>>,
+    scheduler_handle: SchedulerHandle,
     tool_router: ToolRouter<Self>,
 }
 
 impl ProxyPoolMcp {
-    pub fn new(store: Arc<ProxyStore>, balancer: Option<Arc<WarpBalancer>>) -> Self {
+    pub fn new(
+        store: Arc<ProxyStore>,
+        balancer: Option<Arc<WarpBalancer>>,
+        geoip: Option<Arc<Mutex<GeoIPLookup>>>,
+        scheduler_handle: SchedulerHandle,
+    ) -> Self {
         Self {
             store,
             balancer,
+            geoip,
+            scheduler_handle,
             tool_router: Self::tool_router(),
         }
     }
@@ -195,8 +207,20 @@ impl ProxyPoolMcp {
 
     #[tool(description = "Look up the geographic location of a host (IP or domain)")]
     async fn geoip_lookup(&self, params: Parameters<GeoipLookupParam>) -> String {
-        // TODO: Use GeoIPLookup instance
-        format!("GeoIP lookup for '{}' - feature coming soon", params.0.host)
+        match &self.geoip {
+            Some(geoip) => {
+                let mut geoip = geoip.lock().await;
+                let info = geoip.lookup(&params.0.host).await;
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "host": params.0.host,
+                    "country": info.country,
+                    "country_name": info.country_name,
+                    "is_overseas": geoip.is_overseas(&info.country),
+                }))
+                .unwrap_or_default()
+            }
+            None => "GeoIP not configured (set geoip.database_path in config)".into(),
+        }
     }
 
     #[tool(description = "Remove a proxy from the pool")]
@@ -212,8 +236,21 @@ impl ProxyPoolMcp {
 
     #[tool(description = "Trigger a pool refresh (fetch new proxies + validate)")]
     async fn refresh_pool(&self) -> String {
-        // TODO: trigger scheduler.run_once() via channel
-        "Pool refresh scheduled".into()
+        match self.scheduler_handle.refresh().await {
+            Ok(result) => serde_json::to_string_pretty(&serde_json::json!({
+                "status": "ok",
+                "fetched": result.fetched,
+                "validated": result.validated,
+                "stored": result.stored,
+                "errors": result.errors,
+            }))
+            .unwrap_or_default(),
+            Err(e) => serde_json::to_string_pretty(&serde_json::json!({
+                "status": "error",
+                "message": format!("{e}"),
+            }))
+            .unwrap_or_default(),
+        }
     }
 
     #[tool(description = "Get proxy pool statistics (protocol distribution)")]
@@ -241,5 +278,66 @@ impl ServerHandler for ProxyPoolMcp {
             ),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proxy_core::scheduler::{SchedulerCommand, SchedulerHandle};
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn test_protocol_param_deserialize() {
+        let json = r#"{"protocol":"socks5"}"#;
+        let param: ProtocolParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.protocol.as_deref(), Some("socks5"));
+    }
+
+    #[test]
+    fn test_protocol_param_optional() {
+        let json = r#"{}"#;
+        let param: ProtocolParam = serde_json::from_str(json).unwrap();
+        assert!(param.protocol.is_none());
+    }
+
+    #[test]
+    fn test_list_proxies_param_deserialize() {
+        let json = r#"{"protocol":"http","limit":10}"#;
+        let param: ListProxiesParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.protocol.as_deref(), Some("http"));
+        assert_eq!(param.limit, Some(10));
+    }
+
+    #[test]
+    fn test_check_proxy_param_deserialize() {
+        let json = r#"{"host":"1.2.3.4","port":8080,"protocol":"http"}"#;
+        let param: CheckProxyParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.host, "1.2.3.4");
+        assert_eq!(param.port, 8080);
+        assert_eq!(param.protocol, "http");
+    }
+
+    #[test]
+    fn test_geoip_lookup_param_deserialize() {
+        let json = r#"{"host":"google.com"}"#;
+        let param: GeoipLookupParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.host, "google.com");
+    }
+
+    #[test]
+    fn test_remove_proxy_param_deserialize() {
+        let json = r#"{"host":"1.2.3.4","port":8080,"protocol":"socks5"}"#;
+        let param: RemoveProxyParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.host, "1.2.3.4");
+        assert_eq!(param.port, 8080);
+        assert_eq!(param.protocol, "socks5");
+    }
+
+    #[test]
+    fn test_scheduler_handle_clone() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel::<SchedulerCommand>(8);
+        let handle = SchedulerHandle::new(cmd_tx);
+        let _handle2 = handle.clone();
     }
 }
