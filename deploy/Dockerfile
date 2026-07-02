@@ -1,45 +1,52 @@
-# Multi-stage build for proxy-pool-rust
-FROM rust:1.85-slim AS builder
+# ──────────────────────────────────────────────
+# Stage 1: Prepare recipe (dependency fingerprint)
+# ──────────────────────────────────────────────
+FROM rust:1.85-slim AS chef
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install cargo-chef
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+# ──────────────────────────────────────────────
+# Stage 2: Compute dependency recipe
+# ──────────────────────────────────────────────
+FROM chef AS planner
 
-# Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
 COPY crates/proxy-core/Cargo.toml crates/proxy-core/
 COPY crates/proxy-api/Cargo.toml crates/proxy-api/
 COPY crates/proxy-gateway/Cargo.toml crates/proxy-gateway/
 COPY crates/proxy-mcp/Cargo.toml crates/proxy-mcp/
 COPY crates/proxy-server/Cargo.toml crates/proxy-server/
+COPY crates/proxy-sub/Cargo.toml crates/proxy-sub/
+COPY crates/proxy-xray/Cargo.toml crates/proxy-xray/
 
-# Create dummy source files for initial build
-RUN mkdir -p crates/proxy-core/src && echo "" > crates/proxy-core/src/lib.rs \
-    && mkdir -p crates/proxy-api/src && echo "" > crates/proxy-api/src/lib.rs \
-    && mkdir -p crates/proxy-gateway/src && echo "" > crates/proxy-gateway/src/lib.rs \
-    && mkdir -p crates/proxy-mcp/src && echo "" > crates/proxy-mcp/src/lib.rs \
-    && mkdir -p crates/proxy-server/src && echo "fn main(){}" > crates/proxy-server/src/main.rs
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Build dependencies only (cached layer)
-RUN cargo build --release 2>/dev/null || true
+# ──────────────────────────────────────────────
+# Stage 3: Build dependencies (cached layer)
+# ──────────────────────────────────────────────
+FROM chef AS builder
 
-# Copy actual source code
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Now copy the real source code
+COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY config/ config/
 
-# Touch source files to rebuild with real code
-RUN find crates -name "*.rs" -exec touch {} +
-
-# Build the actual binary
+# Build the actual binary (only business code recompiles)
 RUN cargo build --release -p proxy-server
 
-# Runtime image
+# ──────────────────────────────────────────────
+# Stage 4: Runtime image
+# ──────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
