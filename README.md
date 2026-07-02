@@ -9,21 +9,26 @@
 - 📊 **评分系统**：基于延迟、成功率、匿名度的加权评分自动排序
 - 🔁 **智能路由**：域名规则 + GeoIP 自动分流 + 智能回退链
 - 🌐 **代理网关**：纯 Rust 实现 HTTP CONNECT + SOCKS5 代理网关
+- 🔗 **链式代理**：WarpChain 池代理 → WARP → 目标，双重跳转出口
 - 🛡️ **Circuit Breaker**：三态熔断器自动剔除不可用代理
+- 🔐 **xray 集成**：SS/VMess/Trojan 加密节点自动激活，gRPC 自动重连
+- 📡 **订阅管理**：GitHub 自动发现 + URL 聚合 + Base64/YAML/Clash 解析
 - 🔌 **MCP Server**：内置 MCP 服务，供 LLM 直接调试代理池
 - ☁️ **WARP 集成**：Cloudflare WARP 端点优选 + 健康检查 + 负载均衡
-- 📋 **Web Dashboard**：Vue3 + Naive UI 管理面板（开发中）
 - 🌍 **GeoIP 识别**：MaxMind GeoLite2 境内外自动识别
+- 📋 **Web Dashboard**：Vue3 + Naive UI 管理面板（开发中）
 
 ## 项目结构
 
 ```
 proxy-pool-rust/
 ├── crates/
-│   ├── proxy-core/       # 核心库（模型、存储、验证、调度、GeoIP、路由）
+│   ├── proxy-core/       # 核心库（模型、存储、验证、调度、GeoIP、路由、WARP）
 │   ├── proxy-api/        # REST API 服务 (axum)
 │   ├── proxy-gateway/    # HTTP CONNECT + SOCKS5 代理网关
 │   ├── proxy-mcp/        # MCP Server (rmcp)
+│   ├── proxy-sub/        # 订阅管理（发现、解析、待入池）
+│   ├── proxy-xray/       # xray-core gRPC 集成（进程管理、出站同步、重连）
 │   └── proxy-server/     # 主入口，组合所有服务
 ├── web/                  # Vue3 前端 (开发中)
 ├── config/               # YAML 配置文件
@@ -36,7 +41,8 @@ proxy-pool-rust/
 
 - Rust 1.85+ (edition 2024)
 - Redis 6+
-- (可选) Docker + Docker Compose (用于 WARP 容器管理)
+- (可选) xray-core — 加密节点代理
+- (可选) Docker + Docker Compose — 容器化部署
 
 ### 编译运行
 
@@ -53,9 +59,43 @@ cp config/settings.example.yaml config/settings.yaml
 
 ### Docker 部署
 
+使用 cargo-chef 分层构建，依赖变更时才重编译依赖层，业务代码变更重建约 3-5 分钟：
+
 ```bash
+cd deploy
+cp ../config/settings.example.yaml ../config/settings.yaml
+# 编辑 settings.yaml（至少修改 redis.url）
 docker compose up -d
 ```
+
+查看日志：
+
+```bash
+docker compose logs -f proxy-pool
+```
+
+## 路由决策链
+
+网关收到请求后按以下顺序选择出口：
+
+```
+1. 路由规则匹配 → direct / free_pool / warp / xray
+2. GeoIP 自动分流 → 境内直连，境外走代理
+3. 回退链 → 池代理 → WARP → xray → 502
+```
+
+## API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/status` | 系统状态（协议分布） |
+| GET | `/api/proxies` | 代理列表（支持 protocol/limit 参数） |
+| GET | `/api/proxy/random` | 随机代理 |
+| GET | `/api/proxy/best` | 最佳代理 |
+| POST | `/api/proxies/refresh` | 触发刷新（返回抓取/验证/存储计数） |
+| DELETE | `/api/proxy/{key}` | 删除代理（key 格式：protocol:host:port） |
+| GET | `/api/metrics` | Prometheus 指标 |
+| GET | `/api/xray/status` | xray 活跃节点数 |
 
 ## MCP Server
 
@@ -67,14 +107,14 @@ docker compose up -d
 |------|------|
 | `get_proxy` | 获取一个可用代理 |
 | `get_best_proxy` | 获取评分最高的代理 |
-| `list_proxies` | 列出池中代理 |
+| `list_proxies` | 列出池中代理（支持 protocol/limit 参数） |
 | `check_proxy` | 验证指定代理可用性 |
 | `pool_status` | 查看池状态概览 |
 | `warp_status` | WARP 实例状态 |
-| `refresh_pool` | 触发抓取+验证 |
+| `refresh_pool` | 触发抓取+验证（返回实际结果） |
 | `remove_proxy` | 移除代理 |
-| `proxy_stats` | 代理池统计 |
-| `geoip_lookup` | 查询地理位置 |
+| `proxy_stats` | 代理池统计（协议分布） |
+| `geoip_lookup` | 查询地理位置（国家/境内外） |
 
 ### 配置示例 (Claude Desktop / ZCode)
 
@@ -92,16 +132,26 @@ docker compose up -d
 }
 ```
 
-## API 端点
+## xray 加密代理集成
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/status` | 系统状态 |
-| GET | `/api/proxies` | 代理列表 |
-| GET | `/api/proxy/random` | 随机代理 |
-| GET | `/api/proxy/best` | 最佳代理 |
-| POST | `/api/proxies/refresh` | 触发刷新 |
-| GET | `/api/metrics` | Prometheus 指标 |
+启用 xray 集成后，系统自动管理 SS/VMess/Trojan 加密节点：
+
+1. 订阅源拉取加密节点 → 写入 Redis 待入池队列
+2. OutboundSync 循环读取待入池节点 → 分配本地 SOCKS5 端口 → 配置 xray-core
+3. gRPC 连接断开自动重连（指数退避 1s→30s），同步循环自动暂停/恢复
+
+配置示例：
+
+```yaml
+xray:
+  enabled: true
+  binary_path: "xray"          # xray-core 二进制路径
+  api_port: 10085              # gRPC API 端口
+  port_range_start: 20000      # 本地 SOCKS5 端口范围
+  port_range_end: 29999
+  sync_interval_sec: 30        # 同步间隔
+  max_active_nodes: 5000       # 最大活跃节点数
+```
 
 ## 代理源
 
