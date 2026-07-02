@@ -97,6 +97,19 @@ impl XrayClient {
         self.execute_cli_api("adi", &wrapper).await
     }
 
+    /// Handle a gRPC error from a remove operation.
+    ///
+    /// If the error is `Unavailable`, marks the connection as disconnected
+    /// and clears the gRPC client. Returns an `anyhow::Error` in all cases.
+    fn handle_grpc_error(&mut self, op: &str, tag: &str, status: tonic::Status) -> anyhow::Error {
+        if status.code() == tonic::Code::Unavailable {
+            self.connected_tx.send(false).ok();
+            self.grpc_client = None;
+            tracing::warn!("xray gRPC connection lost ({op})");
+        }
+        anyhow::anyhow!("gRPC error {op} {tag}: {status}")
+    }
+
     /// Remove an inbound from xray-core via gRPC.
     ///
     /// If the gRPC call fails with a transport error (`Unavailable`), the
@@ -111,16 +124,7 @@ impl XrayClient {
                     tracing::debug!("removed inbound: {tag}");
                     Ok(())
                 }
-                Err(status) => {
-                    if status.code() == tonic::Code::Unavailable {
-                        self.connected_tx.send(false).ok();
-                        self.grpc_client = None;
-                        tracing::warn!("xray gRPC connection lost (remove_inbound)");
-                    }
-                    Err(anyhow::anyhow!(
-                        "gRPC error removing inbound {tag}: {status}"
-                    ))
-                }
+                Err(status) => Err(self.handle_grpc_error("removing inbound", tag, status)),
             }
         } else {
             anyhow::bail!("xray gRPC client not connected");
@@ -152,16 +156,7 @@ impl XrayClient {
                     tracing::debug!("removed outbound: {tag}");
                     Ok(())
                 }
-                Err(status) => {
-                    if status.code() == tonic::Code::Unavailable {
-                        self.connected_tx.send(false).ok();
-                        self.grpc_client = None;
-                        tracing::warn!("xray gRPC connection lost (remove_outbound)");
-                    }
-                    Err(anyhow::anyhow!(
-                        "gRPC error removing outbound {tag}: {status}"
-                    ))
-                }
+                Err(status) => Err(self.handle_grpc_error("removing outbound", tag, status)),
             }
         } else {
             anyhow::bail!("xray gRPC client not connected");

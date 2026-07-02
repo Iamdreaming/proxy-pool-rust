@@ -256,6 +256,20 @@ impl OutboundSync {
         stats
     }
 
+    /// Run a single sync cycle, update the active count, and log the result.
+    async fn sync_and_report(&self, context: &str, active_count: &AtomicUsize) {
+        let stats = self.sync_once().await;
+        active_count.store(stats.total_active, Ordering::Relaxed);
+        tracing::info!(
+            "outbound_sync: {} -- added: {}, removed: {}, failed: {}, total_active: {}",
+            context,
+            stats.added,
+            stats.removed,
+            stats.failed,
+            stats.total_active
+        );
+    }
+
     /// Run the sync loop continuously, respecting gRPC connection state.
     ///
     /// * If the `connected_rx` watch channel reports `false` (disconnected),
@@ -274,15 +288,7 @@ impl OutboundSync {
 
         // Run an initial sync if already connected.
         if *connected_rx.borrow() {
-            let stats = self.sync_once().await;
-            active_count.store(stats.total_active, Ordering::Relaxed);
-            tracing::info!(
-                "outbound_sync: initial cycle complete -- added: {}, removed: {}, failed: {}, total_active: {}",
-                stats.added,
-                stats.removed,
-                stats.failed,
-                stats.total_active
-            );
+            self.sync_and_report("initial cycle complete", &active_count).await;
         }
 
         loop {
@@ -292,15 +298,7 @@ impl OutboundSync {
                         tracing::debug!("outbound_sync: xray disconnected, skipping sync");
                         continue;
                     }
-                    let stats = self.sync_once().await;
-                    active_count.store(stats.total_active, Ordering::Relaxed);
-                    tracing::info!(
-                        "outbound_sync: cycle complete -- added: {}, removed: {}, failed: {}, total_active: {}",
-                        stats.added,
-                        stats.removed,
-                        stats.failed,
-                        stats.total_active
-                    );
+                    self.sync_and_report("cycle complete", &active_count).await;
                 }
                 result = connected_rx.changed() => {
                     if result.is_err() {
@@ -310,15 +308,7 @@ impl OutboundSync {
                     }
                     if *connected_rx.borrow() {
                         tracing::info!("outbound_sync: xray reconnected, running immediate sync");
-                        let stats = self.sync_once().await;
-                        active_count.store(stats.total_active, Ordering::Relaxed);
-                        tracing::info!(
-                            "outbound_sync: reconnection cycle complete -- added: {}, removed: {}, failed: {}, total_active: {}",
-                            stats.added,
-                            stats.removed,
-                            stats.failed,
-                            stats.total_active
-                        );
+                        self.sync_and_report("reconnection cycle complete", &active_count).await;
                     }
                 }
             }

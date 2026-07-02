@@ -186,9 +186,10 @@ impl Scheduler {
         });
 
         // Command listener: handle external refresh requests
+        let mut handles = vec![fetch_loop, validate_loop];
         if let Some(mut rx) = cmd_rx {
             let this = self.clone();
-            let cmd_loop = tokio::spawn(async move {
+            handles.push(tokio::spawn(async move {
                 while let Some(cmd) = rx.recv().await {
                     match cmd {
                         SchedulerCommand::Refresh { reply } => {
@@ -197,10 +198,10 @@ impl Scheduler {
                         }
                     }
                 }
-            });
-            let _ = tokio::join!(fetch_loop, validate_loop, cmd_loop);
-        } else {
-            let _ = tokio::join!(fetch_loop, validate_loop);
+            }));
+        }
+        for h in handles {
+            let _ = h.await;
         }
     }
 }

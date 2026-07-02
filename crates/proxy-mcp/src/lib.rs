@@ -57,6 +57,18 @@ pub struct RemoveProxyParam {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Serialize a `serde_json::Value` to a pretty-printed string.
+///
+/// `serde_json::to_string_pretty` on a `Value` is infallible, so we use
+/// `expect` instead of `unwrap_or_default` to make that clear.
+fn to_json(value: serde_json::Value) -> String {
+    serde_json::to_string_pretty(&value).expect("infallible: Value serialization")
+}
+
+// ---------------------------------------------------------------------------
 // MCP Server implementation
 // ---------------------------------------------------------------------------
 
@@ -101,7 +113,7 @@ impl ProxyPoolMcp {
         let protocol = params.0.protocol;
         let proto = self.resolve_protocol(protocol.as_deref());
         match self.store.get_random(proto).await {
-            Ok(Some(proxy)) => Ok(serde_json::to_string_pretty(&proxy).unwrap_or_default()),
+            Ok(Some(proxy)) => Ok(to_json(serde_json::to_value(&proxy).unwrap_or_default())),
             Ok(None) => Ok("No proxy available for the requested protocol".into()),
             Err(e) => Err(format!("Error: {e}")),
         }
@@ -112,7 +124,7 @@ impl ProxyPoolMcp {
         let protocol = params.0.protocol;
         let proto = self.resolve_protocol(protocol.as_deref());
         match self.store.get_best(proto).await {
-            Ok(Some(proxy)) => Ok(serde_json::to_string_pretty(&proxy).unwrap_or_default()),
+            Ok(Some(proxy)) => Ok(to_json(serde_json::to_value(&proxy).unwrap_or_default())),
             Ok(None) => Ok("No proxy available".into()),
             Err(e) => Err(format!("Error: {e}")),
         }
@@ -126,7 +138,7 @@ impl ProxyPoolMcp {
         match self.store.all(proto).await {
             Ok(all) => {
                 let proxies: Vec<_> = all.into_iter().take(limit).collect();
-                Ok(serde_json::to_string_pretty(&proxies).unwrap_or_default())
+                Ok(to_json(serde_json::json!({ "proxies": proxies })))
             }
             Err(e) => Err(format!("Error: {e}")),
         }
@@ -143,19 +155,17 @@ impl ProxyPoolMcp {
         let validator = proxy_core::validator::Validator::new("https://httpbin.org/ip", 10);
 
         match validator.validate_one(&proxy).await {
-            Some(alive) => serde_json::to_string_pretty(&serde_json::json!({
+            Some(alive) => to_json(serde_json::json!({
                 "alive": true,
                 "latency_ms": alive.latency_ms,
                 "anonymity": alive.anonymity.map(|a| a.to_string()),
-            }))
-            .unwrap_or_default(),
-            None => serde_json::to_string_pretty(&serde_json::json!({
+            })),
+            None => to_json(serde_json::json!({
                 "alive": false,
                 "host": host,
                 "port": port,
                 "protocol": protocol,
-            }))
-            .unwrap_or_default(),
+            })),
         }
     }
 
@@ -177,7 +187,7 @@ impl ProxyPoolMcp {
             .await
             .unwrap_or(0);
 
-        serde_json::to_string_pretty(&serde_json::json!({
+        to_json(serde_json::json!({
             "pool": {
                 "http": http_count,
                 "https": https_count,
@@ -185,7 +195,6 @@ impl ProxyPoolMcp {
                 "total": http_count + https_count + socks5_count,
             }
         }))
-        .unwrap_or_default()
     }
 
     #[tool(description = "Get the status of WARP instances")]
@@ -193,13 +202,12 @@ impl ProxyPoolMcp {
         match &self.balancer {
             Some(balancer) => {
                 let healthy = balancer.healthy_list().await;
-                serde_json::to_string_pretty(&serde_json::json!({
+                to_json(serde_json::json!({
                     "warp": {
                         "healthy_count": healthy.len(),
                         "instances": healthy,
                     }
                 }))
-                .unwrap_or_default()
             }
             None => "WARP not configured".into(),
         }
@@ -211,13 +219,12 @@ impl ProxyPoolMcp {
             Some(geoip) => {
                 let mut geoip = geoip.lock().await;
                 let info = geoip.lookup(&params.0.host).await;
-                serde_json::to_string_pretty(&serde_json::json!({
+                to_json(serde_json::json!({
                     "host": params.0.host,
                     "country": info.country,
                     "country_name": info.country_name,
                     "is_overseas": geoip.is_overseas(&info.country),
                 }))
-                .unwrap_or_default()
             }
             None => "GeoIP not configured (set geoip.database_path in config)".into(),
         }
@@ -237,19 +244,17 @@ impl ProxyPoolMcp {
     #[tool(description = "Trigger a pool refresh (fetch new proxies + validate)")]
     async fn refresh_pool(&self) -> String {
         match self.scheduler_handle.refresh().await {
-            Ok(result) => serde_json::to_string_pretty(&serde_json::json!({
+            Ok(result) => to_json(serde_json::json!({
                 "status": "ok",
                 "fetched": result.fetched,
                 "validated": result.validated,
                 "stored": result.stored,
                 "errors": result.errors,
-            }))
-            .unwrap_or_default(),
-            Err(e) => serde_json::to_string_pretty(&serde_json::json!({
+            })),
+            Err(e) => to_json(serde_json::json!({
                 "status": "error",
                 "message": format!("{e}"),
-            }))
-            .unwrap_or_default(),
+            })),
         }
     }
 
@@ -260,10 +265,9 @@ impl ProxyPoolMcp {
             let count = self.store.count(*proto).await.unwrap_or(0);
             stats[&proto.to_string()] = serde_json::json!(count);
         }
-        serde_json::to_string_pretty(&serde_json::json!({
+        to_json(serde_json::json!({
             "protocol_distribution": stats,
         }))
-        .unwrap_or_default()
     }
 }
 

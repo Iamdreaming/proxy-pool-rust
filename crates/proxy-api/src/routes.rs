@@ -93,6 +93,15 @@ pub fn create_router() -> Router<AppState> {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Build a JSON status response with the given HTTP status code.
+fn json_status(code: StatusCode, msg: impl Into<String>) -> axum::response::Response {
+    (code, Json(SimpleResponse { status: msg.into() })).into_response()
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -195,62 +204,22 @@ async fn delete_proxy(State(state): State<AppState>, Path(key): Path<String>) ->
     // Parse key format: "protocol:host:port"
     let parts: Vec<&str> = key.splitn(3, ':').collect();
     if parts.len() != 3 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(SimpleResponse {
-                status: "invalid key format, expected protocol:host:port".into(),
-            }),
-        )
-            .into_response();
+        return json_status(StatusCode::BAD_REQUEST, "invalid key format, expected protocol:host:port");
     }
     let protocol = match Protocol::from_str_loose(parts[0]) {
         Some(p) => p,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(SimpleResponse {
-                    status: "invalid protocol".into(),
-                }),
-            )
-                .into_response();
-        }
+        None => return json_status(StatusCode::BAD_REQUEST, "invalid protocol"),
     };
     let port: u16 = match parts[2].parse() {
         Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(SimpleResponse {
-                    status: "invalid port".into(),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return json_status(StatusCode::BAD_REQUEST, "invalid port"),
     };
     let proxy = Proxy::new(parts[1], port, protocol);
 
     match state.store.remove(&proxy).await {
-        Ok(true) => (
-            StatusCode::OK,
-            Json(SimpleResponse {
-                status: "ok".into(),
-            }),
-        )
-            .into_response(),
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(SimpleResponse {
-                status: "proxy not found".into(),
-            }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(SimpleResponse {
-                status: format!("error: {e}"),
-            }),
-        )
-            .into_response(),
+        Ok(true) => json_status(StatusCode::OK, "ok"),
+        Ok(false) => json_status(StatusCode::NOT_FOUND, "proxy not found"),
+        Err(e) => json_status(StatusCode::INTERNAL_SERVER_ERROR, format!("error: {e}")),
     }
 }
 

@@ -245,19 +245,7 @@ impl ProxyStore {
     ///
     /// Returns `true` if the proxy was found and removed, `false` if not found.
     pub async fn remove(&self, proxy: &Proxy) -> anyhow::Result<bool> {
-        let key = redis_key(&proxy.protocol);
-        let mut conn = self.conn();
-        let members: Vec<String> = conn.zrange(&key, 0, -1).await?;
-        for m in members {
-            if let Ok(stored) = serde_json::from_str::<Proxy>(&m)
-                && stored.host == proxy.host
-                && stored.port == proxy.port
-            {
-                let _: () = conn.zrem(&key, &m).await?;
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        self.remove_existing(&proxy.protocol, proxy).await
     }
 
     /// Get all proxies for a protocol, sorted by score (highest first).
@@ -284,10 +272,13 @@ impl ProxyStore {
     }
 
     /// Remove any stored member matching this proxy's host:port:protocol.
-    async fn remove_existing(&self, protocol: &Protocol, proxy: &Proxy) -> anyhow::Result<()> {
+    ///
+    /// Returns `true` if at least one member was removed.
+    async fn remove_existing(&self, protocol: &Protocol, proxy: &Proxy) -> anyhow::Result<bool> {
         let key = redis_key(protocol);
         let mut conn = self.conn();
         let members: Vec<String> = conn.zrange(&key, 0, -1).await?;
+        let mut found = false;
         for m in members {
             if let Ok(stored) = serde_json::from_str::<Proxy>(&m)
                 && stored.host == proxy.host
@@ -295,8 +286,9 @@ impl ProxyStore {
                 && stored.protocol == *protocol
             {
                 let _: () = conn.zrem(&key, &m).await?;
+                found = true;
             }
         }
-        Ok(())
+        Ok(found)
     }
 }
