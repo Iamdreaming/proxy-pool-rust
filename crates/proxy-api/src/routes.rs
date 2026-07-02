@@ -67,6 +67,15 @@ pub struct XrayStatusResponse {
     pub active_nodes: usize,
 }
 
+#[derive(Serialize)]
+pub struct RefreshResponse {
+    pub status: String,
+    pub fetched: usize,
+    pub validated: usize,
+    pub stored: usize,
+    pub errors: usize,
+}
+
 // ---------------------------------------------------------------------------
 // Route builder
 // ---------------------------------------------------------------------------
@@ -163,19 +172,86 @@ async fn get_best_proxy(
     }
 }
 
-async fn refresh_pool() -> impl IntoResponse {
-    // TODO: trigger scheduler.run_once() via channel
-    Json(SimpleResponse {
-        status: "scheduled".into(),
-    })
+async fn refresh_pool(State(state): State<AppState>) -> impl IntoResponse {
+    match state.scheduler_handle.refresh().await {
+        Ok(result) => Json(RefreshResponse {
+            status: "ok".into(),
+            fetched: result.fetched,
+            validated: result.validated,
+            stored: result.stored,
+            errors: result.errors,
+        }),
+        Err(e) => Json(RefreshResponse {
+            status: format!("error: {e}"),
+            fetched: 0,
+            validated: 0,
+            stored: 0,
+            errors: 0,
+        }),
+    }
 }
 
-async fn delete_proxy(
-    State(_state): State<AppState>,
-    Path(_key): Path<String>,
-) -> impl IntoResponse {
-    // TODO: implement proxy deletion
-    StatusCode::NOT_IMPLEMENTED
+async fn delete_proxy(State(state): State<AppState>, Path(key): Path<String>) -> impl IntoResponse {
+    // Parse key format: "protocol:host:port"
+    let parts: Vec<&str> = key.splitn(3, ':').collect();
+    if parts.len() != 3 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(SimpleResponse {
+                status: "invalid key format, expected protocol:host:port".into(),
+            }),
+        )
+            .into_response();
+    }
+    let protocol = match Protocol::from_str_loose(parts[0]) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SimpleResponse {
+                    status: "invalid protocol".into(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let port: u16 = match parts[2].parse() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SimpleResponse {
+                    status: "invalid port".into(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let proxy = Proxy::new(parts[1], port, protocol);
+
+    match state.store.remove(&proxy).await {
+        Ok(true) => (
+            StatusCode::OK,
+            Json(SimpleResponse {
+                status: "ok".into(),
+            }),
+        )
+            .into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(SimpleResponse {
+                status: "proxy not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(SimpleResponse {
+                status: format!("error: {e}"),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
@@ -197,4 +273,76 @@ async fn xray_status(State(state): State<AppState>) -> impl IntoResponse {
     Json(XrayStatusResponse {
         active_nodes: active,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_delete_key_valid() {
+        // Test the key parsing logic used in delete_proxy
+        let key = "http:1.2.3.4:8080";
+        let parts: Vec<&str> = key.splitn(3, ':').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "http");
+        assert_eq!(parts[1], "1.2.3.4");
+        assert_eq!(parts[2], "8080");
+    }
+
+    #[test]
+    fn test_parse_delete_key_invalid_no_colon() {
+        let key = "invalid";
+        let parts: Vec<&str> = key.splitn(3, ':').collect();
+        assert_ne!(parts.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_delete_key_ipv6() {
+        // IPv6 addresses contain colons -- splitn(3, ':') splits on first two colons.
+        // This is a known limitation: IPv6 hosts in the key format are not supported.
+        // The key format "protocol:host:port" assumes IPv4 or domain host.
+        let key = "socks5:[::1]:1080";
+        let parts: Vec<&str> = key.splitn(3, ':').collect();
+        assert_eq!(parts.len(), 3);
+    }
+
+    #[test]
+    fn test_refresh_response_serialization() {
+        let resp = RefreshResponse {
+            status: "ok".into(),
+            fetched: 10,
+            validated: 5,
+            stored: 4,
+            errors: 1,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"fetched\":10"));
+        assert!(json.contains("\"errors\":1"));
+    }
+
+    #[test]
+    fn test_simple_response_serialization() {
+        let resp = SimpleResponse {
+            status: "ok".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+    }
+
+    #[test]
+    fn test_status_response_serialization() {
+        let resp = StatusResponse {
+            pool: PoolStatus {
+                http: 10,
+                https: 5,
+                socks5: 3,
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"http\":10"));
+        assert!(json.contains("\"https\":5"));
+        assert!(json.contains("\"socks5\":3"));
+    }
 }

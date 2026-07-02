@@ -2,6 +2,7 @@
 
 mod routes;
 
+use proxy_core::scheduler::SchedulerHandle;
 use proxy_core::store::ProxyStore;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -12,6 +13,8 @@ pub struct AppState {
     pub store: Arc<ProxyStore>,
     /// Number of active xray encrypted nodes (updated by OutboundSync).
     pub xray_active_count: Arc<AtomicUsize>,
+    /// Handle for sending commands to the background scheduler.
+    pub scheduler_handle: SchedulerHandle,
 }
 
 /// Build the axum router with all API routes.
