@@ -40,6 +40,8 @@ COPY crates/ crates/
 COPY config/ config/
 
 # Build the actual binary (only business code recompiles)
+ARG GIT_HASH=dev
+ENV GIT_HASH=${GIT_HASH}
 RUN cargo build --release -p proxy-server
 
 # ──────────────────────────────────────────────

@@ -269,6 +269,89 @@ impl ProxyPoolMcp {
             "protocol_distribution": stats,
         }))
     }
+
+    #[tool(description = "Update the proxy-pool service by pulling the latest Docker image and restarting the container. Requires Docker socket access.")]
+    async fn update_service(&self) -> String {
+        // Step 1: Get current image digest
+        let current_digest = match tokio::process::Command::new("docker")
+            .args(["inspect", "--format", "{{.Image}}", "proxy-pool-proxy-pool-1"])
+            .output()
+            .await
+        {
+            Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            Err(e) => format!("error inspecting container: {e}"),
+        };
+
+        // Step 2: Pull latest image
+        let pull_result = tokio::process::Command::new("docker")
+            .args(["pull", "ghcr.io/iamdreaming/proxy-pool-rust:latest"])
+            .output()
+            .await;
+
+        let pull_output = match pull_result {
+            Ok(out) => {
+                if out.status.success() {
+                    String::from_utf8_lossy(&out.stdout).to_string()
+                } else {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    return to_json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("docker pull failed: {stderr}"),
+                        "current_digest": current_digest,
+                    }));
+                }
+            }
+            Err(e) => {
+                return to_json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("docker pull command failed: {e}"),
+                    "current_digest": current_digest,
+                }));
+            }
+        };
+
+        // Step 3: Restart with new image
+        let restart_result = tokio::process::Command::new("docker")
+            .args(["compose", "-f", "/opt/proxy-pool/deploy/docker-compose.yml", "up", "-d", "proxy-pool"])
+            .output()
+            .await;
+
+        match restart_result {
+            Ok(out) if out.status.success() => {
+                let new_digest = match tokio::process::Command::new("docker")
+                    .args(["inspect", "--format", "{{.Image}}", "proxy-pool-proxy-pool-1"])
+                    .output()
+                    .await
+                {
+                    Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+                    Err(_) => "unknown".to_string(),
+                };
+
+                to_json(serde_json::json!({
+                    "status": "ok",
+                    "previous_digest": current_digest,
+                    "new_digest": new_digest,
+                    "pull_output": pull_output.lines().last().unwrap_or("").trim(),
+                }))
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                to_json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("docker compose up failed: {stderr}"),
+                    "current_digest": current_digest,
+                    "pull_output": pull_output.lines().last().unwrap_or("").trim(),
+                }))
+            }
+            Err(e) => {
+                to_json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("docker compose command failed: {e}"),
+                    "current_digest": current_digest,
+                }))
+            }
+        }
+    }
 }
 
 // Implement ServerHandler with tool_handler to enable .serve()

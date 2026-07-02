@@ -15,6 +15,8 @@ pub struct AppState {
     pub xray_active_count: Arc<AtomicUsize>,
     /// Handle for sending commands to the background scheduler.
     pub scheduler_handle: SchedulerHandle,
+    /// Git hash of the running binary (injected at build time).
+    pub git_hash: &'static str,
 }
 
 /// Build the axum router with all API routes.

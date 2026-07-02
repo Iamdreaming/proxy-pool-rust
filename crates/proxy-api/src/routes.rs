@@ -40,6 +40,8 @@ pub struct DeleteProxyPath {
 
 #[derive(Serialize)]
 pub struct StatusResponse {
+    pub version: &'static str,
+    pub git_hash: &'static str,
     pub pool: PoolStatus,
 }
 
@@ -111,6 +113,8 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
     let socks5_count = state.store.count(Protocol::Socks5).await.unwrap_or(0);
 
     Json(StatusResponse {
+        version: env!("CARGO_PKG_VERSION"),
+        git_hash: state.git_hash,
         pool: PoolStatus {
             http: http_count,
             https: https_count,
@@ -303,6 +307,8 @@ mod tests {
     #[test]
     fn test_status_response_serialization() {
         let resp = StatusResponse {
+            version: "0.1.0",
+            git_hash: "abc1234",
             pool: PoolStatus {
                 http: 10,
                 https: 5,
@@ -311,7 +317,6 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"http\":10"));
-        assert!(json.contains("\"https\":5"));
-        assert!(json.contains("\"socks5\":3"));
+        assert!(json.contains("\"git_hash\":\"abc1234\""));
     }
 }

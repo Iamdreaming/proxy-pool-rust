@@ -8,6 +8,12 @@
 //! - Subscription refresh loop
 //! - Xray outbound sync (if xray.enabled)
 
+/// Git hash injected at build time via `GIT_HASH` env var / build-arg.
+const GIT_HASH: &str = match option_env!("GIT_HASH") {
+    Some(h) => h,
+    None => "dev",
+};
+
 use proxy_api::AppState;
 use proxy_core::circuit::CircuitBreakerConfig;
 use proxy_core::config::load_settings;
@@ -47,6 +53,7 @@ fn setup_logging() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     setup_logging();
+    tracing::info!("proxy-pool-rust starting (git_hash={GIT_HASH})");
 
     // Load configuration
     let config_path = std::env::args()
@@ -155,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
         store: store.clone(),
         xray_active_count: xray_active_count.clone(),
         scheduler_handle: scheduler_handle.clone(),
+        git_hash: GIT_HASH,
     };
     let api_app = proxy_api::create_app(api_state);
 
