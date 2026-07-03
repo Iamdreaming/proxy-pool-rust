@@ -309,7 +309,7 @@ fn default_mcp_http_port() -> u16 {
     9000
 }
 fn default_redis_url() -> String {
-    "redis://localhost:6379/0".into()
+    "redis://redis:6379/0".into()
 }
 fn default_weight_latency() -> f64 {
     0.5
