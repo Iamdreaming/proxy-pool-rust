@@ -483,7 +483,7 @@ fn parse_docker_response(buf: &[u8]) -> Result<serde_json::Value, String> {
     let lines: Vec<&str> = body.trim().lines().filter(|l| !l.trim().is_empty()).collect();
     let last_line = lines.last().unwrap_or(&"");
 
-    let value = serde_json::from_str(last_line).map_err(|e| format!("JSON parse error: {e}, body: {}", &body[..body.len().min(200)]))?;
+    let value: serde_json::Value = serde_json::from_str(last_line).map_err(|e| format!("JSON parse error: {e}, body: {}", &body[..body.len().min(200)]))?;
 
     if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
         return Err(format!("docker error: {err}"));
