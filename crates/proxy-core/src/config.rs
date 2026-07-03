@@ -112,7 +112,7 @@ pub struct PoolSettings {
     #[serde(default)]
     pub fetchers: FetchersConfig,
     /// Max connection attempts per second (0 = unlimited).
-    #[serde(default)]
+    #[serde(default = "default_pace_rate")]
     pub pace_rate_per_sec: f64,
 }
 
@@ -340,6 +340,9 @@ fn default_validate_target() -> String {
 }
 fn default_min_score() -> f64 {
     0.1
+}
+fn default_pace_rate() -> f64 {
+    20.0
 }
 fn default_optimizer_interval() -> u64 {
     21600

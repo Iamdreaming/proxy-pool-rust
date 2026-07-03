@@ -8,6 +8,10 @@ services:
     volumes:
       - redis_data:/data
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   proxy-pool:
     # Pull pre-built image from GHCR (built by GitHub Actions)
@@ -32,6 +36,17 @@ services:
       - RUST_LOG=info
       - PROXY_POOL_CONFIG=/app/config/settings.yaml
     restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 512
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "2.0"
 
 volumes:
   redis_data:

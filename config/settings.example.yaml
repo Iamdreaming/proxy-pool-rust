@@ -23,7 +23,7 @@ pool:
   validate_timeout_sec: 10
   validate_target_url: "https://httpbin.org/ip"
   min_score: 0.1
-  pace_rate_per_sec: 0       # 0 = unlimited
+  pace_rate_per_sec: 20      # 0 = unlimited; 20 recommended to avoid socket exhaustion
   score_weights:
     latency: 0.5
     success: 0.3

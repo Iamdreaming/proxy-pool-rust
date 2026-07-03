@@ -47,7 +47,9 @@ impl Validator {
         let client = reqwest::Client::builder()
             .proxy(reqwest::Proxy::all(proxy.url()).ok()?)
             .timeout(std::time::Duration::from_secs(self.timeout_secs))
-            .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .pool_max_idle_per_host(0)
+            .pool_idle_timeout(std::time::Duration::from_secs(5))
             .build()
             .ok()?;
 

@@ -274,7 +274,7 @@ impl ProxyPoolMcp {
     async fn update_service(&self) -> String {
         // Step 1: Get current image digest
         let current_digest = match tokio::process::Command::new("docker")
-            .args(["inspect", "--format", "{{.Image}}", "proxy-pool-proxy-pool-1"])
+            .args(["inspect", "--format", "{{.Image}}", "proxy-pool"])
             .output()
             .await
         {
@@ -319,7 +319,7 @@ impl ProxyPoolMcp {
         match restart_result {
             Ok(out) if out.status.success() => {
                 let new_digest = match tokio::process::Command::new("docker")
-                    .args(["inspect", "--format", "{{.Image}}", "proxy-pool-proxy-pool-1"])
+                    .args(["inspect", "--format", "{{.Image}}", "proxy-pool"])
                     .output()
                     .await
                 {
