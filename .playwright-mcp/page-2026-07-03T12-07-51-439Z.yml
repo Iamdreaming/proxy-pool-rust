@@ -1,0 +1,207 @@
+- generic [ref=e5]:
+  - complementary [ref=e6]:
+    - generic [ref=e7]:
+      - generic [ref=e9]: 🔄 Proxy Pool
+      - menu [ref=e10]:
+        - menuitem "概览" [ref=e11]:
+          - img [ref=e12] [cursor=pointer]: 📊
+          - text: 概览
+        - menuitem "代理列表" [ref=e13]:
+          - img [ref=e14] [cursor=pointer]: 🌐
+          - text: 代理列表
+        - menuitem "WARP 管理" [ref=e15]:
+          - img [ref=e16] [cursor=pointer]: ☁️
+          - text: WARP 管理
+        - menuitem "路由规则" [ref=e17]:
+          - img [ref=e18] [cursor=pointer]: 🔀
+          - text: 路由规则
+        - menuitem "实时日志" [ref=e19]:
+          - img [ref=e20] [cursor=pointer]: 📋
+          - text: 实时日志
+        - menuitem "MCP 调试" [ref=e21]:
+          - img [ref=e22] [cursor=pointer]: 🤖
+          - text: MCP 调试
+        - menuitem "系统设置" [ref=e23]:
+          - img [ref=e24] [cursor=pointer]: ⚙️
+          - text: 系统设置
+    - img [ref=e27] [cursor=pointer]
+  - generic [ref=e31]:
+    - generic [ref=e32]:
+      - navigation "Breadcrumb" [ref=e33]:
+        - list [ref=e34]:
+          - listitem [ref=e35]:
+            - generic [ref=e36]: 概览
+      - generic [ref=e38]: "池: 222"
+      - button "🔄" [ref=e39] [cursor=pointer]:
+        - generic [ref=e40]: 🔄
+    - generic [ref=e42]:
+      - generic [ref=e43]:
+        - generic [ref=e46]:
+          - generic [ref=e47]: HTTP 代理
+          - generic [ref=e48]: 🌐222
+        - generic [ref=e51]:
+          - generic [ref=e52]: HTTPS 代理
+          - generic [ref=e53]: 🔒0
+        - generic [ref=e56]:
+          - generic [ref=e57]: SOCKS5 代理
+          - generic [ref=e58]: 🧦0
+        - generic [ref=e61]:
+          - generic [ref=e62]: 代理总数
+          - generic [ref=e63]: 📊222
+      - generic [ref=e64]:
+        - generic [ref=e66]:
+          - heading "协议分布" [ref=e67]:
+            - heading "协议分布" [ref=e68]
+          - generic [ref=e69]:
+            - generic [ref=e70]: HTTP
+            - progressbar [ref=e71]:
+              - generic [ref=e76]: 100%
+            - generic [ref=e77]: "222"
+          - generic [ref=e78]:
+            - generic [ref=e79]: HTTPS
+            - progressbar [ref=e80]:
+              - generic [ref=e84]: 0%
+            - generic [ref=e85]: "0"
+          - generic [ref=e86]:
+            - generic [ref=e87]: SOCKS5
+            - progressbar [ref=e88]:
+              - generic [ref=e92]: 0%
+            - generic [ref=e93]: "0"
+        - generic [ref=e95]:
+          - heading "快捷操作" [ref=e96]:
+            - heading "快捷操作" [ref=e97]
+          - button "🔄 刷新代理池" [ref=e98] [cursor=pointer]:
+            - generic [ref=e99]: 🔄 刷新代理池
+          - button "🌐 查看代理列表" [ref=e100] [cursor=pointer]:
+            - generic [ref=e101]: 🌐 查看代理列表
+          - button "🤖 MCP 调试面板" [ref=e102] [cursor=pointer]:
+            - generic [ref=e103]: 🤖 MCP 调试面板
+          - button "☁️ WARP 管理" [ref=e104] [cursor=pointer]:
+            - generic [ref=e105]: ☁️ WARP 管理
+      - generic [ref=e106]:
+        - heading "最近验证的代理" [ref=e107]:
+          - heading "最近验证的代理" [ref=e108]
+        - generic [ref=e109]:
+          - table [ref=e112]:
+            - rowgroup [ref=e121]:
+              - row "地址 端口 协议 延迟 匿名度 国家 成功率" [ref=e122]:
+                - columnheader "地址" [ref=e123]:
+                  - generic [ref=e125]: 地址
+                - columnheader "端口" [ref=e126]:
+                  - generic [ref=e128]: 端口
+                - columnheader "协议" [ref=e129]:
+                  - generic [ref=e131]: 协议
+                - columnheader "延迟" [ref=e132]:
+                  - generic [ref=e134]: 延迟
+                - columnheader "匿名度" [ref=e135]:
+                  - generic [ref=e137]: 匿名度
+                - columnheader "国家" [ref=e138]:
+                  - generic [ref=e140]: 国家
+                - columnheader "成功率" [ref=e141]:
+                  - generic [ref=e143]: 成功率
+            - rowgroup [ref=e163]:
+              - row "43.133.187.166 3128 http 1042ms elite - 100%" [ref=e164]:
+                - cell "43.133.187.166" [ref=e165]
+                - cell "3128" [ref=e166]
+                - cell "http" [ref=e167]:
+                  - generic [ref=e169]: http
+                - cell "1042ms" [ref=e170]
+                - cell "elite" [ref=e171]:
+                  - generic [ref=e173]: elite
+                - cell "-" [ref=e174]
+                - cell "100%" [ref=e175]
+              - row "34.87.80.221 30000 http 1262ms elite - 100%" [ref=e176]:
+                - cell "34.87.80.221" [ref=e177]
+                - cell "30000" [ref=e178]
+                - cell "http" [ref=e179]:
+                  - generic [ref=e181]: http
+                - cell "1262ms" [ref=e182]
+                - cell "elite" [ref=e183]:
+                  - generic [ref=e185]: elite
+                - cell "-" [ref=e186]
+                - cell "100%" [ref=e187]
+              - row "1.231.81.166 3128 http 1679ms elite - 100%" [ref=e188]:
+                - cell "1.231.81.166" [ref=e189]
+                - cell "3128" [ref=e190]
+                - cell "http" [ref=e191]:
+                  - generic [ref=e193]: http
+                - cell "1679ms" [ref=e194]
+                - cell "elite" [ref=e195]:
+                  - generic [ref=e197]: elite
+                - cell "-" [ref=e198]
+                - cell "100%" [ref=e199]
+              - row "176.111.37.216 39811 http 1712ms elite - 100%" [ref=e200]:
+                - cell "176.111.37.216" [ref=e201]
+                - cell "39811" [ref=e202]
+                - cell "http" [ref=e203]:
+                  - generic [ref=e205]: http
+                - cell "1712ms" [ref=e206]
+                - cell "elite" [ref=e207]:
+                  - generic [ref=e209]: elite
+                - cell "-" [ref=e210]
+                - cell "100%" [ref=e211]
+              - row "81.12.70.99 8080 http 6453ms elite - 100%" [ref=e212]:
+                - cell "81.12.70.99" [ref=e213]
+                - cell "8080" [ref=e214]
+                - cell "http" [ref=e215]:
+                  - generic [ref=e217]: http
+                - cell "6453ms" [ref=e218]
+                - cell "elite" [ref=e219]:
+                  - generic [ref=e221]: elite
+                - cell "-" [ref=e222]
+                - cell "100%" [ref=e223]
+              - row "45.153.4.154 3128 http 2544ms elite - 100%" [ref=e224]:
+                - cell "45.153.4.154" [ref=e225]
+                - cell "3128" [ref=e226]
+                - cell "http" [ref=e227]:
+                  - generic [ref=e229]: http
+                - cell "2544ms" [ref=e230]
+                - cell "elite" [ref=e231]:
+                  - generic [ref=e233]: elite
+                - cell "-" [ref=e234]
+                - cell "100%" [ref=e235]
+              - row "43.167.187.107 3128 http 3052ms elite - 100%" [ref=e236]:
+                - cell "43.167.187.107" [ref=e237]
+                - cell "3128" [ref=e238]
+                - cell "http" [ref=e239]:
+                  - generic [ref=e241]: http
+                - cell "3052ms" [ref=e242]
+                - cell "elite" [ref=e243]:
+                  - generic [ref=e245]: elite
+                - cell "-" [ref=e246]
+                - cell "100%" [ref=e247]
+              - row "220.197.44.36 3128 http 7488ms elite - 100%" [ref=e248]:
+                - cell "220.197.44.36" [ref=e249]
+                - cell "3128" [ref=e250]
+                - cell "http" [ref=e251]:
+                  - generic [ref=e253]: http
+                - cell "7488ms" [ref=e254]
+                - cell "elite" [ref=e255]:
+                  - generic [ref=e257]: elite
+                - cell "-" [ref=e258]
+                - cell "100%" [ref=e259]
+              - row "186.190.224.86 999 http 6498ms elite - 100%" [ref=e260]:
+                - cell "186.190.224.86" [ref=e261]
+                - cell "999" [ref=e262]
+                - cell "http" [ref=e263]:
+                  - generic [ref=e265]: http
+                - cell "6498ms" [ref=e266]
+                - cell "elite" [ref=e267]:
+                  - generic [ref=e269]: elite
+                - cell "-" [ref=e270]
+                - cell "100%" [ref=e271]
+              - row "144.91.121.61 3129 http 6309ms elite - 100%" [ref=e272]:
+                - cell "144.91.121.61" [ref=e273]
+                - cell "3129" [ref=e274]
+                - cell "http" [ref=e275]:
+                  - generic [ref=e277]: http
+                - cell "6309ms" [ref=e278]
+                - cell "elite" [ref=e279]:
+                  - generic [ref=e281]: elite
+                - cell "-" [ref=e282]
+                - cell "100%" [ref=e283]
+          - generic [ref=e153]:
+            - img [ref=e156]
+            - generic [ref=e158] [cursor=pointer]: "1"
+            - generic [ref=e284] [cursor=pointer]: "2"
+            - img [ref=e161] [cursor=pointer]
