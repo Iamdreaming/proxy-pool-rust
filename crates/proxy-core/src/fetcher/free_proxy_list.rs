@@ -8,17 +8,22 @@ const URL: &str = "https://free-proxy-list.net/";
 /// Scrapes the HTML table at free-proxy-list.net.
 pub struct FreeProxyListFetcher {
     timeout_secs: u64,
+    mirror_prefix: Option<String>,
 }
 
 impl FreeProxyListFetcher {
-    pub fn new() -> Self {
-        Self { timeout_secs: 15 }
+    pub fn new(mirror_prefix: Option<&str>) -> Self {
+        Self {
+            timeout_secs: 15,
+            mirror_prefix: mirror_prefix.map(|s| s.to_string()),
+        }
     }
-}
 
-impl Default for FreeProxyListFetcher {
-    fn default() -> Self {
-        Self::new()
+    fn url(&self) -> String {
+        match &self.mirror_prefix {
+            Some(prefix) => format!("{prefix}{URL}"),
+            None => URL.to_string(),
+        }
     }
 }
 
@@ -40,7 +45,8 @@ impl Fetcher for FreeProxyListFetcher {
             }
         };
 
-        let resp = match client.get(URL).send().await {
+        let url = self.url();
+        let resp = match client.get(&url).send().await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("{}: fetch failed: {e}", self.name());

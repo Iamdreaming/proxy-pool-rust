@@ -10,20 +10,26 @@ const SOCKS5_URL: &str = "https://raw.githubusercontent.com/TheSpeedX/PROXY-List
 pub struct TheSpeedXFetcher {
     protocol: String,
     timeout_secs: u64,
+    mirror_prefix: Option<String>,
 }
 
 impl TheSpeedXFetcher {
-    pub fn new(protocol: &str) -> Self {
+    pub fn new(protocol: &str, mirror_prefix: Option<&str>) -> Self {
         Self {
             protocol: protocol.to_string(),
             timeout_secs: 15,
+            mirror_prefix: mirror_prefix.map(|s| s.to_string()),
         }
     }
 
-    fn url(&self) -> &'static str {
-        match self.protocol.as_str() {
+    fn url(&self) -> String {
+        let raw = match self.protocol.as_str() {
             "socks5" => SOCKS5_URL,
             _ => HTTP_URL,
+        };
+        match &self.mirror_prefix {
+            Some(prefix) => format!("{prefix}{raw}"),
+            None => raw.to_string(),
         }
     }
 }
@@ -46,7 +52,8 @@ impl Fetcher for TheSpeedXFetcher {
             }
         };
 
-        let resp = match client.get(self.url()).send().await {
+        let url = self.url();
+        let resp = match client.get(&url).send().await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("{}: fetch failed: {e}", self.name());

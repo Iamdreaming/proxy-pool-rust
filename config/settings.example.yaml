@@ -29,6 +29,11 @@ pool:
     success: 0.3
     anonymity: 0.2
   fetchers:
+    # Optional: prefix for mirroring GitHub raw URLs (e.g. gh-proxy).
+    # When set, raw.githubusercontent.com URLs are prefixed with this value.
+    # github_mirror_prefix: "https://v4.gh-proxy.org/"
+    # Optional: prefix for mirroring non-GitHub URLs that may be blocked.
+    # mirror_prefix: "https://v4.gh-proxy.org/"
     proxyscrape: { enabled: true }
     thespeedx: { enabled: true }
     free_proxy_list: { enabled: true }

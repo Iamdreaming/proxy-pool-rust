@@ -8,17 +8,22 @@ const URL: &str = "https://proxylist.geonode.com/api/proxy-list";
 /// Fetches proxies from the GeoNode API.
 pub struct GeoNodeFetcher {
     timeout_secs: u64,
+    mirror_prefix: Option<String>,
 }
 
 impl GeoNodeFetcher {
-    pub fn new() -> Self {
-        Self { timeout_secs: 15 }
+    pub fn new(mirror_prefix: Option<&str>) -> Self {
+        Self {
+            timeout_secs: 15,
+            mirror_prefix: mirror_prefix.map(|s| s.to_string()),
+        }
     }
-}
 
-impl Default for GeoNodeFetcher {
-    fn default() -> Self {
-        Self::new()
+    fn base_url(&self) -> String {
+        match &self.mirror_prefix {
+            Some(prefix) => format!("{prefix}{URL}"),
+            None => URL.to_string(),
+        }
     }
 }
 
@@ -40,8 +45,9 @@ impl Fetcher for GeoNodeFetcher {
             }
         };
 
+        let base_url = self.base_url();
         let resp = match client
-            .get(URL)
+            .get(&base_url)
             .query(&[
                 ("limit", "500"),
                 ("page", "1"),

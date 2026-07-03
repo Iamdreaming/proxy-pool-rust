@@ -15,22 +15,39 @@ use std::sync::Arc;
 /// Build the list of enabled fetchers from config.
 pub fn build_fetchers(config: &FetchersConfig) -> Vec<Arc<dyn Fetcher>> {
     let mut fetchers: Vec<Arc<dyn Fetcher>> = Vec::new();
+    let github_mirror = config.github_mirror_prefix.as_deref();
+    let mirror = config.mirror_prefix.as_deref();
     if config.proxyscrape.enabled {
-        fetchers.push(Arc::new(proxyscrape::ProxyScrapeFetcher::new("http")));
-        fetchers.push(Arc::new(proxyscrape::ProxyScrapeFetcher::new("socks5")));
+        fetchers.push(Arc::new(proxyscrape::ProxyScrapeFetcher::new(
+            "http",
+            mirror,
+        )));
+        fetchers.push(Arc::new(proxyscrape::ProxyScrapeFetcher::new(
+            "socks5",
+            mirror,
+        )));
     }
     if config.thespeedx.enabled {
-        fetchers.push(Arc::new(thespeedx::TheSpeedXFetcher::new("http")));
-        fetchers.push(Arc::new(thespeedx::TheSpeedXFetcher::new("socks5")));
+        fetchers.push(Arc::new(thespeedx::TheSpeedXFetcher::new(
+            "http",
+            github_mirror,
+        )));
+        fetchers.push(Arc::new(thespeedx::TheSpeedXFetcher::new(
+            "socks5",
+            github_mirror,
+        )));
     }
     if config.free_proxy_list.enabled {
-        fetchers.push(Arc::new(free_proxy_list::FreeProxyListFetcher::new()));
+        fetchers.push(Arc::new(free_proxy_list::FreeProxyListFetcher::new(mirror)));
     }
     if config.clarketm.enabled {
-        fetchers.push(Arc::new(clarketm::ClarketmFetcher::new("http")));
+        fetchers.push(Arc::new(clarketm::ClarketmFetcher::new(
+            "http",
+            github_mirror,
+        )));
     }
     if config.geonode.enabled {
-        fetchers.push(Arc::new(geonode::GeoNodeFetcher::new()));
+        fetchers.push(Arc::new(geonode::GeoNodeFetcher::new(mirror)));
     }
     fetchers
 }

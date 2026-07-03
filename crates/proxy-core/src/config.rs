@@ -81,6 +81,16 @@ pub struct FetcherToggle {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchersConfig {
+    /// Optional URL prefix for mirroring GitHub raw URLs.
+    /// When set, `raw.githubusercontent.com` URLs are prefixed with this value.
+    /// Example: `https://v4.gh-proxy.org/`
+    #[serde(default)]
+    pub github_mirror_prefix: Option<String>,
+    /// Optional URL prefix for mirroring non-GitHub URLs that may be blocked.
+    /// When set, all non-GitHub fetcher URLs are prefixed with this value.
+    /// Example: `https://v4.gh-proxy.org/`
+    #[serde(default)]
+    pub mirror_prefix: Option<String>,
     #[serde(default)]
     pub proxyscrape: FetcherToggle,
     #[serde(default)]
