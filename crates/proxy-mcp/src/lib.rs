@@ -152,7 +152,10 @@ impl ProxyPoolMcp {
         let proto = proxy_core::models::Protocol::from_str_loose(protocol)
             .unwrap_or(proxy_core::models::Protocol::Http);
         let proxy = proxy_core::models::Proxy::new(host, port, proto);
-        let validator = proxy_core::validator::Validator::new("https://httpbin.org/ip", 10);
+        let validator = proxy_core::validator::Validator::new(
+            "https://www.cloudflare.com/cdn-cgi/trace",
+            10,
+        );
 
         match validator.validate_one(&proxy).await {
             Some(alive) => to_json(serde_json::json!({
@@ -270,86 +273,64 @@ impl ProxyPoolMcp {
         }))
     }
 
-    #[tool(description = "Update the proxy-pool service by pulling the latest Docker image and restarting the container. Requires Docker socket access.")]
+    #[tool(description = "Update the proxy-pool service by pulling the latest Docker image and restarting the container. Uses Docker Engine API via Unix socket (no docker CLI required).")]
     async fn update_service(&self) -> String {
-        // Step 1: Get current image digest
-        let current_digest = match tokio::process::Command::new("docker")
-            .args(["inspect", "--format", "{{.Image}}", "proxy-pool"])
-            .output()
-            .await
-        {
-            Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
-            Err(e) => format!("error inspecting container: {e}"),
-        };
+        let socket_path = "/var/run/docker.sock";
 
-        // Step 2: Pull latest image
-        let pull_result = tokio::process::Command::new("docker")
-            .args(["pull", "ghcr.io/iamdreaming/proxy-pool-rust:latest"])
-            .output()
-            .await;
-
-        let pull_output = match pull_result {
-            Ok(out) => {
-                if out.status.success() {
-                    String::from_utf8_lossy(&out.stdout).to_string()
-                } else {
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    return to_json(serde_json::json!({
-                        "status": "error",
-                        "message": format!("docker pull failed: {stderr}"),
-                        "current_digest": current_digest,
-                    }));
-                }
-            }
+        // Step 1: Get current container image digest
+        let current_digest = match docker_api_get(socket_path, "/containers/proxy-pool/json").await {
+            Ok(body) => body
+                .get("Image")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
             Err(e) => {
                 return to_json(serde_json::json!({
                     "status": "error",
-                    "message": format!("docker pull command failed: {e}"),
+                    "message": format!("failed to inspect container: {e}"),
+                }));
+            }
+        };
+
+        // Step 2: Pull latest image (streaming, wait for completion)
+        let image = "ghcr.io/iamdreaming/proxy-pool-rust:latest";
+        match docker_api_post(socket_path, &format!("/images/create?fromImage={image}&tag=latest")).await {
+            Ok(_) => {}
+            Err(e) => {
+                return to_json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("docker pull failed: {e}"),
                     "current_digest": current_digest,
                 }));
             }
         };
 
-        // Step 3: Restart with new image
-        let restart_result = tokio::process::Command::new("docker")
-            .args(["compose", "-f", "/opt/proxy-pool/deploy/docker-compose.yml", "up", "-d", "proxy-pool"])
-            .output()
-            .await;
-
-        match restart_result {
-            Ok(out) if out.status.success() => {
-                let new_digest = match tokio::process::Command::new("docker")
-                    .args(["inspect", "--format", "{{.Image}}", "proxy-pool"])
-                    .output()
-                    .await
-                {
-                    Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        // Step 3: Restart container
+        match docker_api_post(socket_path, "/containers/proxy-pool/restart").await {
+            Ok(_) => {
+                // Step 4: Get new digest after restart
+                let new_digest = match docker_api_get(socket_path, "/containers/proxy-pool/json").await {
+                    Ok(body) => body
+                        .get("Image")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
                     Err(_) => "unknown".to_string(),
                 };
 
+                let updated = current_digest != new_digest;
                 to_json(serde_json::json!({
-                    "status": "ok",
+                    "status": if updated { "updated" } else { "restarted" },
                     "previous_digest": current_digest,
                     "new_digest": new_digest,
-                    "pull_output": pull_output.lines().last().unwrap_or("").trim(),
+                    "image": image,
                 }))
             }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                to_json(serde_json::json!({
-                    "status": "error",
-                    "message": format!("docker compose up failed: {stderr}"),
-                    "current_digest": current_digest,
-                    "pull_output": pull_output.lines().last().unwrap_or("").trim(),
-                }))
-            }
-            Err(e) => {
-                to_json(serde_json::json!({
-                    "status": "error",
-                    "message": format!("docker compose command failed: {e}"),
-                    "current_digest": current_digest,
-                }))
-            }
+            Err(e) => to_json(serde_json::json!({
+                "status": "error",
+                "message": format!("container restart failed: {e}"),
+                "current_digest": current_digest,
+            })),
         }
     }
 }
@@ -366,6 +347,145 @@ impl ServerHandler for ProxyPoolMcp {
             ..Default::default()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Docker Engine API helpers (Unix socket, no docker CLI required)
+// Only available on Unix (Linux/macOS) where Docker socket exists.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+/// Send a GET request to the Docker Engine API via Unix socket.
+/// Returns the parsed JSON response body.
+async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+
+    let mut stream = UnixStream::connect(socket_path)
+        .await
+        .map_err(|e| format!("connect to {socket_path}: {e}"))?;
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|e| format!("write: {e}"))?;
+
+    let mut buf = Vec::with_capacity(4096);
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .map_err(|e| format!("read: {e}"))?;
+
+    parse_docker_response(&buf)
+}
+
+#[cfg(unix)]
+/// Send a POST request to the Docker Engine API via Unix socket.
+/// Returns the parsed JSON response body (for non-streaming endpoints).
+/// For streaming endpoints (like /images/create), waits for completion and
+/// returns the last JSON status object.
+async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+
+    let mut stream = UnixStream::connect(socket_path)
+        .await
+        .map_err(|e| format!("connect to {socket_path}: {e}"))?;
+
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nContent-Length: 0\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|e| format!("write: {e}"))?;
+
+    let mut buf = Vec::with_capacity(8192);
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .map_err(|e| format!("read: {e}"))?;
+
+    parse_docker_response(&buf)
+}
+
+#[cfg(not(unix))]
+async fn docker_api_get(_socket_path: &str, _path: &str) -> Result<serde_json::Value, String> {
+    Err("Docker Engine API is only available on Unix (requires Unix socket)".into())
+}
+
+#[cfg(not(unix))]
+async fn docker_api_post(_socket_path: &str, _path: &str) -> Result<serde_json::Value, String> {
+    Err("Docker Engine API is only available on Unix (requires Unix socket)".into())
+}
+
+/// Parse an HTTP response from the Docker Engine API.
+/// Extracts the body (handling chunked transfer-encoding) and parses as JSON.
+#[cfg(unix)]
+fn parse_docker_response(buf: &[u8]) -> Result<serde_json::Value, String> {
+    let text = String::from_utf8_lossy(buf);
+
+    // Split headers from body
+    let (header_part, body_part) = text
+        .find("\r\n\r\n")
+        .map(|pos| (&text[..pos], &text[pos + 4..]))
+        .ok_or("no HTTP header/body separator")?;
+
+    // Check status line
+    let status_line = header_part.lines().next().unwrap_or("");
+    if !status_line.contains("200") && !status_line.contains("201") && !status_line.contains("204") {
+        return Err(format!("HTTP error: {status_line}"));
+    }
+
+    // Handle chunked transfer-encoding
+    let body = if header_part.contains("chunked") {
+        decode_chunked(body_part)
+    } else {
+        body_part.to_string()
+    };
+
+    if body.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+
+    // For streaming responses (like /images/create), multiple JSON objects
+    // are newline-delimited. Return the last one.
+    let lines: Vec<&str> = body.trim().lines().filter(|l| !l.trim().is_empty()).collect();
+    let last_line = lines.last().unwrap_or(&"");
+
+    serde_json::from_str(last_line).map_err(|e| format!("JSON parse error: {e}, body: {}", &body[..body.len().min(200)]))
+}
+
+/// Decode a chunked transfer-encoding body.
+#[cfg(unix)]
+fn decode_chunked(body: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = body;
+
+    while let Some(line_end) = remaining.find("\r\n") {
+        let size_str = &remaining[..line_end];
+        let chunk_size = match usize::from_str_radix(size_str.trim(), 16) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+
+        let data_start = line_end + 2;
+        let data_end = data_start + chunk_size.min(remaining.len() - data_start);
+        result.push_str(&remaining[data_start..data_end]);
+
+        // Skip chunk data + trailing \r\n
+        if data_end + 2 <= remaining.len() {
+            remaining = &remaining[data_end + 2..];
+        } else {
+            break;
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
