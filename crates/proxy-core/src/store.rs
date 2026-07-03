@@ -87,7 +87,11 @@ impl ProxyStore {
     }
 
     /// Add a proxy to the store (upsert by dedup key).
+    ///
+    /// Removes any existing entry for the same logical proxy (host:port:protocol)
+    /// before inserting, so that stale stats don't create duplicate ZSET members.
     pub async fn add(&self, proxy: &Proxy) -> anyhow::Result<()> {
+        self.remove_existing(&proxy.protocol, proxy).await?;
         let s = score(proxy, &self.weights);
         let member = serde_json::to_string(proxy)?;
         let key = redis_key(&proxy.protocol);

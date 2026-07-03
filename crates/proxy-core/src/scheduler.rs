@@ -1,9 +1,10 @@
 //! Scheduler: runs the fetch → dedup → validate → store pipeline periodically.
 
+use crate::circuit;
 use crate::config::PoolSettings;
 use crate::dedup;
 use crate::fetcher::Fetcher;
-use crate::models::Protocol;
+use crate::models::{Protocol, Proxy};
 use crate::store::ProxyStore;
 use crate::validator::Validator;
 use std::sync::Arc;
@@ -73,7 +74,7 @@ impl Scheduler {
         }
     }
 
-    /// One full pipeline pass: fetch all → dedup → validate → store.
+    /// One full pipeline pass: fetch all → dedup → filter circuit-broken → validate → store.
     ///
     /// Returns a `SchedulerResult` with counts of fetched, validated, stored proxies and errors.
     pub async fn run_once(&self) -> SchedulerResult {
@@ -88,22 +89,29 @@ impl Scheduler {
         }
         result.fetched = all_proxies.len();
 
-        // 2. Dedup
+        // 2. Dedup within this batch
         let unique = dedup::dedup(all_proxies);
         tracing::info!("fetched proxies ({} unique after dedup)", unique.len());
         if unique.is_empty() {
             return result;
         }
 
-        // 3. Validate concurrently
+        // 3. Filter out proxies whose circuit breaker is still open in the store
+        let candidates = self.filter_circuit_broken(unique).await;
+        let skipped = result.fetched - candidates.len();
+        if skipped > 0 {
+            tracing::info!("skipped {} circuit-broken proxies", skipped);
+        }
+
+        // 4. Validate concurrently
         let working = self
             .validator
-            .validate_many(&unique, self.settings.validate_concurrency)
+            .validate_many(&candidates, self.settings.validate_concurrency)
             .await;
         result.validated = working.len();
         tracing::info!("validated {} working proxies", working.len());
 
-        // 4. Store
+        // 5. Store
         for p in &working {
             if let Err(e) = self.store.add(p).await {
                 tracing::warn!("failed to store proxy {}: {e}", p.key());
@@ -113,6 +121,39 @@ impl Scheduler {
         result.stored = working.len() - result.errors;
 
         result
+    }
+
+    /// Remove newly-fetched proxies whose circuit breaker is still open in the store.
+    ///
+    /// Queries each protocol's ZSET for matching entries and checks their circuit state.
+    /// Proxies whose circuit has transitioned to half-open (recovery window) are kept
+    /// so they get a chance to prove themselves during validation.
+    async fn filter_circuit_broken(&self, proxies: Vec<Proxy>) -> Vec<Proxy> {
+        // Collect protocols present in this batch
+        let protocols: std::collections::HashSet<Protocol> =
+            proxies.iter().map(|p| p.protocol).collect();
+
+        // Build a set of dedup_keys for proxies that are circuit-open in the store
+        let mut blocked = std::collections::HashSet::new();
+        for protocol in protocols {
+            match self.store.all(protocol).await {
+                Ok(existing) => {
+                    for stored in existing {
+                        if circuit::is_circuit_open(&stored) {
+                            blocked.insert(stored.dedup_key());
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to query store for {protocol} during circuit filter: {e}");
+                }
+            }
+        }
+
+        proxies
+            .into_iter()
+            .filter(|p| !blocked.contains(&p.dedup_key()))
+            .collect()
     }
 
     /// Re-validate proxies already in the store; drop dead ones.
