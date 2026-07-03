@@ -29,15 +29,12 @@ pub struct AppState {
 pub fn create_app(state: AppState, web_dir: Option<String>) -> axum::Router {
     let api_routes = routes::create_router();
 
-    let mut router = axum::Router::new()
-        .merge(api_routes)
-        .with_state(state);
+    let mut router = axum::Router::new().merge(api_routes).with_state(state);
 
     if let Some(dir) = web_dir {
-        let serve_dir = tower_http::services::ServeDir::new(&dir)
-            .fallback(tower_http::services::ServeFile::new(
-                std::path::Path::new(&dir).join("index.html"),
-            ));
+        let serve_dir = tower_http::services::ServeDir::new(&dir).fallback(
+            tower_http::services::ServeFile::new(std::path::Path::new(&dir).join("index.html")),
+        );
         router = router.fallback_service(serve_dir);
     }
 

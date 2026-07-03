@@ -145,7 +145,9 @@ impl Scheduler {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("failed to query store for {protocol} during circuit filter: {e}");
+                    tracing::warn!(
+                        "failed to query store for {protocol} during circuit filter: {e}"
+                    );
                 }
             }
         }

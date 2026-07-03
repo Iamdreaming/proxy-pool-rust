@@ -288,7 +288,8 @@ impl OutboundSync {
 
         // Run an initial sync if already connected.
         if *connected_rx.borrow() {
-            self.sync_and_report("initial cycle complete", &active_count).await;
+            self.sync_and_report("initial cycle complete", &active_count)
+                .await;
         }
 
         loop {
