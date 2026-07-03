@@ -19,3 +19,4 @@ serde_json = { workspace = true }
 redis = { workspace = true }
 rmcp = { workspace = true }
 axum = { workspace = true }
+tokio-util = { workspace = true }

@@ -337,42 +337,52 @@ async fn main() -> anyhow::Result<()> {
             let port = settings.mcp.http_port;
             tracing::info!("MCP server starting on HTTP transport (port {port})");
             tokio::spawn(async move {
-                use rmcp::ServiceExt;
-                let service = mcp_server
-                    .serve(rmcp::transport::io::stdio())
-                    .await
-                    .map_err(|e| anyhow::anyhow!("MCP stdio error: {e}"))?;
-                service
-                    .waiting()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("MCP wait error: {e}"))
+                use rmcp::transport::streamable_http_server::{
+                    StreamableHttpServerConfig, StreamableHttpService,
+                    session::local::LocalSessionManager,
+                };
+                let service = StreamableHttpService::new(
+                    move || Ok(mcp_server.clone()),
+                    Arc::new(LocalSessionManager::default()),
+                    StreamableHttpServerConfig::default(),
+                );
+                let app = axum::Router::new().nest_service("/mcp", service);
+                let addr = format!("0.0.0.0:{port}");
+                let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+                tracing::info!("MCP HTTP transport listening on {addr}");
+                axum::serve(listener, app).await.unwrap();
             })
         }
         _ => {
-            // stdio or both — use stdio transport
+            // stdio or both — use stdio transport (for local/CLI use)
             tracing::info!("MCP server starting on stdio transport");
             tokio::spawn(async move {
                 use rmcp::ServiceExt;
-                let service = mcp_server
+                match mcp_server
                     .serve(rmcp::transport::io::stdio())
                     .await
-                    .map_err(|e| anyhow::anyhow!("MCP stdio error: {e}"))?;
-                service
-                    .waiting()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("MCP wait error: {e}"))
+                {
+                    Ok(service) => {
+                        if let Err(e) = service.waiting().await {
+                            tracing::info!("MCP wait error: {e}");
+                        }
+                    }
+                    Err(e) => tracing::info!("MCP stdio error: {e}"),
+                }
             })
         }
     };
 
     // Wait for any service to finish (or error)
+    // Note: MCP stdio exits when stdin closes (normal in Docker without stdin client).
+    // We only treat API/gateway/scheduler failure as fatal; MCP exit is expected.
     tokio::select! {
-        r = scheduler_task => tracing::info!("scheduler stopped: {:?}", r),
+        r = scheduler_task => tracing::error!("scheduler stopped (fatal): {:?}", r),
         r = health_handle => tracing::info!("health checker stopped: {:?}", r),
         r = sub_handle => tracing::info!("subscription refresh stopped: {:?}", r),
-        r = api_handle => tracing::info!("API server stopped: {:?}", r),
-        r = gateway_handle => tracing::info!("gateway stopped: {:?}", r),
-        r = mcp_handle => tracing::info!("MCP server stopped: {:?}", r),
+        r = api_handle => tracing::error!("API server stopped (fatal): {:?}", r),
+        r = gateway_handle => tracing::error!("gateway stopped (fatal): {:?}", r),
+        _ = mcp_handle => tracing::info!("MCP server stopped (expected in stdio mode)"),
         _r = async { if let Some(h) = xray_supervisor_handle { h.await } else { std::future::pending().await } } => tracing::info!("xray supervisor stopped"),
         _r = async { if let Some(h) = xray_sync_handle { h.await } else { std::future::pending().await } } => tracing::info!("xray sync stopped"),
     }
