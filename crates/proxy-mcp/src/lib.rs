@@ -340,6 +340,9 @@ impl ProxyPoolMcp {
 impl ServerHandler for ProxyPoolMcp {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         rmcp::model::ServerInfo {
+            capabilities: rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
             instructions: Some(
                 "Proxy pool management MCP server. Use tools to get, check, and manage proxies."
                     .into(),
