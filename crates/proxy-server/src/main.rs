@@ -163,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
         xray_active_count: xray_active_count.clone(),
         scheduler_handle: scheduler_handle.clone(),
         git_hash: GIT_HASH,
+        balancer: Some(balancer.clone()),
     };
     let api_app = proxy_api::create_app(api_state, Some("/app/web".to_string()));
 

@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get, post},
 };
-use proxy_core::models::{Protocol, Proxy};
+use proxy_core::models::{Protocol, Proxy, WarpInstance};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 
@@ -70,6 +70,11 @@ pub struct XrayStatusResponse {
 }
 
 #[derive(Serialize)]
+pub struct WarpStatusResponse {
+    pub instances: Vec<WarpInstance>,
+}
+
+#[derive(Serialize)]
 pub struct RefreshResponse {
     pub status: String,
     pub fetched: usize,
@@ -92,6 +97,7 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/proxy/{key}", delete(delete_proxy))
         .route("/api/metrics", get(metrics))
         .route("/api/xray/status", get(xray_status))
+        .route("/api/warp", get(warp_status))
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +252,14 @@ async fn xray_status(State(state): State<AppState>) -> impl IntoResponse {
     Json(XrayStatusResponse {
         active_nodes: active,
     })
+}
+
+async fn warp_status(State(state): State<AppState>) -> impl IntoResponse {
+    let instances = match &state.balancer {
+        Some(balancer) => balancer.all_list().await,
+        None => vec![],
+    };
+    Json(WarpStatusResponse { instances })
 }
 
 #[cfg(test)]

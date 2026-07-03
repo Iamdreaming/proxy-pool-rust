@@ -2,3 +2,5 @@
 
 pub mod balancer;
 pub mod health;
+
+pub use balancer::WarpBalancer;

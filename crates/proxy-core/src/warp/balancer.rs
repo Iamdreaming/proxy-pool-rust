@@ -34,6 +34,12 @@ impl WarpBalancer {
         Some(healthy[idx].clone())
     }
 
+    /// Get the list of all instances (healthy and unhealthy).
+    pub async fn all_list(&self) -> Vec<WarpInstance> {
+        let instances = self.instances.read().await;
+        instances.iter().cloned().collect()
+    }
+
     /// Mark an instance as failed.
     pub async fn mark_failed(&self, id: u32) {
         let mut instances = self.instances.write().await;

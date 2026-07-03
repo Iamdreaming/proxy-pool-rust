@@ -4,6 +4,7 @@ mod routes;
 
 use proxy_core::scheduler::SchedulerHandle;
 use proxy_core::store::ProxyStore;
+use proxy_core::warp::WarpBalancer;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -17,6 +18,8 @@ pub struct AppState {
     pub scheduler_handle: SchedulerHandle,
     /// Git hash of the running binary (injected at build time).
     pub git_hash: &'static str,
+    /// Optional WARP balancer for reporting WARP instance status.
+    pub balancer: Option<Arc<WarpBalancer>>,
 }
 
 /// Build the axum router with all API routes and optional web UI.
