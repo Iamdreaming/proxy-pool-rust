@@ -19,9 +19,24 @@ pub struct AppState {
     pub git_hash: &'static str,
 }
 
-/// Build the axum router with all API routes.
-pub fn create_app(state: AppState) -> axum::Router {
-    axum::Router::new()
-        .merge(routes::create_router())
-        .with_state(state)
+/// Build the axum router with all API routes and optional web UI.
+///
+/// If `web_dir` is `Some(path)`, serves the SPA static files from that directory.
+/// API routes are mounted at `/api/*`, everything else falls back to `index.html`.
+pub fn create_app(state: AppState, web_dir: Option<String>) -> axum::Router {
+    let api_routes = routes::create_router();
+
+    let mut router = axum::Router::new()
+        .merge(api_routes)
+        .with_state(state);
+
+    if let Some(dir) = web_dir {
+        let serve_dir = tower_http::services::ServeDir::new(&dir)
+            .fallback(tower_http::services::ServeFile::new(
+                std::path::Path::new(&dir).join("index.html"),
+            ));
+        router = router.fallback_service(serve_dir);
+    }
+
+    router
 }

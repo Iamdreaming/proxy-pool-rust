@@ -164,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
         scheduler_handle: scheduler_handle.clone(),
         git_hash: GIT_HASH,
     };
-    let api_app = proxy_api::create_app(api_state);
+    let api_app = proxy_api::create_app(api_state, Some("/app/web".to_string()));
 
     // Build Gateway (now uses UpstreamSelector)
     let gateway = Arc::new(ProxyGateway::new(

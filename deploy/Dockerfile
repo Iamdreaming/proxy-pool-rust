@@ -48,7 +48,18 @@ RUN mkdir -p crates/proxy-core/src && echo "" > crates/proxy-core/src/lib.rs \
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ──────────────────────────────────────────────
-# Stage 3: Build dependencies + binary
+# Stage 3: Build web UI
+# ──────────────────────────────────────────────
+FROM node:22-slim AS web-builder
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json* ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# ──────────────────────────────────────────────
+# Stage 4: Build dependencies + binary
 # ──────────────────────────────────────────────
 FROM chef AS builder
 
@@ -67,7 +78,7 @@ RUN cargo build --release -p proxy-server --target x86_64-unknown-linux-musl \
  && cp /app/target/x86_64-unknown-linux-musl/release/proxy-server /app/target/release/proxy-server
 
 # ──────────────────────────────────────────────
-# Stage 4: Runtime image
+# Stage 5: Runtime image
 # ──────────────────────────────────────────────
 FROM debian:trixie-slim
 
@@ -84,6 +95,9 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /app/target/release/proxy-server /app/proxy-server
+
+# Copy web UI from web-builder
+COPY --from=web-builder /web/dist /app/web
 
 # Copy example config (user should mount their own settings.yaml via volume)
 COPY config/*.example.yaml /app/config/
