@@ -19,16 +19,13 @@ pub fn build_fetchers(config: &FetchersConfig) -> Vec<Arc<dyn Fetcher>> {
     let mirror = config.mirror_prefix.as_deref();
     if config.proxyscrape.enabled {
         fetchers.push(Arc::new(proxyscrape::ProxyScrapeFetcher::new(
-            "http",
-            mirror,
+            "http", mirror,
         )));
         fetchers.push(Arc::new(proxyscrape::ProxyScrapeFetcher::new(
-            "https",
-            mirror,
+            "https", mirror,
         )));
         fetchers.push(Arc::new(proxyscrape::ProxyScrapeFetcher::new(
-            "socks5",
-            mirror,
+            "socks5", mirror,
         )));
     }
     if config.thespeedx.enabled {

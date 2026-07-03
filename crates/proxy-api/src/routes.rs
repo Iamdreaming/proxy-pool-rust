@@ -214,7 +214,10 @@ async fn delete_proxy(State(state): State<AppState>, Path(key): Path<String>) ->
     // Parse key format: "protocol:host:port"
     let parts: Vec<&str> = key.splitn(3, ':').collect();
     if parts.len() != 3 {
-        return json_status(StatusCode::BAD_REQUEST, "invalid key format, expected protocol:host:port");
+        return json_status(
+            StatusCode::BAD_REQUEST,
+            "invalid key format, expected protocol:host:port",
+        );
     }
     let protocol = match Protocol::from_str_loose(parts[0]) {
         Some(p) => p,

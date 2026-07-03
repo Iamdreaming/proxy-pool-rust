@@ -152,10 +152,8 @@ impl ProxyPoolMcp {
         let proto = proxy_core::models::Protocol::from_str_loose(protocol)
             .unwrap_or(proxy_core::models::Protocol::Http);
         let proxy = proxy_core::models::Proxy::new(host, port, proto);
-        let validator = proxy_core::validator::Validator::new(
-            "https://www.cloudflare.com/cdn-cgi/trace",
-            10,
-        );
+        let validator =
+            proxy_core::validator::Validator::new("https://www.cloudflare.com/cdn-cgi/trace", 10);
 
         match validator.validate_one(&proxy).await {
             Some(alive) => to_json(serde_json::json!({
@@ -273,17 +271,24 @@ impl ProxyPoolMcp {
         }))
     }
 
-    #[tool(description = "Update the proxy-pool service by pulling the latest Docker image and restarting the container. Uses Docker Engine API via Unix socket (no docker CLI required).")]
+    #[tool(
+        description = "Update the proxy-pool service by pulling the latest Docker image, creating a new container (blue-green), and swapping. Uses Docker Engine API via Unix socket (no docker CLI required)."
+    )]
     async fn update_service(&self) -> String {
         let socket_path = "/var/run/docker.sock";
+        let image = "ghcr.io/iamdreaming/proxy-pool-rust:latest";
+        let container_name = "proxy-pool";
+        let temp_name = "proxy-pool-new";
 
-        // Step 1: Get current container image digest
-        let current_digest = match docker_api_get(socket_path, "/containers/proxy-pool/json").await {
-            Ok(body) => body
-                .get("Image")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
+        // Step 1: Inspect current container to get previous_digest and full config
+        tracing::info!("update_service: inspecting current container {container_name}");
+        let old_inspect = match docker_api_get(
+            socket_path,
+            &format!("/containers/{container_name}/json"),
+        )
+        .await
+        {
+            Ok(body) => body,
             Err(e) => {
                 return to_json(serde_json::json!({
                     "status": "error",
@@ -292,46 +297,257 @@ impl ProxyPoolMcp {
             }
         };
 
-        // Step 2: Pull latest image (streaming, wait for completion)
-        let image = "ghcr.io/iamdreaming/proxy-pool-rust:latest";
-        match docker_api_post(socket_path, &format!("/images/create?fromImage={image}&tag=latest")).await {
-            Ok(_) => {}
+        let previous_digest = old_inspect
+            .get("Image")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Step 2: Pull latest image
+        tracing::info!("update_service: pulling image {image}");
+        if let Err(e) = docker_api_post(
+            socket_path,
+            &format!("/images/create?fromImage={image}&tag=latest"),
+        )
+        .await
+        {
+            return to_json(serde_json::json!({
+                "status": "error",
+                "message": format!("docker pull failed: {e}"),
+                "previous_digest": previous_digest,
+            }));
+        }
+
+        // Step 3: Build create request body from old container config
+        tracing::info!("update_service: building new container config");
+
+        let config = old_inspect.get("Config");
+        let host_config = old_inspect.get("HostConfig");
+        let networks = old_inspect
+            .get("NetworkSettings")
+            .and_then(|ns| ns.get("Networks"));
+
+        let mut create_body = serde_json::json!({
+            "Image": image,
+        });
+
+        // Copy fields from old Config (only if non-null / non-empty)
+        if let Some(cfg) = config {
+            if let Some(env) = cfg.get("Env") {
+                create_body["Env"] = env.clone();
+            }
+            if let Some(cmd) = cfg.get("Cmd")
+                && !cmd.is_null()
+            {
+                create_body["Cmd"] = cmd.clone();
+            }
+            if let Some(entrypoint) = cfg.get("Entrypoint")
+                && !entrypoint.is_null()
+            {
+                create_body["Entrypoint"] = entrypoint.clone();
+            }
+            if let Some(labels) = cfg.get("Labels")
+                && !labels.is_null()
+                && labels.is_object()
+            {
+                create_body["Labels"] = labels.clone();
+            }
+            if let Some(wd) = cfg.get("WorkingDir")
+                && let Some(s) = wd.as_str()
+                && !s.is_empty()
+            {
+                create_body["WorkingDir"] = wd.clone();
+            }
+        }
+
+        // Build HostConfig sub-object from old HostConfig
+        if let Some(hc) = host_config {
+            let host_config_fields = [
+                "Binds",
+                "PortBindings",
+                "RestartPolicy",
+                "NetworkMode",
+                "Ulimits",
+                "Memory",
+                "NanoCpus",
+                "PidsLimit",
+            ];
+            let mut hc_obj = serde_json::json!({});
+            for field in &host_config_fields {
+                if let Some(val) = hc.get(*field)
+                    && !val.is_null()
+                {
+                    hc_obj[field.to_string()] = val.clone();
+                }
+            }
+            if hc_obj.as_object().is_some_and(|m| !m.is_empty()) {
+                create_body["HostConfig"] = hc_obj;
+            }
+        }
+
+        // Build NetworkingConfig from old NetworkSettings.Networks
+        if let Some(nets) = networks
+            && let Some(net_map) = nets.as_object()
+            && let Some(first_net_name) = net_map.keys().next()
+        {
+            let mut endpoints_map = serde_json::Map::new();
+            endpoints_map.insert(first_net_name.clone(), net_map[first_net_name].clone());
+            create_body["NetworkingConfig"] = serde_json::json!({
+                "EndpointsConfig": serde_json::Value::Object(endpoints_map)
+            });
+        }
+
+        // Step 4: Create new container
+        tracing::info!("update_service: creating new container {temp_name}");
+        let create_resp = match docker_api_post_json(
+            socket_path,
+            &format!("/containers/create?name={temp_name}"),
+            create_body,
+        )
+        .await
+        {
+            Ok(body) => body,
             Err(e) => {
                 return to_json(serde_json::json!({
                     "status": "error",
-                    "message": format!("docker pull failed: {e}"),
-                    "current_digest": current_digest,
+                    "message": format!("container create failed: {e}"),
+                    "previous_digest": previous_digest,
                 }));
             }
         };
 
-        // Step 3: Restart container
-        match docker_api_post(socket_path, "/containers/proxy-pool/restart").await {
-            Ok(_) => {
-                // Step 4: Get new digest after restart
-                let new_digest = match docker_api_get(socket_path, "/containers/proxy-pool/json").await {
-                    Ok(body) => body
-                        .get("Image")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    Err(_) => "unknown".to_string(),
-                };
+        let new_id = create_resp
+            .get("Id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
-                let updated = current_digest != new_digest;
-                to_json(serde_json::json!({
-                    "status": if updated { "updated" } else { "restarted" },
-                    "previous_digest": current_digest,
-                    "new_digest": new_digest,
-                    "image": image,
-                }))
-            }
-            Err(e) => to_json(serde_json::json!({
+        if new_id.is_empty() {
+            return to_json(serde_json::json!({
                 "status": "error",
-                "message": format!("container restart failed: {e}"),
-                "current_digest": current_digest,
-            })),
+                "message": "container create response missing Id",
+                "previous_digest": previous_digest,
+            }));
         }
+
+        // Step 5: Start new container
+        tracing::info!("update_service: starting new container {new_id}");
+        if let Err(e) = docker_api_post(socket_path, &format!("/containers/{new_id}/start")).await {
+            // Cleanup: remove the new container
+            let _ =
+                docker_api_delete(socket_path, &format!("/containers/{new_id}?force=true")).await;
+            return to_json(serde_json::json!({
+                "status": "error",
+                "message": format!("container start failed: {e}"),
+                "previous_digest": previous_digest,
+            }));
+        }
+
+        // Step 6: Health check — poll up to 10 times, 1s apart
+        tracing::info!("update_service: health-checking new container");
+        let mut new_digest = String::new();
+        let mut healthy = false;
+        for i in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            match docker_api_get(socket_path, &format!("/containers/{new_id}/json")).await {
+                Ok(body) => {
+                    if new_digest.is_empty() {
+                        new_digest = body
+                            .get("Image")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                    }
+
+                    let running = body
+                        .pointer("/State/Running")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    if running {
+                        let health_status = body
+                            .pointer("/State/Health/Status")
+                            .and_then(|v| v.as_str());
+                        match health_status {
+                            Some("healthy") => {
+                                healthy = true;
+                                break;
+                            }
+                            Some(_) => {
+                                tracing::info!(
+                                    "update_service: health check not yet healthy (attempt {})",
+                                    i + 1
+                                );
+                            }
+                            None => {
+                                // No health check configured, running is sufficient
+                                healthy = true;
+                                break;
+                            }
+                        }
+                    } else {
+                        tracing::info!(
+                            "update_service: container not running yet (attempt {})",
+                            i + 1
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::info!(
+                        "update_service: health check error (attempt {}): {e}",
+                        i + 1
+                    );
+                }
+            }
+        }
+
+        if !healthy {
+            // Cleanup: remove the new container
+            let _ =
+                docker_api_delete(socket_path, &format!("/containers/{new_id}?force=true")).await;
+            return to_json(serde_json::json!({
+                "status": "error",
+                "message": "new container failed to become healthy",
+                "previous_digest": previous_digest,
+            }));
+        }
+
+        if new_digest.is_empty() {
+            new_digest = "unknown".to_string();
+        }
+
+        // --- New container is running and healthy ---
+        // Stop old container (may kill this process — acceptable because
+        // the new container is already running)
+        tracing::info!("update_service: stopping old container {container_name}");
+        let _ = docker_api_post(
+            socket_path,
+            &format!("/containers/{container_name}/stop?t=10"),
+        )
+        .await;
+
+        // Remove old container
+        tracing::info!("update_service: removing old container {container_name}");
+        let _ = docker_api_delete(
+            socket_path,
+            &format!("/containers/{container_name}?force=true&v=true"),
+        )
+        .await;
+
+        // Rename new container to take the old name
+        tracing::info!("update_service: renaming {temp_name} to {container_name}");
+        let _ = docker_api_post(
+            socket_path,
+            &format!("/containers/{new_id}/rename?name={container_name}"),
+        )
+        .await;
+
+        to_json(serde_json::json!({
+            "status": "updated",
+            "previous_digest": previous_digest,
+            "new_digest": new_digest,
+            "image": image,
+        }))
     }
 }
 
@@ -363,20 +579,22 @@ impl ServerHandler for ProxyPoolMcp {
 async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
         .map_err(|_| format!("connect to {socket_path}: timed out after 10s"))?
         .map_err(|e| format!("connect to {socket_path}: {e}"))?;
 
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\n\r\n"
-    );
-    timeout(Duration::from_secs(10), stream.write_all(request.as_bytes()))
-        .await
-        .map_err(|_| format!("write: timed out after 10s"))?
-        .map_err(|e| format!("write: {e}"))?;
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\n\r\n");
+    timeout(
+        Duration::from_secs(10),
+        stream.write_all(request.as_bytes()),
+    )
+    .await
+    .map_err(|_| format!("write: timed out after 10s"))?
+    .map_err(|e| format!("write: {e}"))?;
 
     let mut buf = Vec::with_capacity(4096);
     let mut tmp = [0u8; 8192];
@@ -405,7 +623,7 @@ async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Val
 async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
@@ -415,10 +633,13 @@ async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Va
     let request = format!(
         "POST {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nContent-Length: 0\r\n\r\n"
     );
-    timeout(Duration::from_secs(10), stream.write_all(request.as_bytes()))
-        .await
-        .map_err(|_| format!("write: timed out after 10s"))?
-        .map_err(|e| format!("write: {e}"))?;
+    timeout(
+        Duration::from_secs(10),
+        stream.write_all(request.as_bytes()),
+    )
+    .await
+    .map_err(|_| format!("write: timed out after 10s"))?
+    .map_err(|e| format!("write: {e}"))?;
 
     let mut buf = Vec::with_capacity(8192);
     let mut tmp = [0u8; 8192];
@@ -439,6 +660,98 @@ async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Va
     parse_docker_response(&buf)
 }
 
+#[cfg(unix)]
+/// Send a POST request with a JSON body to the Docker Engine API via Unix socket.
+/// Returns the parsed JSON response body.
+async fn docker_api_post_json(
+    socket_path: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+    use tokio::time::{Duration, timeout};
+
+    let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+        .await
+        .map_err(|_| format!("connect to {socket_path}: timed out after 10s"))?
+        .map_err(|e| format!("connect to {socket_path}: {e}"))?;
+
+    let body_str = body.to_string();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body_str.len(),
+        body_str,
+    );
+    timeout(
+        Duration::from_secs(10),
+        stream.write_all(request.as_bytes()),
+    )
+    .await
+    .map_err(|_| format!("write: timed out after 10s"))?
+    .map_err(|e| format!("write: {e}"))?;
+
+    let mut buf = Vec::with_capacity(8192);
+    let mut tmp = [0u8; 8192];
+    loop {
+        match timeout(Duration::from_secs(300), stream.read(&mut tmp)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() > 67_108_864 {
+                    return Err("response too large (>64 MiB)".into());
+                }
+            }
+            Ok(Err(e)) => return Err(format!("read: {e}")),
+            Err(_) => return Err("read: timed out after 300s".into()),
+        }
+    }
+
+    parse_docker_response(&buf)
+}
+
+#[cfg(unix)]
+/// Send a DELETE request to the Docker Engine API via Unix socket.
+/// Returns the parsed JSON response body.
+async fn docker_api_delete(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+    use tokio::time::{Duration, timeout};
+
+    let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+        .await
+        .map_err(|_| format!("connect to {socket_path}: timed out after 10s"))?
+        .map_err(|e| format!("connect to {socket_path}: {e}"))?;
+
+    let request =
+        format!("DELETE {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\n\r\n");
+    timeout(
+        Duration::from_secs(10),
+        stream.write_all(request.as_bytes()),
+    )
+    .await
+    .map_err(|_| format!("write: timed out after 10s"))?
+    .map_err(|e| format!("write: {e}"))?;
+
+    let mut buf = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 8192];
+    loop {
+        match timeout(Duration::from_secs(120), stream.read(&mut tmp)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() > 67_108_864 {
+                    return Err("response too large (>64 MiB)".into());
+                }
+            }
+            Ok(Err(e)) => return Err(format!("read: {e}")),
+            Err(_) => return Err("read: timed out after 120s".into()),
+        }
+    }
+
+    parse_docker_response(&buf)
+}
+
 #[cfg(not(unix))]
 async fn docker_api_get(_socket_path: &str, _path: &str) -> Result<serde_json::Value, String> {
     Err("Docker Engine API is only available on Unix (requires Unix socket)".into())
@@ -446,6 +759,20 @@ async fn docker_api_get(_socket_path: &str, _path: &str) -> Result<serde_json::V
 
 #[cfg(not(unix))]
 async fn docker_api_post(_socket_path: &str, _path: &str) -> Result<serde_json::Value, String> {
+    Err("Docker Engine API is only available on Unix (requires Unix socket)".into())
+}
+
+#[cfg(not(unix))]
+async fn docker_api_post_json(
+    _socket_path: &str,
+    _path: &str,
+    _body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    Err("Docker Engine API is only available on Unix (requires Unix socket)".into())
+}
+
+#[cfg(not(unix))]
+async fn docker_api_delete(_socket_path: &str, _path: &str) -> Result<serde_json::Value, String> {
     Err("Docker Engine API is only available on Unix (requires Unix socket)".into())
 }
 
@@ -463,7 +790,8 @@ fn parse_docker_response(buf: &[u8]) -> Result<serde_json::Value, String> {
 
     // Check status line
     let status_line = header_part.lines().next().unwrap_or("");
-    if !status_line.contains("200") && !status_line.contains("201") && !status_line.contains("204") {
+    if !status_line.contains("200") && !status_line.contains("201") && !status_line.contains("204")
+    {
         return Err(format!("HTTP error: {status_line}"));
     }
 
@@ -480,10 +808,19 @@ fn parse_docker_response(buf: &[u8]) -> Result<serde_json::Value, String> {
 
     // For streaming responses (like /images/create), multiple JSON objects
     // are newline-delimited. Return the last one.
-    let lines: Vec<&str> = body.trim().lines().filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<&str> = body
+        .trim()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     let last_line = lines.last().unwrap_or(&"");
 
-    let value: serde_json::Value = serde_json::from_str(last_line).map_err(|e| format!("JSON parse error: {e}, body: {}", &body[..body.len().min(200)]))?;
+    let value: serde_json::Value = serde_json::from_str(last_line).map_err(|e| {
+        format!(
+            "JSON parse error: {e}, body: {}",
+            &body[..body.len().min(200)]
+        )
+    })?;
 
     if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
         return Err(format!("docker error: {err}"));
