@@ -340,10 +340,10 @@ fn default_validate_interval() -> u64 {
     60
 }
 fn default_validate_concurrency() -> usize {
-    100
+    50
 }
 fn default_validate_timeout() -> u64 {
-    10
+    15
 }
 fn default_validate_target() -> String {
     "https://www.cloudflare.com/cdn-cgi/trace".into()
@@ -352,7 +352,7 @@ fn default_min_score() -> f64 {
     0.1
 }
 fn default_pace_rate() -> f64 {
-    20.0
+    10.0
 }
 fn default_optimizer_interval() -> u64 {
     21600

@@ -23,6 +23,10 @@ pub fn build_fetchers(config: &FetchersConfig) -> Vec<Arc<dyn Fetcher>> {
             mirror,
         )));
         fetchers.push(Arc::new(proxyscrape::ProxyScrapeFetcher::new(
+            "https",
+            mirror,
+        )));
+        fetchers.push(Arc::new(proxyscrape::ProxyScrapeFetcher::new(
             "socks5",
             mirror,
         )));

@@ -17,8 +17,8 @@ pub struct CircuitBreakerConfig {
 impl Default for CircuitBreakerConfig {
     fn default() -> Self {
         Self {
-            failure_threshold: 3,
-            recovery_timeout_sec: 300.0,
+            failure_threshold: 5,
+            recovery_timeout_sec: 600.0,
         }
     }
 }

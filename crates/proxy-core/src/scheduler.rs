@@ -123,25 +123,15 @@ impl Scheduler {
                 continue;
             }
 
-            // Reset counts before re-validation
-            let reset: Vec<_> = existing
-                .into_iter()
-                .map(|mut p| {
-                    p.success_count = 0;
-                    p.fail_count = 0;
-                    p
-                })
-                .collect();
-
             let working = self
                 .validator
-                .validate_many(&reset, self.settings.validate_concurrency)
+                .validate_many(&existing, self.settings.validate_concurrency)
                 .await;
 
             let working_keys: std::collections::HashSet<String> =
                 working.iter().map(|p| p.key()).collect();
 
-            for p in &reset {
+            for p in &existing {
                 if !working_keys.contains(&p.key())
                     && let Err(e) = self.store.mark_failed_with_circuit(p).await
                 {

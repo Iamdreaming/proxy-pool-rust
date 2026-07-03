@@ -167,7 +167,7 @@ impl ProxyStore {
         updated.fail_count += 1;
 
         // Hard eviction: too many failures
-        let hard_evict = updated.fail_count > std::cmp::max(5, updated.success_count * 2);
+        let hard_evict = updated.fail_count > std::cmp::max(8, updated.success_count * 3);
         if hard_evict || score(&updated, &self.weights) < self.min_score {
             return Ok(()); // already removed, stays dropped
         }
@@ -208,7 +208,7 @@ impl ProxyStore {
         }
 
         // Hard eviction: too many failures
-        let hard_evict = updated.fail_count > std::cmp::max(5, updated.success_count * 2);
+        let hard_evict = updated.fail_count > std::cmp::max(8, updated.success_count * 3);
         if hard_evict || score(&updated, &self.weights) < self.min_score {
             return Ok(()); // already removed, stays dropped
         }
