@@ -1,10 +1,10 @@
 # ──────────────────────────────────────────────
-# Stage 1: Prepare recipe (dependency fingerprint)
+# Stage 1: Prepare cargo-chef toolchain
 # ──────────────────────────────────────────────
-FROM rust:1.87-slim AS chef
+FROM rust:1.96-slim AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev curl xz-utils \
+    pkg-config libssl-dev curl xz-utils protobuf-compiler musl-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Install cargo-chef from GitHub release (avoids MSRV mismatch with cargo install)
@@ -15,7 +15,10 @@ RUN case "${TARGETARCH}" in \
       *) echo "unsupported arch: ${TARGETARCH}"; exit 1 ;; \
     esac \
  && curl -sL "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-${CHEF_ARCH}.tar.xz" \
-    | tar xJ -C /usr/local/bin/
+    | tar xJ --strip-components=1 -C /usr/local/bin/ "cargo-chef-${CHEF_ARCH}/cargo-chef"
+
+# Install musl target for static linking (no glibc dependency in runtime image)
+RUN rustup target add x86_64-unknown-linux-musl
 
 WORKDIR /app
 
@@ -45,27 +48,28 @@ RUN mkdir -p crates/proxy-core/src && echo "" > crates/proxy-core/src/lib.rs \
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ──────────────────────────────────────────────
-# Stage 3: Build dependencies (cached layer)
+# Stage 3: Build dependencies + binary
 # ──────────────────────────────────────────────
 FROM chef AS builder
 
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --target x86_64-unknown-linux-musl --recipe-path recipe.json
 
 # Now copy the real source code
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-COPY config/ config/
 
 # Build the actual binary (only business code recompiles)
+# Use musl target for static linking — no glibc dependency in runtime image
 ARG GIT_HASH=dev
 ENV GIT_HASH=${GIT_HASH}
-RUN cargo build --release -p proxy-server
+RUN cargo build --release -p proxy-server --target x86_64-unknown-linux-musl \
+ && cp /app/target/x86_64-unknown-linux-musl/release/proxy-server /app/target/release/proxy-server
 
 # ──────────────────────────────────────────────
 # Stage 4: Runtime image
 # ──────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl \
@@ -78,9 +82,11 @@ RUN mkdir -p /app/geoip \
 
 WORKDIR /app
 
-# Copy binary and config
+# Copy binary from builder
 COPY --from=builder /app/target/release/proxy-server /app/proxy-server
-COPY config/ /app/config/
+
+# Copy example config (user should mount their own settings.yaml via volume)
+COPY config/*.example.yaml /app/config/
 
 EXPOSE 9080 8000 9000
 
