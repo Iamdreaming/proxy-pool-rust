@@ -21,7 +21,7 @@ pool:
   validate_interval_sec: 60
   validate_concurrency: 100
   validate_timeout_sec: 10
-  validate_target_url: "https://httpbin.org/ip"
+  validate_target_url: "https://www.cloudflare.com/cdn-cgi/trace"
   min_score: 0.1
   pace_rate_per_sec: 20      # 0 = unlimited; 20 recommended to avoid socket exhaustion
   score_weights:

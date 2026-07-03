@@ -346,7 +346,7 @@ fn default_validate_timeout() -> u64 {
     10
 }
 fn default_validate_target() -> String {
-    "https://httpbin.org/ip".into()
+    "https://www.cloudflare.com/cdn-cgi/trace".into()
 }
 fn default_min_score() -> f64 {
     0.1

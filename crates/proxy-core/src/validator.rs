@@ -111,6 +111,12 @@ impl Validator {
                 serde_json::from_str::<serde_json::Value>(b)
                     .ok()
                     .and_then(|v| v.get("origin")?.as_str().map(String::from))
+                    .or_else(|| {
+                        // Cloudflare cdn-cgi/trace returns "ip=1.2.3.4\n..."
+                        b.lines()
+                            .find(|l| l.starts_with("ip="))
+                            .map(|l| l.trim_start_matches("ip=").to_string())
+                    })
             })
             .unwrap_or_default();
 
