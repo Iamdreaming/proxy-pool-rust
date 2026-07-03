@@ -29,3 +29,15 @@ Rust workspace 代理池服务，包含代理获取、验证、网关路由、MC
 ## fast-context 搜索参数
 - 本项目 5 个 crate，中等规模：`tree_depth=2, max_turns=2`
 - 跨 crate 调用链追踪：`max_turns=3`
+
+## 修复后部署与端到端验证工作流
+
+1. 修复/实现代码后，先在本地运行 `cargo test` 和 `cargo clippy -- -D warnings`，零失败零警告方可进入下一步。
+2. 提交并用 conventional commits 格式（如 `fix(core): ...` / `feat(api): ...`，破坏性变更加 `!`）。
+3. `git push origin main` 推送到远程 main 分支。
+4. 用 `gh` CLI 监视 GitHub Actions 构建状态，判定镜像构建完成：
+   - `gh run list --workflow=docker-build.yml --branch main --limit 1` 找到刚触发的 run。
+   - `gh run watch <run-id> --exit-status` 阻塞等待直到 run 完成；非零退出码即构建失败，停止后续步骤并向用户报告失败日志（`gh run view <run-id> --log-failed`）。
+5. 构建成功后，调用 MCP 工具 `mcp__proxy-pool__update_service` 拉取 GHCR 新镜像并重启容器（返回前后 digest 对比，确认镜像已更新）。
+6. 端到端验证：调用 `mcp__proxy-pool__pool_status` 确认服务存活；访问 `/api/status` 确认 `git_hash` 已更新为本次推送的 short sha；按需抽样 `mcp__proxy-pool__get_best_proxy` / `mcp__proxy-pool__check_proxy` 验证代理池可用性。
+7. 任意一步失败都不得继续后续步骤；失败时定位失败点、修复后从第 1 步重新开始。
