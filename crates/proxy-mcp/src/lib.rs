@@ -363,24 +363,36 @@ impl ServerHandler for ProxyPoolMcp {
 async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
+    use tokio::time::{timeout, Duration};
 
-    let mut stream = UnixStream::connect(socket_path)
+    let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
+        .map_err(|_| format!("connect to {socket_path}: timed out after 10s"))?
         .map_err(|e| format!("connect to {socket_path}: {e}"))?;
 
     let request = format!(
         "GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\n\r\n"
     );
-    stream
-        .write_all(request.as_bytes())
+    timeout(Duration::from_secs(10), stream.write_all(request.as_bytes()))
         .await
+        .map_err(|_| format!("write: timed out after 10s"))?
         .map_err(|e| format!("write: {e}"))?;
 
     let mut buf = Vec::with_capacity(4096);
-    stream
-        .read_to_end(&mut buf)
-        .await
-        .map_err(|e| format!("read: {e}"))?;
+    let mut tmp = [0u8; 8192];
+    loop {
+        match timeout(Duration::from_secs(120), stream.read(&mut tmp)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() > 67_108_864 {
+                    return Err("response too large (>64 MiB)".into());
+                }
+            }
+            Ok(Err(e)) => return Err(format!("read: {e}")),
+            Err(_) => return Err("read: timed out after 120s".into()),
+        }
+    }
 
     parse_docker_response(&buf)
 }
@@ -393,24 +405,36 @@ async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Val
 async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
+    use tokio::time::{timeout, Duration};
 
-    let mut stream = UnixStream::connect(socket_path)
+    let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
+        .map_err(|_| format!("connect to {socket_path}: timed out after 10s"))?
         .map_err(|e| format!("connect to {socket_path}: {e}"))?;
 
     let request = format!(
         "POST {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nContent-Length: 0\r\n\r\n"
     );
-    stream
-        .write_all(request.as_bytes())
+    timeout(Duration::from_secs(10), stream.write_all(request.as_bytes()))
         .await
+        .map_err(|_| format!("write: timed out after 10s"))?
         .map_err(|e| format!("write: {e}"))?;
 
     let mut buf = Vec::with_capacity(8192);
-    stream
-        .read_to_end(&mut buf)
-        .await
-        .map_err(|e| format!("read: {e}"))?;
+    let mut tmp = [0u8; 8192];
+    loop {
+        match timeout(Duration::from_secs(300), stream.read(&mut tmp)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() > 67_108_864 {
+                    return Err("response too large (>64 MiB)".into());
+                }
+            }
+            Ok(Err(e)) => return Err(format!("read: {e}")),
+            Err(_) => return Err("read: timed out after 300s".into()),
+        }
+    }
 
     parse_docker_response(&buf)
 }
@@ -459,7 +483,13 @@ fn parse_docker_response(buf: &[u8]) -> Result<serde_json::Value, String> {
     let lines: Vec<&str> = body.trim().lines().filter(|l| !l.trim().is_empty()).collect();
     let last_line = lines.last().unwrap_or(&"");
 
-    serde_json::from_str(last_line).map_err(|e| format!("JSON parse error: {e}, body: {}", &body[..body.len().min(200)]))
+    let value = serde_json::from_str(last_line).map_err(|e| format!("JSON parse error: {e}, body: {}", &body[..body.len().min(200)]))?;
+
+    if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
+        return Err(format!("docker error: {err}"));
+    }
+
+    Ok(value)
 }
 
 /// Decode a chunked transfer-encoding body.
