@@ -22,3 +22,4 @@ protoc.exe
 .trellis/.runtime/
 .trellis/.cache/
 .claude/
+.playwright-mcp/
