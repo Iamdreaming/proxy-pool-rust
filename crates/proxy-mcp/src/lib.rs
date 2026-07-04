@@ -574,12 +574,116 @@ impl ServerHandler for ProxyPoolMcp {
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
+/// Read a complete HTTP response from a Unix socket stream.
+/// Detects response completion via Content-Length or chunked transfer-encoding,
+/// rather than waiting for EOF (which never comes with HTTP/1.1 keep-alive).
+async fn read_http_response(
+    stream: &mut tokio::net::UnixStream,
+    per_read_timeout_secs: u64,
+) -> Result<Vec<u8>, String> {
+    use tokio::io::AsyncReadExt;
+    use tokio::time::{timeout, Duration};
+
+    let mut buf = Vec::with_capacity(8192);
+    let mut tmp = [0u8; 8192];
+    let max_size = 67_108_864; // 64 MiB
+
+    // Phase 1: Read until we have the full headers (ends with \r\n\r\n)
+    loop {
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+        match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
+            Ok(Ok(0)) => return Ok(buf), // EOF before headers — let parse_docker_response handle it
+            Ok(Ok(n)) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() > max_size {
+                    return Err("response too large (>64 MiB)".into());
+                }
+            }
+            Ok(Err(e)) => return Err(format!("read: {e}")),
+            Err(_) => return Err(format!("read: timed out after {per_read_timeout_secs}s")),
+        }
+    }
+
+    // Find header/body boundary
+    let header_end = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap();
+    let header_str = String::from_utf8_lossy(&buf[..header_end]);
+    let body_start = header_end + 4;
+    let body_received = buf.len().saturating_sub(body_start);
+
+    // Phase 2: Determine how to read the body
+    if header_str.contains("chunked") {
+        // Chunked: read until we see the terminal chunk "0\r\n\r\n"
+        loop {
+            let body_part = &buf[body_start..];
+            if body_part.windows(5).any(|w| w == b"0\r\n\r\n") {
+                break;
+            }
+            match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.len() > max_size {
+                        return Err("response too large (>64 MiB)".into());
+                    }
+                }
+                Ok(Err(e)) => return Err(format!("read: {e}")),
+                Err(_) => {
+                    return Err(format!("read: timed out after {per_read_timeout_secs}s"))
+                }
+            }
+        }
+    } else if let Some(content_length) = extract_content_length(&header_str) {
+        // Content-Length: read until we have exactly that many body bytes
+        let needed = content_length.saturating_sub(body_received);
+        let mut remaining = needed;
+        while remaining > 0 {
+            match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    remaining = remaining.saturating_sub(n);
+                    if buf.len() > max_size {
+                        return Err("response too large (>64 MiB)".into());
+                    }
+                }
+                Ok(Err(e)) => return Err(format!("read: {e}")),
+                Err(_) => {
+                    return Err(format!("read: timed out after {per_read_timeout_secs}s"))
+                }
+            }
+        }
+    }
+    // else: no Content-Length and not chunked — body already in buf from phase 1
+
+    Ok(buf)
+}
+
+#[cfg(unix)]
+/// Extract Content-Length value from HTTP headers.
+fn extract_content_length(header_str: &str) -> Option<usize> {
+    for line in header_str.lines() {
+        if let Some(rest) = line.strip_prefix("Content-Length:") {
+            return rest.trim().parse().ok();
+        }
+        if let Some(rest) = line.strip_prefix("content-length:") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
 /// Send a GET request to the Docker Engine API via Unix socket.
 /// Returns the parsed JSON response body.
 async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
@@ -593,25 +697,10 @@ async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Val
         stream.write_all(request.as_bytes()),
     )
     .await
-    .map_err(|_| format!("write: timed out after 10s"))?
+    .map_err(|_| "write: timed out after 10s".to_string())?
     .map_err(|e| format!("write: {e}"))?;
 
-    let mut buf = Vec::with_capacity(4096);
-    let mut tmp = [0u8; 8192];
-    loop {
-        match timeout(Duration::from_secs(120), stream.read(&mut tmp)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(n)) => {
-                buf.extend_from_slice(&tmp[..n]);
-                if buf.len() > 67_108_864 {
-                    return Err("response too large (>64 MiB)".into());
-                }
-            }
-            Ok(Err(e)) => return Err(format!("read: {e}")),
-            Err(_) => return Err("read: timed out after 120s".into()),
-        }
-    }
-
+    let buf = read_http_response(&mut stream, 30).await?;
     parse_docker_response(&buf)
 }
 
@@ -621,9 +710,9 @@ async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Val
 /// For streaming endpoints (like /images/create), waits for completion and
 /// returns the last JSON status object.
 async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
@@ -638,25 +727,10 @@ async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Va
         stream.write_all(request.as_bytes()),
     )
     .await
-    .map_err(|_| format!("write: timed out after 10s"))?
+    .map_err(|_| "write: timed out after 10s".to_string())?
     .map_err(|e| format!("write: {e}"))?;
 
-    let mut buf = Vec::with_capacity(8192);
-    let mut tmp = [0u8; 8192];
-    loop {
-        match timeout(Duration::from_secs(300), stream.read(&mut tmp)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(n)) => {
-                buf.extend_from_slice(&tmp[..n]);
-                if buf.len() > 67_108_864 {
-                    return Err("response too large (>64 MiB)".into());
-                }
-            }
-            Ok(Err(e)) => return Err(format!("read: {e}")),
-            Err(_) => return Err("read: timed out after 300s".into()),
-        }
-    }
-
+    let buf = read_http_response(&mut stream, 60).await?;
     parse_docker_response(&buf)
 }
 
@@ -668,9 +742,9 @@ async fn docker_api_post_json(
     path: &str,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
@@ -688,25 +762,10 @@ async fn docker_api_post_json(
         stream.write_all(request.as_bytes()),
     )
     .await
-    .map_err(|_| format!("write: timed out after 10s"))?
+    .map_err(|_| "write: timed out after 10s".to_string())?
     .map_err(|e| format!("write: {e}"))?;
 
-    let mut buf = Vec::with_capacity(8192);
-    let mut tmp = [0u8; 8192];
-    loop {
-        match timeout(Duration::from_secs(300), stream.read(&mut tmp)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(n)) => {
-                buf.extend_from_slice(&tmp[..n]);
-                if buf.len() > 67_108_864 {
-                    return Err("response too large (>64 MiB)".into());
-                }
-            }
-            Ok(Err(e)) => return Err(format!("read: {e}")),
-            Err(_) => return Err("read: timed out after 300s".into()),
-        }
-    }
-
+    let buf = read_http_response(&mut stream, 30).await?;
     parse_docker_response(&buf)
 }
 
@@ -714,9 +773,9 @@ async fn docker_api_post_json(
 /// Send a DELETE request to the Docker Engine API via Unix socket.
 /// Returns the parsed JSON response body.
 async fn docker_api_delete(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
@@ -730,25 +789,10 @@ async fn docker_api_delete(socket_path: &str, path: &str) -> Result<serde_json::
         stream.write_all(request.as_bytes()),
     )
     .await
-    .map_err(|_| format!("write: timed out after 10s"))?
+    .map_err(|_| "write: timed out after 10s".to_string())?
     .map_err(|e| format!("write: {e}"))?;
 
-    let mut buf = Vec::with_capacity(4096);
-    let mut tmp = [0u8; 8192];
-    loop {
-        match timeout(Duration::from_secs(120), stream.read(&mut tmp)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(n)) => {
-                buf.extend_from_slice(&tmp[..n]);
-                if buf.len() > 67_108_864 {
-                    return Err("response too large (>64 MiB)".into());
-                }
-            }
-            Ok(Err(e)) => return Err(format!("read: {e}")),
-            Err(_) => return Err("read: timed out after 120s".into()),
-        }
-    }
-
+    let buf = read_http_response(&mut stream, 30).await?;
     parse_docker_response(&buf)
 }
 
