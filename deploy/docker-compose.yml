@@ -47,7 +47,7 @@ services:
 
   watchtower-proxy-pool:
     image: containrrr/watchtower
-    container_name: watchtower
+    container_name: watchtower-proxy-pool
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --http-api-update --cleanup --label-enable

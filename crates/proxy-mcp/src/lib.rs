@@ -321,7 +321,7 @@ impl ProxyPoolMcp {
         // Watchtower is an independent container that handles stop/recreate/start
         // safely — it doesn't have the "self-surgery" problem.
         tracing::info!("update_service: triggering Watchtower update");
-        let watchtower_url = "http://watchtower:8080/v1/update";
+        let watchtower_url = "http://watchtower-proxy-pool:8080/v1/update";
         let client = reqwest::Client::new();
         let resp = client
             .post(watchtower_url)
