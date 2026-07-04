@@ -355,9 +355,23 @@ async fn main() -> anyhow::Result<()> {
                 // well-known paths during connection. Without handlers, axum returns
                 // 404 with empty body, causing JSON parse errors in the client.
                 //
-                // We use a fallback handler that catches ALL unmatched paths and returns
-                // 404 + JSON error body. This covers every OAuth discovery variant the
-                // client may probe (root-level, /mcp-nested, openid, etc.).
+                // Routes defined before nest_service take priority, so we intercept
+                // /mcp/.well-known/* paths that would otherwise go to rmcp (which
+                // returns 406 with non-JSON body). A catch-all fallback handles any
+                // other unmatched path (root-level well-known variants, etc.).
+                .route(
+                    "/mcp/.well-known/{*path}",
+                    axum::routing::get(|| async {
+                        (
+                            axum::http::StatusCode::NOT_FOUND,
+                            [(axum::http::header::CONTENT_TYPE, "application/json")],
+                            axum::Json(serde_json::json!({
+                                "error": "not_found",
+                                "error_description": "This server does not require OAuth"
+                            })),
+                        )
+                    }),
+                )
                 .nest_service("/mcp", service)
                 .fallback(|| async {
                     (
