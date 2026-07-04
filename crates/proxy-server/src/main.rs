@@ -351,14 +351,13 @@ async fn main() -> anyhow::Result<()> {
                 StreamableHttpServerConfig::default(),
             );
             let app = axum::Router::new()
-                // OAuth discovery fallback: Claude Code's MCP client probes these
+                // OAuth discovery fallback: Claude Code's MCP client probes various
                 // well-known paths during connection. Without handlers, rmcp returns
-                // 404 with empty body, causing JSON parse errors in the client.
+                // 404/406 with empty body, causing JSON parse errors in the client.
                 //
-                // Returning 404 with a valid JSON error body for both endpoints
-                // tells the client: "no OAuth here" without triggering parse or
-                // schema validation errors. The client then falls through to
-                // unauthenticated mode.
+                // We handle all known OAuth discovery paths with 404 + JSON error body
+                // so the client can parse the response and fall through to unauthenticated.
+                // A catch-all fallback handles any other undiscovered paths the client may try.
                 .route(
                     "/.well-known/oauth-protected-resource",
                     axum::routing::get(|| async {
@@ -383,7 +382,18 @@ async fn main() -> anyhow::Result<()> {
                         )
                     }),
                 )
-                .nest_service("/mcp", service);
+                .nest_service("/mcp", service)
+                // Catch-all fallback: any path not matched above (including stray
+                // well-known variants) gets 404 + JSON instead of empty body.
+                .fallback(|| async {
+                    (
+                        axum::http::StatusCode::NOT_FOUND,
+                        axum::Json(serde_json::json!({
+                            "error": "not_found",
+                            "error_description": "Unknown endpoint"
+                        })),
+                    )
+                });
             let addr = format!("0.0.0.0:{port}");
             match tokio::net::TcpListener::bind(&addr).await {
                 Ok(listener) => {
