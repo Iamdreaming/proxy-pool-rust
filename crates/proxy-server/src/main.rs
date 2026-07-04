@@ -351,16 +351,35 @@ async fn main() -> anyhow::Result<()> {
                 StreamableHttpServerConfig::default(),
             );
             let app = axum::Router::new()
-                // OAuth discovery fallback: return empty JSON for well-known paths
-                // so Claude Code's MCP client doesn't crash on empty 404 body parsing.
-                // An empty object (no `authorization_servers`) signals "no OAuth required".
+                // OAuth discovery fallback: Claude Code's MCP client probes these
+                // well-known paths. Without handlers, rmcp returns 404 with empty body,
+                // causing JSON parse errors in the client.
+                //
+                // Strategy:
+                // - oauth-protected-resource: return valid metadata with empty
+                //   `authorization_servers` → signals "no OAuth required" per RFC 9728.
+                // - oauth-authorization-server: return 404 with a JSON error body so the
+                //   client's JSON parser doesn't crash, and it falls through to unauthenticated.
                 .route(
                     "/.well-known/oauth-protected-resource",
-                    axum::routing::get(|| async { axum::Json(serde_json::json!({})) }),
+                    axum::routing::get(|| async {
+                        axum::Json(serde_json::json!({
+                            "resource": "http://localhost/mcp",
+                            "authorization_servers": []
+                        }))
+                    }),
                 )
                 .route(
                     "/.well-known/oauth-authorization-server",
-                    axum::routing::get(|| async { axum::Json(serde_json::json!({})) }),
+                    axum::routing::get(|| async {
+                        (
+                            axum::http::StatusCode::NOT_FOUND,
+                            axum::Json(serde_json::json!({
+                                "error": "not_found",
+                                "error_description": "This server does not support OAuth"
+                            })),
+                        )
+                    }),
                 )
                 .nest_service("/mcp", service);
             let addr = format!("0.0.0.0:{port}");
