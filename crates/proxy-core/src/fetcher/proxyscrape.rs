@@ -16,7 +16,7 @@ impl ProxyScrapeFetcher {
     pub fn new(protocol: &str, mirror_prefix: Option<&str>) -> Self {
         Self {
             protocol: protocol.to_string(),
-            timeout_secs: 15,
+            timeout_secs: 30,
             mirror_prefix: mirror_prefix.map(|s| s.to_string()),
         }
     }
@@ -81,7 +81,9 @@ impl Fetcher for ProxyScrapeFetcher {
             None => return Vec::new(),
         };
 
-        parse_text_list(&text, protocol, self.name())
+        let proxies = parse_text_list(&text, protocol, self.name());
+        tracing::info!("{}: fetched {} proxies", self.name(), proxies.len());
+        proxies
     }
 }
 

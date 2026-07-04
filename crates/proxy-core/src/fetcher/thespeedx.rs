@@ -17,7 +17,7 @@ impl TheSpeedXFetcher {
     pub fn new(protocol: &str, mirror_prefix: Option<&str>) -> Self {
         Self {
             protocol: protocol.to_string(),
-            timeout_secs: 15,
+            timeout_secs: 30,
             mirror_prefix: mirror_prefix.map(|s| s.to_string()),
         }
     }
@@ -74,7 +74,8 @@ impl Fetcher for TheSpeedXFetcher {
             None => return Vec::new(),
         };
 
-        text.lines()
+        let proxies: Vec<Proxy> = text
+            .lines()
             .filter_map(|line| {
                 let line = line.trim();
                 if line.is_empty() || !line.contains(':') {
@@ -93,6 +94,8 @@ impl Fetcher for TheSpeedXFetcher {
                     ..Proxy::new(host, port, protocol)
                 })
             })
-            .collect()
+            .collect();
+        tracing::info!("{}: fetched {} proxies", self.name(), proxies.len());
+        proxies
     }
 }

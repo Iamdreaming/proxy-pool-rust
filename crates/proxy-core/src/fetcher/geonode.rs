@@ -14,7 +14,7 @@ pub struct GeoNodeFetcher {
 impl GeoNodeFetcher {
     pub fn new(mirror_prefix: Option<&str>) -> Self {
         Self {
-            timeout_secs: 15,
+            timeout_secs: 30,
             mirror_prefix: mirror_prefix.map(|s| s.to_string()),
         }
     }
@@ -77,7 +77,7 @@ impl Fetcher for GeoNodeFetcher {
             None => return Vec::new(),
         };
 
-        proxies
+        let result: Vec<Proxy> = proxies
             .iter()
             .filter_map(|item| {
                 let host = item.get("ip")?.as_str()?.to_string();
@@ -101,6 +101,8 @@ impl Fetcher for GeoNodeFetcher {
                     ..Proxy::new(host, port, protocol)
                 })
             })
-            .collect()
+            .collect();
+        tracing::info!("{}: fetched {} proxies", self.name(), result.len());
+        result
     }
 }

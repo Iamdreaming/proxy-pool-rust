@@ -14,7 +14,7 @@ pub struct FreeProxyListFetcher {
 impl FreeProxyListFetcher {
     pub fn new(mirror_prefix: Option<&str>) -> Self {
         Self {
-            timeout_secs: 15,
+            timeout_secs: 30,
             mirror_prefix: mirror_prefix.map(|s| s.to_string()),
         }
     }
@@ -62,7 +62,9 @@ impl Fetcher for FreeProxyListFetcher {
             }
         };
 
-        parse_html_table(&html, self.name())
+        let proxies = parse_html_table(&html, self.name());
+        tracing::info!("{}: fetched {} proxies", self.name(), proxies.len());
+        proxies
     }
 }
 
