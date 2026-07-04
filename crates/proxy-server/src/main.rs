@@ -350,7 +350,19 @@ async fn main() -> anyhow::Result<()> {
                 Arc::new(LocalSessionManager::default()),
                 StreamableHttpServerConfig::default(),
             );
-            let app = axum::Router::new().nest_service("/mcp", service);
+            let app = axum::Router::new()
+                // OAuth discovery fallback: return empty JSON for well-known paths
+                // so Claude Code's MCP client doesn't crash on empty 404 body parsing.
+                // An empty object (no `authorization_servers`) signals "no OAuth required".
+                .route(
+                    "/.well-known/oauth-protected-resource",
+                    axum::routing::get(|| async { axum::Json(serde_json::json!({})) }),
+                )
+                .route(
+                    "/.well-known/oauth-authorization-server",
+                    axum::routing::get(|| async { axum::Json(serde_json::json!({})) }),
+                )
+                .nest_service("/mcp", service);
             let addr = format!("0.0.0.0:{port}");
             match tokio::net::TcpListener::bind(&addr).await {
                 Ok(listener) => {
