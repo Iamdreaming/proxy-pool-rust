@@ -4,11 +4,12 @@ use crate::circuit;
 use crate::config::PoolSettings;
 use crate::dedup;
 use crate::fetcher::Fetcher;
+use crate::geoip::GeoIPLookup;
 use crate::models::{Protocol, Proxy};
 use crate::store::ProxyStore;
 use crate::validator::Validator;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// Result of a scheduler refresh cycle.
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -57,6 +58,7 @@ pub struct Scheduler {
     validator: Arc<Validator>,
     store: Arc<ProxyStore>,
     settings: PoolSettings,
+    geoip: Option<Arc<Mutex<GeoIPLookup>>>,
 }
 
 impl Scheduler {
@@ -65,12 +67,14 @@ impl Scheduler {
         validator: Validator,
         store: Arc<ProxyStore>,
         settings: PoolSettings,
+        geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     ) -> Self {
         Self {
             fetchers,
             validator: Arc::new(validator),
             store,
             settings,
+            geoip,
         }
     }
 
@@ -104,12 +108,24 @@ impl Scheduler {
         }
 
         // 4. Validate concurrently
-        let working = self
+        let mut working = self
             .validator
             .validate_many(&candidates, self.settings.validate_concurrency)
             .await;
         result.validated = working.len();
         tracing::info!("validated {} working proxies", working.len());
+
+        // 4b. Enrich working proxies with GeoIP data
+        if let Some(ref geoip_mutex) = self.geoip {
+            let mut geoip = geoip_mutex.lock().await;
+            for p in &mut working {
+                let info = geoip.lookup(&p.host).await;
+                p.is_overseas = geoip.is_overseas(&info.country);
+                p.country = Some(info.country);
+                p.country_name = Some(info.country_name);
+            }
+            tracing::info!("enriched {} proxies with geoip data", working.len());
+        }
 
         // 5. Store
         for p in &working {

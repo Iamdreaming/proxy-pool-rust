@@ -92,6 +92,20 @@ async fn main() -> anyhow::Result<()> {
         settings.warp.clone(),
     ));
 
+    // Build GeoIP lookup (used by scheduler, upstream selector, and MCP server)
+    let geoip = if settings.geoip.database_path
+        != proxy_core::config::GeoIpSettings::default().database_path
+        || std::path::Path::new(&settings.geoip.database_path).exists()
+    {
+        Some(Arc::new(Mutex::new(proxy_core::geoip::GeoIPLookup::new(
+            redis_for_geoip,
+            &settings.geoip,
+        ))))
+    } else {
+        tracing::info!("geoip: database not found, skipping GeoIP-based routing");
+        None
+    };
+
     // Build the fetchers and scheduler
     let fetchers = build_fetchers(&settings.pool.fetchers);
     let validator = {
@@ -112,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
         validator,
         store.clone(),
         settings.pool.clone(),
+        geoip.clone(),
     ));
 
     // Create scheduler command channel so external tasks can trigger refreshes
@@ -134,19 +149,6 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("no routes_path configured, using default routing");
         None
     };
-    let geoip = if settings.geoip.database_path
-        != proxy_core::config::GeoIpSettings::default().database_path
-        || std::path::Path::new(&settings.geoip.database_path).exists()
-    {
-        Some(Arc::new(Mutex::new(proxy_core::geoip::GeoIPLookup::new(
-            redis_for_geoip,
-            &settings.geoip,
-        ))))
-    } else {
-        tracing::info!("geoip: database not found, skipping GeoIP-based routing");
-        None
-    };
-
     let mcp_geoip = geoip.clone();
     let selector = Arc::new(UpstreamSelector::new(
         store.clone(),
