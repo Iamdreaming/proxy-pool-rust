@@ -20,14 +20,14 @@ services:
     #     GIT_HASH: dev
     container_name: proxy-pool
     ports:
-      - "9080:9080"   # Gateway (HTTP CONNECT + SOCKS5)
-      - "8000:8000"   # REST API
-      - "9000:9000"   # MCP HTTP transport
+      - "9080:9080" # Gateway (HTTP CONNECT + SOCKS5)
+      - "8000:8000" # REST API
+      - "9000:9000" # MCP HTTP transport
     depends_on:
       - redis
     volumes:
       - ../config:/app/config
-      - /var/run/docker.sock:/var/run/docker.sock  # For MCP update_service & WARP optimizer
+      - /var/run/docker.sock:/var/run/docker.sock # For MCP update_service & WARP optimizer
     environment:
       - RUST_LOG=info
       - PROXY_POOL_CONFIG=/app/config/settings.yaml
@@ -45,7 +45,7 @@ services:
           cpus: "2.0"
           pids: 512
 
-  watchtower:
+  watchtower-proxy-pool:
     image: containrrr/watchtower
     container_name: watchtower
     volumes:
