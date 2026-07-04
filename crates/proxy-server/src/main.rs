@@ -352,10 +352,11 @@ async fn main() -> anyhow::Result<()> {
             );
             let app = axum::Router::new()
                 // OAuth discovery fallback: Claude Code's MCP client probes various
-                // well-known paths during connection. Without handlers, rmcp returns
-                // 404/406 with empty body, causing JSON parse errors in the client.
+                // well-known paths during connection (root-level and nested under /mcp).
+                // Without handlers, rmcp returns 404/406 with empty body, causing JSON
+                // parse errors in the client.
                 //
-                // We handle known OAuth discovery paths with 404 + JSON error body
+                // We handle all known OAuth discovery paths with 404 + JSON error body
                 // so the client can parse the response and fall through to unauthenticated.
                 .route(
                     "/.well-known/oauth-protected-resource",
@@ -371,6 +372,30 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .route(
                     "/.well-known/oauth-authorization-server",
+                    axum::routing::get(|| async {
+                        (
+                            axum::http::StatusCode::NOT_FOUND,
+                            axum::Json(serde_json::json!({
+                                "error": "not_found",
+                                "error_description": "This server does not support OAuth"
+                            })),
+                        )
+                    }),
+                )
+                .route(
+                    "/mcp/.well-known/oauth-protected-resource",
+                    axum::routing::get(|| async {
+                        (
+                            axum::http::StatusCode::NOT_FOUND,
+                            axum::Json(serde_json::json!({
+                                "error": "not_found",
+                                "error_description": "This server does not require OAuth"
+                            })),
+                        )
+                    }),
+                )
+                .route(
+                    "/mcp/.well-known/oauth-authorization-server",
                     axum::routing::get(|| async {
                         (
                             axum::http::StatusCode::NOT_FOUND,
