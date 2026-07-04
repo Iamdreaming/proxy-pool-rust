@@ -352,21 +352,23 @@ async fn main() -> anyhow::Result<()> {
             );
             let app = axum::Router::new()
                 // OAuth discovery fallback: Claude Code's MCP client probes these
-                // well-known paths. Without handlers, rmcp returns 404 with empty body,
-                // causing JSON parse errors in the client.
+                // well-known paths during connection. Without handlers, rmcp returns
+                // 404 with empty body, causing JSON parse errors in the client.
                 //
-                // Strategy:
-                // - oauth-protected-resource: return valid metadata with empty
-                //   `authorization_servers` → signals "no OAuth required" per RFC 9728.
-                // - oauth-authorization-server: return 404 with a JSON error body so the
-                //   client's JSON parser doesn't crash, and it falls through to unauthenticated.
+                // Returning 404 with a valid JSON error body for both endpoints
+                // tells the client: "no OAuth here" without triggering parse or
+                // schema validation errors. The client then falls through to
+                // unauthenticated mode.
                 .route(
                     "/.well-known/oauth-protected-resource",
                     axum::routing::get(|| async {
-                        axum::Json(serde_json::json!({
-                            "resource": "http://localhost/mcp",
-                            "authorization_servers": []
-                        }))
+                        (
+                            axum::http::StatusCode::NOT_FOUND,
+                            axum::Json(serde_json::json!({
+                                "error": "not_found",
+                                "error_description": "This server does not require OAuth"
+                            })),
+                        )
                     }),
                 )
                 .route(
