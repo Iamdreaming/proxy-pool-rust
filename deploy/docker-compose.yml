@@ -32,6 +32,8 @@ services:
       - RUST_LOG=info
       - PROXY_POOL_CONFIG=/app/config/settings.yaml
     restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     ulimits:
       nofile:
         soft: 65536
@@ -42,6 +44,22 @@ services:
           memory: 512M
           cpus: "2.0"
           pids: 512
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --http-api-update --cleanup --label-enable
+    environment:
+      - WATCHTOWER_HTTP_API_TOKEN=proxy-pool-update
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 64M
 
 volumes:
   redis_data:

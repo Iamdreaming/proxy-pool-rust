@@ -278,9 +278,8 @@ impl ProxyPoolMcp {
         let socket_path = "/var/run/docker.sock";
         let image = "ghcr.io/iamdreaming/proxy-pool-rust:latest";
         let container_name = "proxy-pool";
-        let temp_name = "proxy-pool-new";
 
-        // Step 1: Inspect current container to get previous_digest and full config
+        // Step 1: Inspect current container to get previous_digest
         tracing::info!("update_service: inspecting current container {container_name}");
         let old_inspect = match docker_api_get(
             socket_path,
@@ -303,7 +302,7 @@ impl ProxyPoolMcp {
             .unwrap_or("unknown")
             .to_string();
 
-        // Step 2: Pull latest image
+        // Step 2: Pull latest image (pre-fetch so Watchtower doesn't need to)
         tracing::info!("update_service: pulling image {image}");
         if let Err(e) = docker_api_post(
             socket_path,
@@ -318,238 +317,47 @@ impl ProxyPoolMcp {
             }));
         }
 
-        // Step 3: Build create request body from old container config
-        tracing::info!("update_service: building new container config");
+        // Step 3: Trigger Watchtower to update the container
+        // Watchtower is an independent container that handles stop/recreate/start
+        // safely — it doesn't have the "self-surgery" problem.
+        tracing::info!("update_service: triggering Watchtower update");
+        let watchtower_url = "http://watchtower:8080/v1/update";
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(watchtower_url)
+            .header("Authorization", "Bearer proxy-pool-update")
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await;
 
-        let config = old_inspect.get("Config");
-        let host_config = old_inspect.get("HostConfig");
-        let networks = old_inspect
-            .get("NetworkSettings")
-            .and_then(|ns| ns.get("Networks"));
-
-        let mut create_body = serde_json::json!({
-            "Image": image,
-        });
-
-        // Copy fields from old Config (only if non-null / non-empty)
-        if let Some(cfg) = config {
-            if let Some(env) = cfg.get("Env") {
-                create_body["Env"] = env.clone();
-            }
-            if let Some(cmd) = cfg.get("Cmd")
-                && !cmd.is_null()
-            {
-                create_body["Cmd"] = cmd.clone();
-            }
-            if let Some(entrypoint) = cfg.get("Entrypoint")
-                && !entrypoint.is_null()
-            {
-                create_body["Entrypoint"] = entrypoint.clone();
-            }
-            if let Some(labels) = cfg.get("Labels")
-                && !labels.is_null()
-                && labels.is_object()
-            {
-                create_body["Labels"] = labels.clone();
-            }
-            if let Some(wd) = cfg.get("WorkingDir")
-                && let Some(s) = wd.as_str()
-                && !s.is_empty()
-            {
-                create_body["WorkingDir"] = wd.clone();
-            }
-        }
-
-        // Build HostConfig sub-object from old HostConfig
-        if let Some(hc) = host_config {
-            let host_config_fields = [
-                "Binds",
-                "PortBindings",
-                "RestartPolicy",
-                "NetworkMode",
-                "Ulimits",
-                "Memory",
-                "NanoCpus",
-                "PidsLimit",
-            ];
-            let mut hc_obj = serde_json::json!({});
-            for field in &host_config_fields {
-                if let Some(val) = hc.get(*field)
-                    && !val.is_null()
-                {
-                    hc_obj[field.to_string()] = val.clone();
-                }
-            }
-            if hc_obj.as_object().is_some_and(|m| !m.is_empty()) {
-                create_body["HostConfig"] = hc_obj;
-            }
-        }
-
-        // Build NetworkingConfig from old NetworkSettings.Networks
-        if let Some(nets) = networks
-            && let Some(net_map) = nets.as_object()
-            && let Some(first_net_name) = net_map.keys().next()
-        {
-            let mut endpoints_map = serde_json::Map::new();
-            endpoints_map.insert(first_net_name.clone(), net_map[first_net_name].clone());
-            create_body["NetworkingConfig"] = serde_json::json!({
-                "EndpointsConfig": serde_json::Value::Object(endpoints_map)
-            });
-        }
-
-        // Step 4: Create new container
-        tracing::info!("update_service: creating new container {temp_name}");
-        let create_body_for_error = create_body.clone();
-        let create_resp = match docker_api_post_json(
-            socket_path,
-            &format!("/containers/create?name={temp_name}"),
-            create_body,
-        )
-        .await
-        {
-            Ok(body) => body,
-            Err(e) => {
-                return to_json(serde_json::json!({
-                    "status": "error",
-                    "message": format!("container create failed: {e}"),
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!("update_service: Watchtower update triggered successfully");
+                // Note: the current container will be stopped and recreated by Watchtower.
+                // This process will be killed, so the response may not reach the caller.
+                // The success signal is the new container's git_hash changing (verified externally).
+                to_json(serde_json::json!({
+                    "status": "update_triggered",
                     "previous_digest": previous_digest,
-                    "create_body": create_body_for_error,
-                }));
+                    "image": image,
+                    "message": "Watchtower update triggered. The container will be recreated shortly.",
+                }))
             }
-        };
-
-        let new_id = create_resp
-            .get("Id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        if new_id.is_empty() {
-            return to_json(serde_json::json!({
-                "status": "error",
-                "message": "container create response missing Id",
-                "previous_digest": previous_digest,
-            }));
-        }
-
-        // Step 5: Start new container
-        tracing::info!("update_service: starting new container {new_id}");
-        if let Err(e) = docker_api_post(socket_path, &format!("/containers/{new_id}/start")).await {
-            // Cleanup: remove the new container
-            let _ =
-                docker_api_delete(socket_path, &format!("/containers/{new_id}?force=true")).await;
-            return to_json(serde_json::json!({
-                "status": "error",
-                "message": format!("container start failed: {e}"),
-                "previous_digest": previous_digest,
-            }));
-        }
-
-        // Step 6: Health check — poll up to 10 times, 1s apart
-        tracing::info!("update_service: health-checking new container");
-        let mut new_digest = String::new();
-        let mut healthy = false;
-        for i in 0..10 {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            match docker_api_get(socket_path, &format!("/containers/{new_id}/json")).await {
-                Ok(body) => {
-                    if new_digest.is_empty() {
-                        new_digest = body
-                            .get("Image")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                    }
-
-                    let running = body
-                        .pointer("/State/Running")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-
-                    if running {
-                        let health_status = body
-                            .pointer("/State/Health/Status")
-                            .and_then(|v| v.as_str());
-                        match health_status {
-                            Some("healthy") => {
-                                healthy = true;
-                                break;
-                            }
-                            Some(_) => {
-                                tracing::info!(
-                                    "update_service: health check not yet healthy (attempt {})",
-                                    i + 1
-                                );
-                            }
-                            None => {
-                                // No health check configured, running is sufficient
-                                healthy = true;
-                                break;
-                            }
-                        }
-                    } else {
-                        tracing::info!(
-                            "update_service: container not running yet (attempt {})",
-                            i + 1
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::info!(
-                        "update_service: health check error (attempt {}): {e}",
-                        i + 1
-                    );
-                }
+            Ok(r) => {
+                let status = r.status();
+                let body = r.text().await.unwrap_or_default();
+                to_json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("Watchtower returned {status}: {body}"),
+                    "previous_digest": previous_digest,
+                }))
             }
-        }
-
-        if !healthy {
-            // Cleanup: remove the new container
-            let _ =
-                docker_api_delete(socket_path, &format!("/containers/{new_id}?force=true")).await;
-            return to_json(serde_json::json!({
+            Err(e) => to_json(serde_json::json!({
                 "status": "error",
-                "message": "new container failed to become healthy",
+                "message": format!("failed to reach Watchtower: {e}"),
                 "previous_digest": previous_digest,
-            }));
+            })),
         }
-
-        if new_digest.is_empty() {
-            new_digest = "unknown".to_string();
-        }
-
-        // --- New container is running and healthy ---
-        // Stop old container (may kill this process — acceptable because
-        // the new container is already running)
-        tracing::info!("update_service: stopping old container {container_name}");
-        let _ = docker_api_post(
-            socket_path,
-            &format!("/containers/{container_name}/stop?t=10"),
-        )
-        .await;
-
-        // Remove old container
-        tracing::info!("update_service: removing old container {container_name}");
-        let _ = docker_api_delete(
-            socket_path,
-            &format!("/containers/{container_name}?force=true&v=true"),
-        )
-        .await;
-
-        // Rename new container to take the old name
-        tracing::info!("update_service: renaming {temp_name} to {container_name}");
-        let _ = docker_api_post(
-            socket_path,
-            &format!("/containers/{new_id}/rename?name={container_name}"),
-        )
-        .await;
-
-        to_json(serde_json::json!({
-            "status": "updated",
-            "previous_digest": previous_digest,
-            "new_digest": new_digest,
-            "image": image,
-        }))
     }
 }
 
@@ -737,6 +545,7 @@ async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Va
 }
 
 #[cfg(unix)]
+#[allow(dead_code)]
 /// Send a POST request with a JSON body to the Docker Engine API via Unix socket.
 /// Returns the parsed JSON response body.
 async fn docker_api_post_json(
@@ -772,6 +581,7 @@ async fn docker_api_post_json(
 }
 
 #[cfg(unix)]
+#[allow(dead_code)]
 /// Send a DELETE request to the Docker Engine API via Unix socket.
 /// Returns the parsed JSON response body.
 async fn docker_api_delete(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
@@ -809,6 +619,7 @@ async fn docker_api_post(_socket_path: &str, _path: &str) -> Result<serde_json::
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 async fn docker_api_post_json(
     _socket_path: &str,
     _path: &str,
@@ -818,6 +629,7 @@ async fn docker_api_post_json(
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 async fn docker_api_delete(_socket_path: &str, _path: &str) -> Result<serde_json::Value, String> {
     Err("Docker Engine API is only available on Unix (requires Unix socket)".into())
 }
