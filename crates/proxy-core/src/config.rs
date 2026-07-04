@@ -77,6 +77,10 @@ pub struct ScoreWeights {
 pub struct FetcherToggle {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Whether to apply mirror_prefix to this fetcher's URLs.
+    /// Set to false for fetchers whose source URLs are not compatible with the mirror.
+    #[serde(default = "default_true")]
+    pub use_mirror: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -473,7 +477,10 @@ impl Default for ScoreWeights {
 }
 impl Default for FetcherToggle {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            use_mirror: true,
+        }
     }
 }
 impl Default for FetchersConfig {

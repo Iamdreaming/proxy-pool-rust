@@ -18,6 +18,11 @@ pub fn build_fetchers(config: &FetchersConfig) -> Vec<Arc<dyn Fetcher>> {
     let github_mirror = config.github_mirror_prefix.as_deref();
     let mirror = config.mirror_prefix.as_deref();
     if config.proxyscrape.enabled {
+        let mirror = if config.proxyscrape.use_mirror {
+            mirror
+        } else {
+            None
+        };
         fetchers.push(Arc::new(proxyscrape::ProxyScrapeFetcher::new(
             "http", mirror,
         )));
@@ -39,6 +44,11 @@ pub fn build_fetchers(config: &FetchersConfig) -> Vec<Arc<dyn Fetcher>> {
         )));
     }
     if config.free_proxy_list.enabled {
+        let mirror = if config.free_proxy_list.use_mirror {
+            mirror
+        } else {
+            None
+        };
         fetchers.push(Arc::new(free_proxy_list::FreeProxyListFetcher::new(mirror)));
     }
     if config.clarketm.enabled {
@@ -48,6 +58,11 @@ pub fn build_fetchers(config: &FetchersConfig) -> Vec<Arc<dyn Fetcher>> {
         )));
     }
     if config.geonode.enabled {
+        let mirror = if config.geonode.use_mirror {
+            mirror
+        } else {
+            None
+        };
         fetchers.push(Arc::new(geonode::GeoNodeFetcher::new(mirror)));
     }
     fetchers
