@@ -352,61 +352,23 @@ async fn main() -> anyhow::Result<()> {
             );
             let app = axum::Router::new()
                 // OAuth discovery fallback: Claude Code's MCP client probes various
-                // well-known paths during connection (root-level and nested under /mcp).
-                // Without handlers, rmcp returns 404/406 with empty body, causing JSON
-                // parse errors in the client.
+                // well-known paths during connection. Without handlers, axum returns
+                // 404 with empty body, causing JSON parse errors in the client.
                 //
-                // We handle all known OAuth discovery paths with 404 + JSON error body
-                // so the client can parse the response and fall through to unauthenticated.
-                .route(
-                    "/.well-known/oauth-protected-resource",
-                    axum::routing::get(|| async {
-                        (
-                            axum::http::StatusCode::NOT_FOUND,
-                            axum::Json(serde_json::json!({
-                                "error": "not_found",
-                                "error_description": "This server does not require OAuth"
-                            })),
-                        )
-                    }),
-                )
-                .route(
-                    "/.well-known/oauth-authorization-server",
-                    axum::routing::get(|| async {
-                        (
-                            axum::http::StatusCode::NOT_FOUND,
-                            axum::Json(serde_json::json!({
-                                "error": "not_found",
-                                "error_description": "This server does not support OAuth"
-                            })),
-                        )
-                    }),
-                )
-                .route(
-                    "/mcp/.well-known/oauth-protected-resource",
-                    axum::routing::get(|| async {
-                        (
-                            axum::http::StatusCode::NOT_FOUND,
-                            axum::Json(serde_json::json!({
-                                "error": "not_found",
-                                "error_description": "This server does not require OAuth"
-                            })),
-                        )
-                    }),
-                )
-                .route(
-                    "/mcp/.well-known/oauth-authorization-server",
-                    axum::routing::get(|| async {
-                        (
-                            axum::http::StatusCode::NOT_FOUND,
-                            axum::Json(serde_json::json!({
-                                "error": "not_found",
-                                "error_description": "This server does not support OAuth"
-                            })),
-                        )
-                    }),
-                )
-                .nest_service("/mcp", service);
+                // We use a fallback handler that catches ALL unmatched paths and returns
+                // 404 + JSON error body. This covers every OAuth discovery variant the
+                // client may probe (root-level, /mcp-nested, openid, etc.).
+                .nest_service("/mcp", service)
+                .fallback(|| async {
+                    (
+                        axum::http::StatusCode::NOT_FOUND,
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        axum::Json(serde_json::json!({
+                            "error": "not_found",
+                            "error_description": "This server does not require OAuth"
+                        })),
+                    )
+                });
             let addr = format!("0.0.0.0:{port}");
             match tokio::net::TcpListener::bind(&addr).await {
                 Ok(listener) => {
