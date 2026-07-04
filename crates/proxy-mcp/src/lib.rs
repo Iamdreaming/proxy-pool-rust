@@ -399,6 +399,7 @@ impl ProxyPoolMcp {
 
         // Step 4: Create new container
         tracing::info!("update_service: creating new container {temp_name}");
+        let create_body_for_error = create_body.clone();
         let create_resp = match docker_api_post_json(
             socket_path,
             &format!("/containers/create?name={temp_name}"),
@@ -412,6 +413,7 @@ impl ProxyPoolMcp {
                     "status": "error",
                     "message": format!("container create failed: {e}"),
                     "previous_digest": previous_digest,
+                    "create_body": create_body_for_error,
                 }));
             }
         };
@@ -834,16 +836,21 @@ fn parse_docker_response(buf: &[u8]) -> Result<serde_json::Value, String> {
 
     // Check status line
     let status_line = header_part.lines().next().unwrap_or("");
-    if !status_line.contains("200") && !status_line.contains("201") && !status_line.contains("204")
-    {
-        return Err(format!("HTTP error: {status_line}"));
-    }
+    let is_success = status_line.contains("200")
+        || status_line.contains("201")
+        || status_line.contains("204");
 
     // Handle chunked transfer-encoding
     let body = if header_part.contains("chunked") {
         decode_chunked(body_part)
     } else {
         body_part.to_string()
+    };
+
+    if !is_success {
+        // Include response body in error for diagnostics
+        let detail = body.trim();
+        return Err(format!("HTTP error: {status_line} — {detail}"));
     };
 
     if body.trim().is_empty() {
