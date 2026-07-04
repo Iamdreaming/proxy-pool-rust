@@ -355,9 +355,8 @@ async fn main() -> anyhow::Result<()> {
                 // well-known paths during connection. Without handlers, rmcp returns
                 // 404/406 with empty body, causing JSON parse errors in the client.
                 //
-                // We handle all known OAuth discovery paths with 404 + JSON error body
+                // We handle known OAuth discovery paths with 404 + JSON error body
                 // so the client can parse the response and fall through to unauthenticated.
-                // A catch-all fallback handles any other undiscovered paths the client may try.
                 .route(
                     "/.well-known/oauth-protected-resource",
                     axum::routing::get(|| async {
@@ -382,18 +381,7 @@ async fn main() -> anyhow::Result<()> {
                         )
                     }),
                 )
-                .nest_service("/mcp", service)
-                // Catch-all fallback: any path not matched above (including stray
-                // well-known variants) gets 404 + JSON instead of empty body.
-                .fallback(|| async {
-                    (
-                        axum::http::StatusCode::NOT_FOUND,
-                        axum::Json(serde_json::json!({
-                            "error": "not_found",
-                            "error_description": "Unknown endpoint"
-                        })),
-                    )
-                });
+                .nest_service("/mcp", service);
             let addr = format!("0.0.0.0:{port}");
             match tokio::net::TcpListener::bind(&addr).await {
                 Ok(listener) => {
