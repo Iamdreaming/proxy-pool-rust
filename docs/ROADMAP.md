@@ -48,7 +48,8 @@
 - [ ] 更新失败时旧容器继续运行。
 - [x] 本地通过 `cargo test` 和 `cargo clippy -- -D warnings`。
 - [x] 推送后监控 `docker-build.yml` GitHub Actions。
-- [ ] 通过 MCP 更新线上服务，并验证 `/api/status.git_hash`。
+- [x] 通过 MCP 更新 dev 服务，并验证 `/api/status.git_hash=665e200`。
+- [x] dev 容器已同步 `PROXY_POOL_UPDATE_*` 和 Watchtower token，MCP `update_service` 返回 `already_current`。
 
 **验收标准**：
 

@@ -34,8 +34,20 @@
 - [x] `npm run build` from `web/`
 - [x] Note that integration tests require a deployed instance and are not run locally unless the service target is available.
 
+## Phase 6: Dev Update Verification
+
+- [x] Push `fced1d2` and `665e200` to `origin/main`.
+- [x] Verify GitHub Actions build-and-push success for run `28807329192`.
+- [x] Verify GitHub Actions build-and-push success for run `28807505058`.
+- [x] Trigger dev update through MCP `update_service`; the first response was interrupted because Watchtower recreated the container.
+- [x] Verify dev `/api/status.git_hash` updated from `a2436f1` to `665e200`.
+- [x] Sync `PROXY_POOL_UPDATE_*` runtime env through the approved compose path.
+- [x] Verify MCP `update_service` returns `already_current` after env sync.
+- [ ] Fault-injection check: invalid image/token/Watchtower path should leave the old container running.
+
 ## Risk Points
 
 - `update_service` can affect a live container when enabled; the safety switch and env wiring must be reviewed carefully.
 - Watchtower may kill the current process before the MCP HTTP response reaches the caller; final success must be verified through `/api/status.git_hash`.
 - Docker API behavior can differ by daemon version; parsing must stay defensive.
+- Direct SSH to the dev service address is not allowed; dev runtime changes must go through an approved deployment path.
