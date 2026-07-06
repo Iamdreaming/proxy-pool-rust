@@ -1,0 +1,14 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR = "1"
+
+[mcp_servers.proxy-pool]
+command = "npx"
+args = [
+    "-y",
+    "mcp-remote",
+    "http://100.64.0.2:9000/mcp",
+    "--allow-http",
+]

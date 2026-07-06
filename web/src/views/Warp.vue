@@ -67,7 +67,7 @@ const columns = [
   { title: '连续失败', key: 'fail_streak', width: 100 },
   {
     title: '当前端点', key: 'endpoint', width: 200,
-    render: (row: WarpInstance) => row.endpoint ? row.endpoint.endpoint() : '-',
+    render: (row: WarpInstance) => row.endpoint ? `${row.endpoint.ip}:${row.endpoint.port}` : '-',
   },
   {
     title: '端点延迟', key: 'endpoint_latency', width: 100,

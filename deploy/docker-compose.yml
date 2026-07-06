@@ -17,7 +17,7 @@ services:
     #   context: ..
     #   dockerfile: deploy/Dockerfile
     #   args:
-    #     GIT_HASH: dev
+    #     GIT_HASH: unknown
     container_name: proxy-pool
     ports:
       - "9080:9080" # Gateway (HTTP CONNECT + SOCKS5)

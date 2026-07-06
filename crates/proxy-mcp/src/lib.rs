@@ -333,7 +333,9 @@ impl ProxyPoolMcp {
     )]
     async fn update_service(&self) -> String {
         let socket_path = "/var/run/docker.sock";
-        let image = "ghcr.io/iamdreaming/proxy-pool-rust:latest";
+        let image_repo = "ghcr.io/iamdreaming/proxy-pool-rust";
+        let image_tag = "latest";
+        let image = format!("{image_repo}:{image_tag}");
         let container_name = "proxy-pool";
 
         // Step 1: Inspect current container to get previous_digest
@@ -363,7 +365,11 @@ impl ProxyPoolMcp {
         tracing::info!("update_service: pulling image {image}");
         if let Err(e) = docker_api_post(
             socket_path,
-            &format!("/images/create?fromImage={image}&tag=latest"),
+            &format!(
+                "/images/create?fromImage={}&tag={}",
+                docker_api_escape(image_repo),
+                docker_api_escape(image_tag)
+            ),
         )
         .await
         {
@@ -373,6 +379,27 @@ impl ProxyPoolMcp {
                 "previous_digest": previous_digest,
             }));
         }
+
+        let new_inspect = match docker_api_get(
+            socket_path,
+            &format!("/images/{}/json", docker_api_escape(&image)),
+        )
+        .await
+        {
+            Ok(body) => body,
+            Err(e) => {
+                return to_json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("failed to inspect pulled image: {e}"),
+                    "previous_digest": previous_digest,
+                    "image": image,
+                }));
+            }
+        };
+        let new_digest = docker_image_digest(&new_inspect).unwrap_or_else(|| "unknown".into());
+        let digest_changed = previous_digest != "unknown"
+            && new_digest != "unknown"
+            && previous_digest != new_digest;
 
         // Step 3: Trigger Watchtower to update the container
         // Watchtower is an independent container that handles stop/recreate/start
@@ -396,6 +423,8 @@ impl ProxyPoolMcp {
                 to_json(serde_json::json!({
                     "status": "update_triggered",
                     "previous_digest": previous_digest,
+                    "new_digest": new_digest,
+                    "digest_changed": digest_changed,
                     "image": image,
                     "message": "Watchtower update triggered. The container will be recreated shortly.",
                 }))
@@ -407,12 +436,16 @@ impl ProxyPoolMcp {
                     "status": "error",
                     "message": format!("Watchtower returned {status}: {body}"),
                     "previous_digest": previous_digest,
+                    "new_digest": new_digest,
+                    "digest_changed": digest_changed,
                 }))
             }
             Err(e) => to_json(serde_json::json!({
                 "status": "error",
                 "message": format!("failed to reach Watchtower: {e}"),
                 "previous_digest": previous_digest,
+                "new_digest": new_digest,
+                "digest_changed": digest_changed,
             })),
         }
     }
@@ -756,6 +789,23 @@ fn parse_docker_response(buf: &[u8]) -> Result<serde_json::Value, String> {
     Ok(value)
 }
 
+fn docker_image_digest(image_inspect: &serde_json::Value) -> Option<String> {
+    image_inspect
+        .get("RepoDigests")
+        .and_then(|v| v.as_array())
+        .and_then(|digests| digests.iter().find_map(|v| v.as_str()))
+        .or_else(|| image_inspect.get("Id").and_then(|v| v.as_str()))
+        .map(str::to_string)
+}
+
+fn docker_api_escape(value: &str) -> String {
+    value
+        .replace('%', "%25")
+        .replace('/', "%2F")
+        .replace(':', "%3A")
+        .replace('@', "%40")
+}
+
 /// Decode a chunked transfer-encoding body.
 #[cfg(unix)]
 fn decode_chunked(body: &str) -> String {
@@ -855,5 +905,31 @@ mod tests {
         let (cmd_tx, _cmd_rx) = mpsc::channel::<SchedulerCommand>(8);
         let handle = SchedulerHandle::new(cmd_tx);
         let _handle2 = handle.clone();
+    }
+
+    #[test]
+    fn test_docker_image_digest_prefers_repo_digest() {
+        let image = serde_json::json!({
+            "Id": "sha256:image-id",
+            "RepoDigests": ["ghcr.io/iamdreaming/proxy-pool-rust@sha256:repo-digest"]
+        });
+
+        assert_eq!(
+            docker_image_digest(&image).as_deref(),
+            Some("ghcr.io/iamdreaming/proxy-pool-rust@sha256:repo-digest")
+        );
+    }
+
+    #[test]
+    fn test_docker_image_digest_falls_back_to_id() {
+        let image = serde_json::json!({
+            "Id": "sha256:image-id",
+            "RepoDigests": []
+        });
+
+        assert_eq!(
+            docker_image_digest(&image).as_deref(),
+            Some("sha256:image-id")
+        );
     }
 }

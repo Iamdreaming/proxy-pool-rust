@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "proxy-pool": {
-      "type": "streamable-http",
-      "url": "http://100.64.0.2:9000/mcp"
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://100.64.0.2:9000/mcp", "--allow-http"]
     }
   }
 }

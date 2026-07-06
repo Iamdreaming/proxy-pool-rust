@@ -9,7 +9,7 @@ use crate::models::{Protocol, Proxy};
 use crate::store::ProxyStore;
 use crate::validator::Validator;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 /// Result of a scheduler refresh cycle.
 #[derive(Debug, Clone, Default, serde::Serialize)]

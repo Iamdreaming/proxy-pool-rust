@@ -42,6 +42,7 @@ RUN mkdir -p crates/proxy-core/src && echo "" > crates/proxy-core/src/lib.rs \
  && mkdir -p crates/proxy-gateway/src && echo "" > crates/proxy-gateway/src/lib.rs \
  && mkdir -p crates/proxy-mcp/src && echo "" > crates/proxy-mcp/src/lib.rs \
  && mkdir -p crates/proxy-server/src && echo "fn main(){}" > crates/proxy-server/src/main.rs \
+ && echo "fn main(){}" > crates/proxy-server/build.rs \
  && mkdir -p crates/proxy-sub/src && echo "" > crates/proxy-sub/src/lib.rs \
  && mkdir -p crates/proxy-xray/src && echo "" > crates/proxy-xray/src/lib.rs
 
@@ -72,7 +73,7 @@ COPY crates/ crates/
 
 # Build the actual binary (only business code recompiles)
 # Use musl target for static linking — no glibc dependency in runtime image
-ARG GIT_HASH=dev
+ARG GIT_HASH=unknown
 ENV GIT_HASH=${GIT_HASH}
 RUN cargo build --release -p proxy-server --target x86_64-unknown-linux-musl \
  && cp /app/target/x86_64-unknown-linux-musl/release/proxy-server /app/target/release/proxy-server

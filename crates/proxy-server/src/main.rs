@@ -8,10 +8,11 @@
 //! - Subscription refresh loop
 //! - Xray outbound sync (if xray.enabled)
 
-/// Git hash injected at build time via `GIT_HASH` env var / build-arg.
+/// Git hash injected at build time via `GIT_HASH` env var or build-script
+/// auto-detection from `git rev-parse --short HEAD`.
 const GIT_HASH: &str = match option_env!("GIT_HASH") {
     Some(h) => h,
-    None => "dev",
+    None => "unknown",
 };
 
 use proxy_api::AppState;

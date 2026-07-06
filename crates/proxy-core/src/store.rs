@@ -563,7 +563,7 @@ mod tests {
             ..Default::default()
         };
         let result = apply_filter(vec![p1, p2], &filter, &default_weights());
-        assert!(result.len() >= 1);
+        assert!(!result.is_empty());
         assert_eq!(result[0].host, "1.1.1.1");
     }
 
