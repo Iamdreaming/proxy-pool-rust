@@ -11,6 +11,7 @@ use proxy_core::fetcher::base::FetcherRunReport;
 use proxy_core::models::{Protocol, Proxy, ProxyFilter, WarpInstance};
 use proxy_core::route_debug::RouteDecision;
 use proxy_core::status::{collect_readiness, collect_service_status, render_prometheus_metrics};
+use proxy_core::store::ScoredProxy;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 
@@ -97,6 +98,13 @@ pub struct ProxiesResponse {
 }
 
 #[derive(Serialize)]
+pub struct ScoredProxiesResponse {
+    pub protocol: String,
+    pub count: usize,
+    pub proxies: Vec<ScoredProxy>,
+}
+
+#[derive(Serialize)]
 pub struct SimpleResponse {
     pub status: String,
 }
@@ -144,6 +152,7 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/routes/test", get(route_test))
         .route("/api/fetchers", get(fetcher_status))
         .route("/api/fetchers/{id}/refresh", post(refresh_fetcher))
+        .route("/api/proxies/scores", get(explain_proxy_scores))
         .route("/api/proxies", get(list_proxies))
         .route("/api/proxy/random", get(get_random_proxy))
         .route("/api/proxy/best", get(get_best_proxy))
@@ -256,6 +265,37 @@ async fn list_proxies(
                 count: 0,
                 proxies: vec![],
             })
+        }
+    }
+}
+
+async fn explain_proxy_scores(
+    State(state): State<AppState>,
+    Query(params): Query<ProxyQuery>,
+) -> impl IntoResponse {
+    let protocol_str = params.protocol.as_deref().unwrap_or("http");
+    let protocol = Protocol::from_str_loose(protocol_str).unwrap_or(Protocol::Http);
+    let limit = params.limit.unwrap_or(20);
+    let filter = ProxyFilter::from(&params);
+
+    match state.store.query_scored(protocol, &filter, limit).await {
+        Ok(proxies) => Json(ScoredProxiesResponse {
+            protocol: protocol_str.to_string(),
+            count: proxies.len(),
+            proxies,
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::error!("explain_proxy_scores error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ScoredProxiesResponse {
+                    protocol: protocol_str.to_string(),
+                    count: 0,
+                    proxies: vec![],
+                }),
+            )
+                .into_response()
         }
     }
 }
@@ -450,6 +490,17 @@ mod tests {
         assert!(json.contains("\"fetched\":10"));
         assert!(json.contains("\"errors\":1"));
         assert!(json.contains("\"fetchers\""));
+    }
+
+    #[test]
+    fn test_scored_proxies_response_serialization() {
+        let resp = ScoredProxiesResponse {
+            protocol: "http".into(),
+            count: 0,
+            proxies: vec![],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(json, "{\"protocol\":\"http\",\"count\":0,\"proxies\":[]}");
     }
 
     #[test]

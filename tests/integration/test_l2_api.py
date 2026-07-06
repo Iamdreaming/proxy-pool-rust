@@ -51,6 +51,24 @@ class TestApiProxies:
         data = resp.json()
         assert data["count"] <= 2
 
+    def test_proxy_scores_structure(self, api_client):
+        """Score explanations return proxy/score pairs."""
+        resp = api_client.get(f"{API_BASE}/api/proxies/scores", params={"limit": 2})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "protocol" in data
+        assert "count" in data
+        assert "proxies" in data
+        assert isinstance(data["proxies"], list)
+        if data["proxies"]:
+            first = data["proxies"][0]
+            assert "proxy" in first
+            assert "score" in first
+            assert "retention" in first["score"]
+            assert "latency" in first["score"]
+            assert "success" in first["score"]
+            assert "anonymity" in first["score"]
+
     def test_proxy_has_geoip_fields(self, api_client):
         """Proxies should have country and is_overseas fields populated."""
         resp = api_client.get(f"{API_BASE}/api/proxies", params={"protocol": "http", "limit": 10})

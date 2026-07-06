@@ -33,7 +33,7 @@
 
 ## Current Planning Decision
 
-当前已按用户要求暂停继续推进 `gateway-route-debugging` 的发布后收尾，并完成 Roadmap / Trellis 状态清理和无 SSH dev 验证规范。下一项正式推进 `score-retention-policy`，把代理评分、降权和低质量清理变成可解释、可测试的核心质量闭环。
+当前已按用户要求暂停继续推进 `gateway-route-debugging` 的发布后收尾，并完成 Roadmap / Trellis 状态清理、无 SSH dev 验证规范和代理评分保留策略。下一项正式推进 `validator-observability-v2`，继续提升单个代理验证结果的出口、耗时和多目标诊断能力。
 
 **工作区注意事项**：
 
@@ -44,27 +44,24 @@
 
 ## Now
 
-### P1 — `score-retention-policy`
+### P1 — `validator-observability-v2`
 
-**目标**：让代理评分、降权和清理策略更稳定、可解释。
+**目标**：进一步提升 `check_proxy` 和批量验证结果的解释能力，说明代理“能连哪里、慢在哪里、出口是谁”。
 
-**为什么先做**：抓取、验证、路由诊断和无 SSH 发布验证都已有基础闭环；下一步影响真实代理池质量的是“哪些代理值得保留、为什么降权、什么时候清理”。这也是后续 Dashboard 和自动运维的核心数据基础。
+**为什么先做**：评分解释已经能说明“为什么保留或清理”；下一步需要把验证本身拆得更细，让评分来源更可信，也为后续 Dashboard 展示质量历史打基础。
 
-**建议范围**：
+**候选功能**：
 
-- [ ] 明确当前 score 计算公式并写入文档。
-- [ ] 返回 score 解释字段：latency、success rate、anonymity、penalty。
-- [ ] 长时间未验证的代理降权。
-- [ ] 多次失败代理快速降权。
-- [ ] 支持按协议配置 `min_score`。
-- [ ] 增加低质量代理自动清理任务。
-- [ ] MCP 增加 `cleanup_low_score_proxies` 工具，并加安全开关。
+- [ ] 验证结果记录 TCP 连接时间和请求耗时。
+- [ ] 验证结果记录出口 IP、国家/地区。
+- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
+- [ ] MCP `check_proxy` 返回多目标检查结果和稳定错误分类。
 
 **验收标准**：
 
-- [ ] 文档明确当前 score 公式、降权规则和清理规则。
-- [ ] API/MCP 至少一个运维入口能返回 score explain。
-- [ ] 失败、过期和低分代理的保留/降权/清理行为有自动化测试覆盖。
+- [ ] `ProxyCheckResult` 或等价结构能表达分阶段耗时和出口信息。
+- [ ] MCP `check_proxy` 至少能返回默认目标的更细粒度诊断。
+- [ ] 多目标验证如范围较大，可先规划并明确首个实现切片。
 - [ ] `cargo test --workspace --all-targets` 通过。
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
@@ -92,6 +89,23 @@
 - [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
 
 ## Done
+
+### P1 — `score-retention-policy`
+
+**目标**：让代理评分、降权和清理策略更稳定、可解释。
+
+**当前状态**：已完成首个可验收切片：现有 score 公式可解释，API/MCP 可查看 score explanation，MCP 低分清理默认 dry-run 且必须显式 `apply: true` 才会删除。
+
+**主要完成项**：
+
+- [x] 明确当前 score 计算公式并写入 `docs/score-retention.md`。
+- [x] `proxy-core` 新增 score explanation 和 retention decision 模型。
+- [x] REST 新增 `/api/proxies/scores`。
+- [x] MCP 新增 `explain_proxy_scores`。
+- [x] MCP 新增 `cleanup_low_score_proxies`，默认 dry-run，显式 `apply: true` 才清理。
+- [x] 更新 README、集成测试期望和 `.trellis/spec/proxy-core/backend/quality-guidelines.md`。
+- [x] `cargo test --workspace --all-targets` 通过。
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
 ### P0 — `no-ssh-dev-validation`
 
@@ -162,17 +176,6 @@
 当前无已细化且等待排队的任务；下一批从 Next 中细化。
 
 ## Next
-
-### P1 — `validator-observability-v2`
-
-**目标**：进一步提升 `check_proxy` 和批量验证结果的解释能力，说明代理“能连哪里、慢在哪里、出口是谁”。
-
-**候选功能**：
-
-- [ ] 验证结果记录 TCP 连接时间和请求耗时。
-- [ ] 验证结果记录出口 IP、国家/地区。
-- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
-- [ ] MCP `check_proxy` 返回多目标检查结果和稳定错误分类。
 
 ### P2 — `web-dashboard-real-ops-mvp`
 
@@ -268,14 +271,13 @@
 
 建议按以下顺序创建和推进任务：
 
-1. `score-retention-policy` — 基于现有验证结果做评分、降权和清理。
-2. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
-3. `web-dashboard-real-ops-mvp` — 管理面板接入真实运维数据。
-4. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
-5. `fetcher-validator-quality` — 用户确认后恢复暂缓的源级熔断等内部增强。
-6. `update-failure-hardening` — 仅在允许故障注入 dev 配置且不需要 SSH 时执行。
-7. `warp-ops-enhancement` — WARP 运维增强。
-8. `xray-subscription-ops` — xray 和订阅源管理。
+1. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
+2. `web-dashboard-real-ops-mvp` — 管理面板接入真实运维数据。
+3. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
+4. `fetcher-validator-quality` — 用户确认后恢复暂缓的源级熔断等内部增强。
+5. `update-failure-hardening` — 仅在允许故障注入 dev 配置且不需要 SSH 时执行。
+6. `warp-ops-enhancement` — WARP 运维增强。
+7. `xray-subscription-ops` — xray 和订阅源管理。
 
 ## 任务 PRD 模板
 

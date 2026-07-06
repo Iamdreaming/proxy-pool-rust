@@ -103,6 +103,18 @@ pub struct RouteTestParam {
     pub protocol: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CleanupLowScoreParam {
+    /// Optional protocol to scan: http, https, socks4, socks5. Defaults to http.
+    pub protocol: Option<String>,
+    /// Maximum number of stored proxies to scan. Defaults to 100.
+    pub limit: Option<usize>,
+    /// Optional min score override. Defaults to the store configured min_score.
+    pub min_score: Option<f64>,
+    /// Apply removals. Defaults to false, which performs a dry-run.
+    pub apply: Option<bool>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -295,6 +307,45 @@ impl ProxyPoolMcp {
                 "count": proxies.len(),
                 "proxies": proxies,
             }))),
+            Err(e) => Err(format!("Error: {e}")),
+        }
+    }
+
+    #[tool(
+        description = "Explain proxy scores in the pool. Optionally specify protocol (http, https, socks4, socks5), limit, country, anonymity, max_latency, overseas, min_score, source, and alive."
+    )]
+    async fn explain_proxy_scores(
+        &self,
+        params: Parameters<ListProxiesParam>,
+    ) -> Result<String, String> {
+        let filter = Self::to_filter_from_list(&params.0);
+        let limit = params.0.limit.unwrap_or(20);
+        let proto = self.resolve_protocol(params.0.protocol.as_deref());
+        match self.store.query_scored(proto, &filter, limit).await {
+            Ok(proxies) => Ok(to_json(serde_json::json!({
+                "count": proxies.len(),
+                "proxies": proxies,
+            }))),
+            Err(e) => Err(format!("Error: {e}")),
+        }
+    }
+
+    #[tool(
+        description = "Dry-run or apply cleanup of low-score proxies. Optionally specify protocol (http, https, socks4, socks5), limit, min_score, and apply. Defaults to dry-run with apply=false."
+    )]
+    async fn cleanup_low_score_proxies(
+        &self,
+        params: Parameters<CleanupLowScoreParam>,
+    ) -> Result<String, String> {
+        let proto = self.resolve_protocol(params.0.protocol.as_deref());
+        let limit = params.0.limit.unwrap_or(100);
+        let apply = params.0.apply.unwrap_or(false);
+        match self
+            .store
+            .cleanup_low_score(proto, limit, params.0.min_score, apply)
+            .await
+        {
+            Ok(result) => Ok(to_json(serde_json::to_value(result).unwrap_or_default())),
             Err(e) => Err(format!("Error: {e}")),
         }
     }
@@ -1108,6 +1159,26 @@ mod tests {
         let param: RouteTestParam = serde_json::from_str(json).unwrap();
         assert_eq!(param.host, "github.com");
         assert!(param.protocol.is_none());
+    }
+
+    #[test]
+    fn test_cleanup_low_score_param_deserialize() {
+        let json = r#"{"protocol":"http","limit":50,"min_score":0.25,"apply":true}"#;
+        let param: CleanupLowScoreParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.protocol.as_deref(), Some("http"));
+        assert_eq!(param.limit, Some(50));
+        assert_eq!(param.min_score, Some(0.25));
+        assert_eq!(param.apply, Some(true));
+    }
+
+    #[test]
+    fn test_cleanup_low_score_param_defaults_optional() {
+        let json = r#"{}"#;
+        let param: CleanupLowScoreParam = serde_json::from_str(json).unwrap();
+        assert!(param.protocol.is_none());
+        assert!(param.limit.is_none());
+        assert!(param.min_score.is_none());
+        assert!(param.apply.is_none());
     }
 
     #[test]

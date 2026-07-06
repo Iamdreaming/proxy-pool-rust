@@ -5,10 +5,136 @@ use crate::config::ScoreWeights;
 use crate::models::{Anonymity, Protocol, Proxy, ProxyFilter};
 use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+/// Per-factor contribution to a proxy score.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScoreComponent {
+    /// Normalized value before weighting.
+    pub normalized: f64,
+    /// Configured weight for this component.
+    pub weight: f64,
+    /// Weighted contribution to the final score.
+    pub contribution: f64,
+}
+
+/// Latency score details.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LatencyScoreComponent {
+    /// Raw latency in milliseconds. `None` means the proxy has not been checked.
+    pub latency_ms: Option<f64>,
+    #[serde(flatten)]
+    pub component: ScoreComponent,
+}
+
+/// Success/failure score details.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SuccessScoreComponent {
+    pub success_count: u32,
+    pub fail_count: u32,
+    /// Normalized success rate used by the score formula.
+    pub success_rate: f64,
+    #[serde(flatten)]
+    pub component: ScoreComponent,
+}
+
+/// Anonymity score details.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AnonymityScoreComponent {
+    pub anonymity: Option<Anonymity>,
+    #[serde(flatten)]
+    pub component: ScoreComponent,
+}
+
+/// Retention decision implied by the current score policy.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionDecision {
+    Keep,
+    BelowMinScore,
+    HardFailureEvict,
+}
+
+/// Serializable explanation of the score and retention decision for a proxy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScoreExplanation {
+    pub score: f64,
+    pub min_score: f64,
+    pub latency: LatencyScoreComponent,
+    pub success: SuccessScoreComponent,
+    pub anonymity: AnonymityScoreComponent,
+    pub retention: RetentionDecision,
+}
+
+/// A proxy paired with its score explanation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoredProxy {
+    pub proxy: Proxy,
+    pub score: ScoreExplanation,
+}
+
+/// Result of a low-score cleanup scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanupLowScoreResult {
+    pub protocol: Protocol,
+    pub scanned: usize,
+    pub eligible: usize,
+    pub removed: usize,
+    pub applied: bool,
+    pub min_score: f64,
+    pub candidates: Vec<ScoredProxy>,
+}
 
 /// Compute a 0..1 score from latency, success rate, anonymity.
 pub fn score(proxy: &Proxy, weights: &ScoreWeights) -> f64 {
+    score_parts(proxy, weights).score
+}
+
+/// Explain the score and retention decision for a proxy.
+pub fn explain_score(proxy: &Proxy, weights: &ScoreWeights, min_score: f64) -> ScoreExplanation {
+    let parts = score_parts(proxy, weights);
+    let retention = retention_decision(proxy, parts.score, min_score);
+    ScoreExplanation {
+        score: parts.score,
+        min_score,
+        latency: parts.latency,
+        success: parts.success,
+        anonymity: parts.anonymity,
+        retention,
+    }
+}
+
+fn retention_decision(proxy: &Proxy, score: f64, min_score: f64) -> RetentionDecision {
+    if hard_failure_evict(proxy) {
+        RetentionDecision::HardFailureEvict
+    } else if score < min_score {
+        RetentionDecision::BelowMinScore
+    } else {
+        RetentionDecision::Keep
+    }
+}
+
+fn hard_failure_evict(proxy: &Proxy) -> bool {
+    proxy.fail_count > std::cmp::max(8, proxy.success_count * 3)
+}
+
+struct ScoreParts {
+    score: f64,
+    latency: LatencyScoreComponent,
+    success: SuccessScoreComponent,
+    anonymity: AnonymityScoreComponent,
+}
+
+fn component(normalized: f64, weight: f64) -> ScoreComponent {
+    ScoreComponent {
+        normalized,
+        weight,
+        contribution: weight * normalized,
+    }
+}
+
+fn score_parts(proxy: &Proxy, weights: &ScoreWeights) -> ScoreParts {
     let latency = proxy.latency_ms.unwrap_or(5000.0);
     // Inverse-latency normalization: 0ms→1.0, 2000ms→0.0, linear between.
     let latency_norm = ((2000.0 - latency) / 2000.0).clamp(0.0, 1.0);
@@ -20,9 +146,30 @@ pub fn score(proxy: &Proxy, weights: &ScoreWeights) -> f64 {
         ((proxy.success_count as f64 - proxy.fail_count as f64) / total as f64).clamp(0.0, 1.0)
     };
 
-    let anonymity = proxy.anonymity.map(|a| a.bonus()).unwrap_or(0.0);
+    let anonymity_norm = proxy.anonymity.map(|a| a.bonus()).unwrap_or(0.0);
+    let latency_component = component(latency_norm, weights.latency);
+    let success_component = component(success_rate, weights.success);
+    let anonymity_component = component(anonymity_norm, weights.anonymity);
 
-    weights.latency * latency_norm + weights.success * success_rate + weights.anonymity * anonymity
+    ScoreParts {
+        score: latency_component.contribution
+            + success_component.contribution
+            + anonymity_component.contribution,
+        latency: LatencyScoreComponent {
+            latency_ms: proxy.latency_ms,
+            component: latency_component,
+        },
+        success: SuccessScoreComponent {
+            success_count: proxy.success_count,
+            fail_count: proxy.fail_count,
+            success_rate,
+            component: success_component,
+        },
+        anonymity: AnonymityScoreComponent {
+            anonymity: proxy.anonymity,
+            component: anonymity_component,
+        },
+    }
 }
 
 /// Weighted random choice: prefer higher-scored proxies.
@@ -171,8 +318,7 @@ impl ProxyStore {
         updated.fail_count += 1;
 
         // Hard eviction: too many failures
-        let hard_evict = updated.fail_count > std::cmp::max(8, updated.success_count * 3);
-        if hard_evict || score(&updated, &self.weights) < self.min_score {
+        if hard_failure_evict(&updated) || score(&updated, &self.weights) < self.min_score {
             return Ok(()); // already removed, stays dropped
         }
 
@@ -212,8 +358,7 @@ impl ProxyStore {
         }
 
         // Hard eviction: too many failures
-        let hard_evict = updated.fail_count > std::cmp::max(8, updated.success_count * 3);
-        if hard_evict || score(&updated, &self.weights) < self.min_score {
+        if hard_failure_evict(&updated) || score(&updated, &self.weights) < self.min_score {
             return Ok(()); // already removed, stays dropped
         }
 
@@ -273,6 +418,68 @@ impl ProxyStore {
         let mut conn = self.conn();
         let c: u64 = conn.zcard(&key).await?;
         Ok(c as usize)
+    }
+
+    /// Explain how this store scores a proxy with its configured policy.
+    pub fn explain(&self, proxy: &Proxy) -> ScoreExplanation {
+        explain_score(proxy, &self.weights, self.min_score)
+    }
+
+    /// Query proxies and attach score explanations.
+    pub async fn query_scored(
+        &self,
+        protocol: Protocol,
+        filter: &ProxyFilter,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ScoredProxy>> {
+        let proxies = self.query(protocol, filter, limit).await?;
+        Ok(proxies
+            .into_iter()
+            .map(|proxy| ScoredProxy {
+                score: self.explain(&proxy),
+                proxy,
+            })
+            .collect())
+    }
+
+    /// Scan low-score proxies and optionally remove them.
+    pub async fn cleanup_low_score(
+        &self,
+        protocol: Protocol,
+        limit: usize,
+        min_score: Option<f64>,
+        apply: bool,
+    ) -> anyhow::Result<CleanupLowScoreResult> {
+        let threshold = min_score.unwrap_or(self.min_score);
+        let scanned_proxies: Vec<Proxy> =
+            self.all(protocol).await?.into_iter().take(limit).collect();
+        let scanned = scanned_proxies.len();
+        let candidates: Vec<ScoredProxy> = scanned_proxies
+            .into_iter()
+            .filter_map(|proxy| {
+                let score = explain_score(&proxy, &self.weights, threshold);
+                (score.retention != RetentionDecision::Keep).then_some(ScoredProxy { proxy, score })
+            })
+            .collect();
+
+        let mut removed = 0;
+        if apply {
+            for candidate in &candidates {
+                if self.remove(&candidate.proxy).await? {
+                    removed += 1;
+                }
+            }
+        }
+
+        Ok(CleanupLowScoreResult {
+            protocol,
+            scanned,
+            eligible: candidates.len(),
+            removed,
+            applied: apply,
+            min_score: threshold,
+            candidates,
+        })
     }
 
     /// Remove any stored member matching this proxy's host:port:protocol.
@@ -609,5 +816,58 @@ mod tests {
         p.anonymity = Some(Anonymity::Elite);
         let s = score(&p, &default_weights());
         assert!(s > 0.8);
+    }
+
+    #[test]
+    fn explain_score_includes_component_contributions() {
+        let mut p = make_proxy("1.1.1.1", 80);
+        p.latency_ms = Some(100.0);
+        p.success_count = 8;
+        p.fail_count = 2;
+        p.anonymity = Some(Anonymity::Anonymous);
+
+        let explanation = explain_score(&p, &default_weights(), 0.1);
+
+        assert_eq!(explanation.retention, RetentionDecision::Keep);
+        assert_eq!(explanation.latency.latency_ms, Some(100.0));
+        assert!((explanation.latency.component.normalized - 0.95).abs() < 0.001);
+        assert!((explanation.success.success_rate - 0.6).abs() < 0.001);
+        assert_eq!(explanation.anonymity.anonymity, Some(Anonymity::Anonymous));
+        assert!((explanation.anonymity.component.normalized - 0.5).abs() < 0.001);
+        assert!((explanation.score - score(&p, &default_weights())).abs() < 0.001);
+    }
+
+    #[test]
+    fn explain_score_marks_below_min_score() {
+        let mut p = make_proxy("2.2.2.2", 8080);
+        p.latency_ms = Some(3000.0);
+        p.fail_count = 2;
+
+        let explanation = explain_score(&p, &default_weights(), 0.2);
+
+        assert_eq!(explanation.retention, RetentionDecision::BelowMinScore);
+        assert!(explanation.score < explanation.min_score);
+    }
+
+    #[test]
+    fn explain_score_marks_hard_failure_before_min_score() {
+        let mut p = make_proxy("3.3.3.3", 9090);
+        p.latency_ms = Some(50.0);
+        p.success_count = 0;
+        p.fail_count = 9;
+        p.anonymity = Some(Anonymity::Elite);
+
+        let explanation = explain_score(&p, &default_weights(), 0.1);
+
+        assert_eq!(explanation.retention, RetentionDecision::HardFailureEvict);
+    }
+
+    #[test]
+    fn score_explanation_serializes_retention() {
+        let p = make_proxy("4.4.4.4", 8000);
+        let explanation = explain_score(&p, &default_weights(), 0.1);
+        let json = serde_json::to_string(&explanation).unwrap();
+        assert!(json.contains("\"retention\":\"keep\""));
+        assert!(json.contains("\"min_score\":0.1"));
     }
 }

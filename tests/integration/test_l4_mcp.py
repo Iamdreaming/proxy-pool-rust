@@ -33,6 +33,7 @@ class TestMcpConnection:
             "check_proxy", "service_status", "pool_status", "warp_status",
             "geoip_lookup", "remove_proxy", "refresh_pool",
             "fetcher_status", "refresh_fetcher", "route_test",
+            "explain_proxy_scores", "cleanup_low_score_proxies",
             "proxy_stats", "update_service",
         }
         missing = expected - tool_names

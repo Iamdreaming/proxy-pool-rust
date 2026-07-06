@@ -166,7 +166,7 @@ get a neutral success_rate of 0.5. The score is always in [0, 1].
 ### Eviction
 
 Proxies are evicted when:
-- Hard eviction: `fail_count > max(5, success_count * 2)` (store.rs:170)
+- Hard eviction: `fail_count > max(8, success_count * 3)` (store.rs)
 - Score eviction: `score < min_score` (default 0.1)
 
 Evicted proxies are simply not re-inserted after `remove_existing`.
@@ -387,3 +387,83 @@ Json(RouteTestResponse {
 ```
 
 The selector owns route decisions; API, MCP, metrics, and gateway handlers consume that shared contract.
+
+## Scenario: Score Explanation And Low-Score Cleanup
+
+### 1. Scope / Trigger
+
+- Trigger: proxy score explanations, REST `/api/proxies/scores`, MCP `explain_proxy_scores`, and MCP `cleanup_low_score_proxies` span `proxy-core`, `proxy-api`, and `proxy-mcp`.
+- The score formula and retention decision contract are owned by `proxy-core::store`; adapters must call core store helpers instead of recomputing score components.
+
+### 2. Signatures
+
+- Compatibility score: `score(proxy: &Proxy, weights: &ScoreWeights) -> f64`.
+- Explanation: `explain_score(proxy: &Proxy, weights: &ScoreWeights, min_score: f64) -> ScoreExplanation`.
+- Store explanation: `ProxyStore::explain(&self, proxy: &Proxy) -> ScoreExplanation`.
+- Query with scores: `ProxyStore::query_scored(protocol, filter, limit) -> anyhow::Result<Vec<ScoredProxy>>`.
+- Cleanup: `ProxyStore::cleanup_low_score(protocol, limit, min_score, apply) -> anyhow::Result<CleanupLowScoreResult>`.
+- API endpoint: `GET /api/proxies/scores`.
+- MCP tools: `explain_proxy_scores`, `cleanup_low_score_proxies`.
+
+### 3. Contracts
+
+`ScoreExplanation` fields:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `score` | number | Final weighted score |
+| `min_score` | number | Retention threshold used for this explanation |
+| `latency` | object | Raw latency, normalized value, weight, and contribution |
+| `success` | object | Success/fail counts, success rate, weight, and contribution |
+| `anonymity` | object | Raw anonymity, normalized value, weight, and contribution |
+| `retention` | enum | `keep`, `below_min_score`, or `hard_failure_evict` |
+
+Cleanup is dry-run by default. MCP callers must pass `apply: true` before any stored proxy is removed.
+
+### 4. Validation & Error Matrix
+
+| Condition | Contract |
+|-----------|----------|
+| Unknown latency | Uses `5000ms`, normalized to `0.0` |
+| No success/failure observations | Uses neutral success rate `0.5` |
+| Unknown anonymity | Uses anonymity normalized value `0.0` |
+| `score < min_score` | `retention=below_min_score` |
+| `fail_count > max(8, success_count * 3)` | `retention=hard_failure_evict` |
+| Hard failure and below min score both apply | Hard failure wins |
+| `cleanup_low_score_proxies` called without `apply` | Returns candidates but removes zero proxies |
+| Store query/remove fails | API returns 500; MCP returns `Err("Error: ...")` |
+
+### 5. Good/Base/Bad Cases
+
+- Good: API and MCP call `ProxyStore::query_scored` and serialize `ScoredProxy`.
+- Base: `score(proxy, weights)` remains available and numerically compatible for Redis sorted-set ordering.
+- Bad: API/MCP recompute latency, success, anonymity, or retention locally. That creates drift from Redis score ordering and cleanup behavior.
+
+### 6. Tests Required
+
+- `proxy-core` tests for neutral score, fast elite score, component contributions, below-min retention, hard-failure retention, and retention serialization.
+- `proxy-api` response serialization test for `ScoredProxiesResponse`.
+- `proxy-mcp` parameter deserialization tests for `CleanupLowScoreParam`.
+- Integration tests should assert `/api/proxies/scores` response shape and MCP tool listing includes `explain_proxy_scores` and `cleanup_low_score_proxies`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// API layer recomputes score details.
+let score = proxy.success_count as f64 / (proxy.success_count + proxy.fail_count) as f64;
+```
+
+#### Correct
+
+```rust
+let scored = state.store.query_scored(protocol, &filter, limit).await?;
+Json(ScoredProxiesResponse {
+    protocol: protocol_str.to_string(),
+    count: scored.len(),
+    proxies: scored,
+})
+```
+
+The store owns score math and retention decisions; adapters only select inputs and serialize outputs.
