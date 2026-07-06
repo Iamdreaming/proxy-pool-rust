@@ -229,10 +229,18 @@ Fetcher ids are stable machine ids used by API/MCP clients. Protocol-specific fe
 |-------|------|---------|
 | `id` | string | Stable fetcher id |
 | `name` | string | Human-readable display name |
-| `status` | enum | `never_run`, `success`, `empty`, `error` |
+| `status` | enum | `never_run`, `success`, `empty`, `error`, `skipped` |
 | `fetched` | integer | Raw candidate count when known |
 | `parsed` | integer | Parsed proxy count |
 | `error` | optional string | Error reason for failed fetch attempts |
+| `circuit_state` | enum | Source circuit state: `closed`, `open`, or `half_open` |
+| `consecutive_failures` | integer | Consecutive unsuccessful fetch attempts used by the source circuit |
+| `last_error` | optional string | Latest failure detail retained across skips |
+| `last_attempt_at` | optional RFC3339 datetime | Last real fetch attempt; automatic skips do not update this |
+| `last_success_at` | optional RFC3339 datetime | Last successful source fetch |
+| `opened_at` | optional RFC3339 datetime | When the source circuit entered open state |
+| `next_probe_at` | optional RFC3339 datetime | Earliest automatic half-open probe time |
+| `action` | optional enum | `fetched`, `skipped_open`, `half_open_probe`, or `manual_probe` |
 | `started_at` / `finished_at` | optional RFC3339 datetime | Run timing |
 | `duration_ms` | optional integer | Wall-clock run duration |
 
@@ -255,6 +263,12 @@ Fetcher ids are stable machine ids used by API/MCP clients. Protocol-specific fe
 | Fetcher succeeds with proxies | `status=success`, `parsed > 0` |
 | Fetcher succeeds but parses no proxies | `status=empty`, no error |
 | Fetcher build/fetch/body/parse fails | `status=error`, `error` contains the reason |
+| Consecutive unsuccessful attempts reach source threshold | `circuit_state=open`, `next_probe_at` is set |
+| Automatic refresh hits open source before `next_probe_at` | `status=skipped`, `action=skipped_open`, failure count unchanged |
+| Automatic refresh reaches expired open source | Run as `action=half_open_probe` |
+| Manual single-fetcher refresh hits open source | Run as `action=manual_probe`, even before `next_probe_at` |
+| Probe success | `circuit_state=closed`, failure count reset |
+| Probe failure | `circuit_state=open`, cooldown extended |
 | Unknown fetcher id | `refresh_fetcher` returns `Err("fetcher not found: ...")` |
 | Invalid proxy URL | `error_type=invalid_proxy_url` |
 | Client construction fails | `error_type=client_build_failed` |
@@ -265,14 +279,14 @@ Fetcher ids are stable machine ids used by API/MCP clients. Protocol-specific fe
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `GET /api/fetchers` and MCP `fetcher_status` return the same `FetcherRunReport` shape from `SchedulerHandle`.
+- Good: `GET /api/fetchers` and MCP `fetcher_status` return the same `FetcherRunReport` shape from `SchedulerHandle`, including source circuit fields.
 - Base: a new legacy fetcher only implements `fetch()`; the default `fetch_with_report()` still returns a valid report with fetched/parsed counts equal to the returned proxy count.
 - Bad: an API/MCP adapter parses logs or recomputes fetcher status locally. That duplicates business logic and will drift from scheduler state.
 
 ### 6. Tests Required
 
-- `proxy-core` unit tests for report status constructors and validation result serialization.
-- `proxy-core` scheduler tests for refresh command compatibility.
+- `proxy-core` unit tests for report status constructors, source circuit transitions, and validation result serialization.
+- `proxy-core` scheduler tests for refresh command compatibility and automatic-vs-manual source skip decisions.
 - `proxy-api` serialization tests for refresh and fetcher status response structs.
 - `proxy-mcp` deserialization tests for new tool params.
 - Deployed integration tests should assert `/api/fetchers`, MCP `fetcher_status`, and MCP tool listing include the new operations.

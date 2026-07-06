@@ -33,11 +33,12 @@
 
 ## Current Planning Decision
 
-当前已按用户要求暂不推进 `validator-observability-v2`，并已完成 `web-dashboard-real-ops-mvp`：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态。下一项 Now 改为 `update-failure-hardening`，补齐自更新失败路径的结构化错误和 no-SSH 验证。
+当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp` 与 `fetcher-source-circuit-breaker-mvp`：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源也具备源级熔断和手动探测能力。下一批任务从验证可观测性、WARP 运维增强、xray 订阅运维中继续选择。
 
 **工作区注意事项**：
 
-- 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`stash@{0}: wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
+- 当前本地存在一组已隔离的 `update-failure-hardening` WIP：`stash@{0}: wip: paused update failure hardening`。按用户要求先不继续，不要默认恢复、删除或混入后续任务。
+- 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`stash@{1}: wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
 - 当前 Trellis 里 `gateway-route-debugging` 和 `fetcher-validator-quality` 已从 `in_progress` 改为 `paused`，当前会话任务指针已清空。
 - `validator-observability-v2` 曾创建 planning 任务目录但未进入实现；按用户最新要求暂不作为当前任务推进。
 - `.codex/config.toml` 属于非本任务改动，不纳入任何 roadmap 提交或后续功能提交。
@@ -45,13 +46,17 @@
 
 ## Now
 
+当前无 Now 任务；从 Next 中选择下一项细化后再进入实现。
+
+## Paused Closeout
+
 ### P0 — `update-failure-hardening`
 
 **目标**：在不影响正常发布节奏的前提下，补齐自更新失败路径的故障注入验证。
 
-**为什么先做**：发布主链路已经打通，正常更新可用；现在需要证明失败时不会把旧服务带崩，并让 MCP 返回可诊断的结构化错误。
+**当前状态**：已开始过一个 WIP，但用户要求先不继续；当前草稿隔离在 `stash@{0}: wip: paused update failure hardening`，Trellis 任务指针已清空。后续需要安全窗口或更明确的 no-SSH 验证入口后再恢复。
 
-**候选功能**：
+**暂缓 TODO**：
 
 - [ ] 错误镜像 tag / digest 时，`update_service` 返回结构化错误，旧容器继续运行。
 - [ ] 错误 Watchtower token 时，`update_service` 返回结构化错误，旧容器继续运行。
@@ -59,17 +64,6 @@
 - [ ] 形成一份可重复执行的 dev-only 验证步骤，避免误操作生产配置。
 - [ ] 必要时增加自动化集成测试或最小脚本化检查。
 - [ ] 验证方式仍遵循 no-SSH 规则，只使用 GitHub Actions、MCP、HTTP 状态接口和安全的 dev-only 配置入口。
-
-**验收标准**：
-
-- [ ] `update_service` 对配置错误、拉取失败和 Watchtower 调用失败返回结构化 JSON。
-- [ ] 失败场景验证能证明旧容器仍在运行，且验证路径不依赖直接 SSH。
-- [ ] 失败注入步骤写入文档或自动化脚本，默认不会误碰生产配置。
-- [ ] 相关单元/集成测试通过。
-- [ ] `cargo test --workspace --all-targets` 通过。
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
-
-## Paused Closeout
 
 ### P1 — `gateway-route-debugging`
 
@@ -93,6 +87,25 @@
 - [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
 
 ## Done
+
+### P1 — `fetcher-source-circuit-breaker-mvp`
+
+**目标**：把抓取源从“只记录失败”推进到“连续失败后自动降噪，恢复时可探测”，降低坏源对代理池刷新质量的影响。
+
+**当前状态**：已完成 MVP。`FetcherRunReport` 现在携带源级 circuit state、连续失败次数、最近错误、下次探测时间和 run action；自动刷新会跳过冷却期内 open source，冷却后进入 half-open probe；手动单源刷新可以 probe open source。API/MCP/Web 共享同一核心结构。
+
+**主要完成项**：
+
+- [x] 为每个 fetcher 维护连续失败次数、熔断状态、下次探测时间和最近错误。
+- [x] 连续失败超过阈值后暂停该源，冷却期内跳过自动刷新。
+- [x] 冷却期结束进入 half-open 探测，成功后关闭熔断，失败后延长冷却。
+- [x] `fetcher_status` 和 `/api/fetchers` 展示熔断状态、失败原因和下次探测时间。
+- [x] `refresh_fetcher` 对暂停源支持显式手动探测，并返回结构化结果。
+- [x] Web Fetchers 页面展示真实 circuit state、失败次数、最近错误、下次探测和手动探测入口。
+- [x] 未恢复或混入隔离的 `stash@{1}`。
+- [x] `cargo test --workspace --all-targets` 通过。
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+- [x] `npm run build` 通过。
 
 ### P2 — `web-dashboard-real-ops-mvp`
 
@@ -153,7 +166,7 @@
 
 - [x] Roadmap 新增 `Paused Closeout` 状态。
 - [x] `gateway-route-debugging` 从 Now 移到 `Paused Closeout`，发布后文档/归档收尾按用户要求暂缓。
-- [x] `fetcher-validator-quality` 保持暂缓，WIP 继续隔离在 `stash@{0}`。
+- [x] `fetcher-validator-quality` 保持暂缓，WIP 继续隔离在 `stash@{1}`。
 - [x] Trellis 中 `gateway-route-debugging` 和 `fetcher-validator-quality` 的状态从 `in_progress` 改为 `paused`。
 - [x] 当前 Trellis 会话任务指针已清空，`task.py current --source` 返回 none。
 - [x] 下一项正式开发任务明确为 `no-ssh-dev-validation`。
@@ -197,26 +210,6 @@
 当前无额外 Ready 任务；先完成 Now，再从 Next 中选择一项细化 PRD。
 
 ## Next
-
-### P1 — `fetcher-source-circuit-breaker-mvp`
-
-**目标**：把抓取源从“只记录失败”推进到“连续失败后自动降噪，恢复时可探测”，降低坏源对代理池刷新质量的影响。
-
-**候选功能**：
-
-- [ ] 为每个 fetcher 维护连续失败次数、暂停状态、下次探测时间和最近错误。
-- [ ] 连续失败超过阈值后暂停该源，冷却期内跳过自动刷新。
-- [ ] 冷却期结束进入 half-open 探测，成功后关闭熔断，失败后延长冷却。
-- [ ] `fetcher_status` 和 `/api/fetchers` 展示熔断状态、失败原因和下次探测时间。
-- [ ] `refresh_fetcher` 对暂停源支持显式手动探测，并返回结构化结果。
-- [ ] 不恢复或混入当前隔离的 `stash@{0}`，从当前 main 上重新实现最小可验收切片。
-
-**验收标准**：
-
-- [ ] 单元测试覆盖 closed / open / half-open 状态转换。
-- [ ] API/MCP 返回结构包含源级熔断状态。
-- [ ] `cargo test --workspace --all-targets` 通过。
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
 ### P1 — `validator-observability-v2`
 
@@ -308,12 +301,11 @@
 
 建议按以下顺序创建和推进任务：
 
-1. `update-failure-hardening` — 自更新失败路径结构化错误和 no-SSH 验证。
-2. `fetcher-source-circuit-breaker-mvp` — 抓取源级熔断和 half-open 探测。
-3. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
-4. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
-5. `warp-ops-enhancement` — WARP 运维增强。
-6. `xray-subscription-ops` — xray 和订阅源管理。
+1. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
+2. `update-failure-hardening` — 用户确认后再恢复自更新失败路径结构化错误和 no-SSH 验证。
+3. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
+4. `warp-ops-enhancement` — WARP 运维增强。
+5. `xray-subscription-ops` — xray 和订阅源管理。
 
 ## 任务 PRD 模板
 

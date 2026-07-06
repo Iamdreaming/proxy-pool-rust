@@ -91,7 +91,12 @@ docker compose logs -f proxy-pool
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/status` | 系统状态（协议分布） |
+| GET | `/api/readyz` | 依赖 readiness |
+| GET | `/api/routes/test` | 路由 dry-run 诊断 |
+| GET | `/api/fetchers` | 抓取源状态和源级熔断状态 |
+| POST | `/api/fetchers/{id}/refresh` | 手动刷新/探测单个抓取源 |
 | GET | `/api/proxies` | 代理列表（支持 protocol/limit 参数） |
+| GET | `/api/proxies/scores` | 代理评分解释 |
 | GET | `/api/proxy/random` | 随机代理 |
 | GET | `/api/proxy/best` | 最佳代理 |
 | POST | `/api/proxies/refresh` | 触发刷新（返回抓取/验证/存储计数） |
@@ -116,6 +121,9 @@ docker compose logs -f proxy-pool
 | `pool_status` | 查看池状态概览 |
 | `warp_status` | WARP 实例状态 |
 | `refresh_pool` | 触发抓取+验证（返回实际结果） |
+| `fetcher_status` | 查看抓取源状态和源级熔断状态 |
+| `refresh_fetcher` | 手动刷新/探测单个抓取源 |
+| `route_test` | 路由 dry-run 诊断 |
 | `remove_proxy` | 移除代理 |
 | `proxy_stats` | 代理池统计（协议分布） |
 | `geoip_lookup` | 查询地理位置（国家/境内外） |

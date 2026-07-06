@@ -3,12 +3,13 @@
 use crate::circuit;
 use crate::config::PoolSettings;
 use crate::dedup;
-use crate::fetcher::base::FetcherRunReport;
-use crate::fetcher::{Fetcher, base::FetcherOutput};
+use crate::fetcher::Fetcher;
+use crate::fetcher::base::{FetcherOutput, FetcherRunReport};
 use crate::geoip::GeoIPLookup;
 use crate::models::{Protocol, Proxy};
 use crate::store::ProxyStore;
 use crate::validator::Validator;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 
@@ -92,7 +93,14 @@ impl SchedulerHandle {
 
     /// Return the latest run report for each configured fetcher.
     pub async fn fetcher_statuses(&self) -> Vec<FetcherRunReport> {
-        self.fetcher_statuses.read().await.clone()
+        let now = chrono::Utc::now();
+        self.fetcher_statuses
+            .read()
+            .await
+            .clone()
+            .into_iter()
+            .map(|report| report.with_effective_circuit_state(now))
+            .collect()
     }
 }
 
@@ -172,15 +180,49 @@ impl Scheduler {
             return Err(anyhow::anyhow!("fetcher not found: {id}"));
         }
 
+        let manual_refresh = fetcher_id.is_some();
+        let now = chrono::Utc::now();
+        let previous_by_id: HashMap<String, FetcherRunReport> = self
+            .fetcher_statuses
+            .read()
+            .await
+            .iter()
+            .cloned()
+            .map(|report| (report.id.clone(), report))
+            .collect();
+        let mut runnable = Vec::new();
+
+        for fetcher in selected {
+            let id = fetcher.id();
+            if should_skip_fetcher_for_run(manual_refresh, previous_by_id.get(&id), now) {
+                let previous = previous_by_id
+                    .get(&id)
+                    .expect("skip decision requires previous report");
+                result.fetchers.push(FetcherRunReport::skipped_open(
+                    fetcher.as_ref(),
+                    previous,
+                    now,
+                ));
+                continue;
+            }
+            runnable.push(fetcher);
+        }
+
         let outputs: Vec<FetcherOutput> =
-            futures::future::join_all(selected.iter().map(|f| f.fetch_with_report())).await;
+            futures::future::join_all(runnable.iter().map(|f| f.fetch_with_report())).await;
 
         let mut all_proxies = Vec::new();
         for output in outputs {
-            if output.report.status == crate::fetcher::base::FetcherRunStatus::Error {
+            let previous = previous_by_id.get(&output.report.id);
+            let report = output.report.apply_circuit_transition(
+                previous,
+                manual_refresh,
+                chrono::Utc::now(),
+            );
+            if report.status == crate::fetcher::base::FetcherRunStatus::Error {
                 result.errors += 1;
             }
-            result.fetchers.push(output.report);
+            result.fetchers.push(report);
             all_proxies.extend(output.proxies);
         }
         self.update_fetcher_statuses(&result.fetchers).await;
@@ -367,9 +409,19 @@ fn fetcher_matches(fetcher: &dyn Fetcher, requested: &str) -> bool {
     fetcher.id().eq_ignore_ascii_case(requested) || fetcher.name().eq_ignore_ascii_case(requested)
 }
 
+fn should_skip_fetcher_for_run(
+    manual_refresh: bool,
+    previous: Option<&FetcherRunReport>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    !manual_refresh && previous.is_some_and(|report| report.should_skip_automatic_at(now))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fetcher::base::FetcherCircuitState;
+    use chrono::{Duration, Utc};
     use tokio::sync::mpsc;
 
     #[test]
@@ -438,5 +490,32 @@ mod tests {
 
         let result = handle.refresh().await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn automatic_refresh_skips_open_fetcher_but_manual_refresh_probes() {
+        let now = Utc::now();
+        let report = FetcherRunReport {
+            id: "source".into(),
+            name: "Source".into(),
+            status: crate::fetcher::base::FetcherRunStatus::Error,
+            fetched: 0,
+            parsed: 0,
+            error: Some("timeout".into()),
+            circuit_state: FetcherCircuitState::Open,
+            consecutive_failures: 3,
+            last_error: Some("timeout".into()),
+            last_attempt_at: None,
+            last_success_at: None,
+            opened_at: Some(now),
+            next_probe_at: Some(now + Duration::seconds(60)),
+            action: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+        };
+
+        assert!(should_skip_fetcher_for_run(false, Some(&report), now));
+        assert!(!should_skip_fetcher_for_run(true, Some(&report), now));
     }
 }

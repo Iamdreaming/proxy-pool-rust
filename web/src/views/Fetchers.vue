@@ -13,7 +13,7 @@
       </n-gi>
       <n-gi>
         <n-card>
-          <n-statistic label="空结果" :value="countByStatus('empty')" />
+          <n-statistic label="熔断" :value="countByCircuit('open')" />
         </n-card>
       </n-gi>
       <n-gi>
@@ -52,7 +52,7 @@
 import { computed, h, onMounted, ref } from 'vue'
 import { NButton, NTag, useMessage } from 'naive-ui'
 import { fetchFetcherStatus, refreshFetcher } from '@/api'
-import type { FetcherRunReport, FetcherRunStatus } from '@/types'
+import type { FetcherCircuitState, FetcherRunAction, FetcherRunReport, FetcherRunStatus } from '@/types'
 
 const message = useMessage()
 const fetchers = ref<FetcherRunReport[]>([])
@@ -71,6 +71,14 @@ const columns = computed(() => [
     render: (row: FetcherRunReport) =>
       h(NTag, { size: 'small', type: statusTag(row.status) }, { default: () => statusLabel(row.status) }),
   },
+  {
+    title: '熔断',
+    key: 'circuit_state',
+    width: 100,
+    render: (row: FetcherRunReport) =>
+      h(NTag, { size: 'small', type: circuitTag(row.circuit_state) }, { default: () => circuitLabel(row.circuit_state) }),
+  },
+  { title: '失败', key: 'consecutive_failures', width: 70 },
   { title: '抓取', key: 'fetched', width: 80 },
   { title: '解析', key: 'parsed', width: 80 },
   {
@@ -86,10 +94,22 @@ const columns = computed(() => [
     render: (row: FetcherRunReport) => formatTime(row.finished_at),
   },
   {
-    title: '错误',
-    key: 'error',
+    title: '下次探测',
+    key: 'next_probe_at',
+    width: 180,
+    render: (row: FetcherRunReport) => formatTime(row.next_probe_at),
+  },
+  {
+    title: '最近错误',
+    key: 'last_error',
     ellipsis: { tooltip: true },
-    render: (row: FetcherRunReport) => row.error || '-',
+    render: (row: FetcherRunReport) => row.last_error || row.error || '-',
+  },
+  {
+    title: '动作',
+    key: 'action',
+    width: 110,
+    render: (row: FetcherRunReport) => actionLabel(row.action),
   },
   {
     title: '操作',
@@ -102,13 +122,15 @@ const columns = computed(() => [
         type: 'primary',
         loading: refreshingId.value === row.id,
         onClick: () => refreshOne(row.id),
-      }, { default: () => '刷新' }),
+      }, { default: () => row.circuit_state === 'open' ? '探测' : '刷新' }),
   },
 ])
 
-function statusTag(status: FetcherRunStatus): 'success' | 'warning' | 'error' | 'default' {
+type TagType = 'success' | 'warning' | 'error' | 'default'
+
+function statusTag(status: FetcherRunStatus): TagType {
   if (status === 'success') return 'success'
-  if (status === 'empty' || status === 'never_run') return 'warning'
+  if (status === 'empty' || status === 'never_run' || status === 'skipped') return 'warning'
   if (status === 'error') return 'error'
   return 'default'
 }
@@ -118,11 +140,39 @@ function statusLabel(status: FetcherRunStatus): string {
   if (status === 'success') return '成功'
   if (status === 'empty') return '空'
   if (status === 'error') return '错误'
+  if (status === 'skipped') return '跳过'
   return status
+}
+
+function circuitTag(state: FetcherCircuitState): TagType {
+  if (state === 'closed') return 'success'
+  if (state === 'half_open') return 'warning'
+  if (state === 'open') return 'error'
+  return 'default'
+}
+
+function circuitLabel(state: FetcherCircuitState): string {
+  if (state === 'closed') return '关闭'
+  if (state === 'half_open') return '半开'
+  if (state === 'open') return '打开'
+  return state
+}
+
+function actionLabel(action?: FetcherRunAction): string {
+  if (!action) return '-'
+  if (action === 'fetched') return '抓取'
+  if (action === 'skipped_open') return '跳过'
+  if (action === 'half_open_probe') return '半开探测'
+  if (action === 'manual_probe') return '手动探测'
+  return action
 }
 
 function countByStatus(status: FetcherRunStatus): number {
   return fetchers.value.filter(item => item.status === status).length
+}
+
+function countByCircuit(state: FetcherCircuitState): number {
+  return fetchers.value.filter(item => item.circuit_state === state).length
 }
 
 function formatTime(value?: string): string {

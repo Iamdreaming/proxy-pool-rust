@@ -2,7 +2,9 @@
 export type Protocol = 'http' | 'https' | 'socks4' | 'socks5'
 export type Anonymity = 'transparent' | 'anonymous' | 'elite'
 export type DependencyState = 'ok' | 'error'
-export type FetcherRunStatus = 'never_run' | 'success' | 'empty' | 'error'
+export type FetcherRunStatus = 'never_run' | 'success' | 'empty' | 'error' | 'skipped'
+export type FetcherCircuitState = 'closed' | 'open' | 'half_open'
+export type FetcherRunAction = 'fetched' | 'skipped_open' | 'half_open_probe' | 'manual_probe'
 export type RetentionDecision = 'keep' | 'below_min_score' | 'hard_failure_evict'
 export type RouteExit = 'direct' | 'free_pool' | 'warp' | 'xray' | 'no_proxy'
 
@@ -169,6 +171,14 @@ export interface FetcherRunReport {
   fetched: number
   parsed: number
   error?: string
+  circuit_state: FetcherCircuitState
+  consecutive_failures: number
+  last_error?: string
+  last_attempt_at?: string
+  last_success_at?: string
+  opened_at?: string
+  next_probe_at?: string
+  action?: FetcherRunAction
   started_at?: string
   finished_at?: string
   duration_ms?: number
