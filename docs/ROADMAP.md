@@ -33,14 +33,15 @@
 
 ## Current Planning Decision
 
-当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp`、`validator-observability-v2` 与 `validator-observability-multitarget`：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 能返回目标、耗时、HTTP 状态和出口信息，`check_proxy_matrix` / `/api/proxy/check-matrix` 也能按多个目标返回验证矩阵。
+当前已按用户要求暂不推进 `update-failure-hardening` 和 `xray-config-dry-run-and-remove`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp`、`validator-observability-v2` 与 `validator-observability-multitarget`：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 能返回目标、耗时、HTTP 状态和出口信息，`check_proxy_matrix` / `/api/proxy/check-matrix` 也能按多个目标返回验证矩阵。
 
-用户最新要求先不推进 `xray-config-dry-run-and-remove`，因此该任务只保留暂停草稿，不作为当前 Ready/Next 主线。新的 TODO 队列优先选择三类不依赖直接 SSH、且能复用已落地能力的工作：验证矩阵、Dashboard 运维整合、发布状态可观测性。
+用户最新要求先不做 `dashboard-ops-polish-v2`，因此该前端增强只保留隔离草稿，不作为当前 Ready/Next 主线。新的 TODO 队列优先选择不依赖直接 SSH、且能增强发布/契约可信度的工作：发布状态可观测性、REST/MCP 契约 smoke、代理质量趋势。
 
 **工作区注意事项**：
 
-- 当前本地存在一组已隔离的 `update-failure-hardening` WIP：`stash@{0}: wip: paused update failure hardening`。按用户要求先不继续，不要默认恢复、删除或混入后续任务。
-- 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`stash@{1}: wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
+- 当前本地存在一组已隔离的 `dashboard-ops-polish-v2` WIP：`wip: paused dashboard ops polish v2`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
+- 当前本地存在一组已隔离的 `update-failure-hardening` WIP：`wip: paused update failure hardening`。按用户要求先不继续，不要默认恢复、删除或混入后续任务。
+- 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
 - 当前 Trellis 里 `gateway-route-debugging` 和 `fetcher-validator-quality` 已从 `in_progress` 改为 `paused`，当前会话任务指针已清空。
 - `warp-ops-enhancement` 曾创建 planning 任务目录；按用户最新要求先不继续，任务状态保留为 `paused`，不作为 current task。
 - `xray-config-dry-run-and-remove` 曾创建 planning 任务目录；按用户最新要求先不继续，任务状态保留为 `paused`，不作为 current task。
@@ -49,7 +50,7 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议从 Ready 选择 `dashboard-ops-polish-v2`。如需要先补强发布验证闭环，也可以从 `release-observability-no-ssh-v2` 开始。
+当前无 Now 任务；下一步建议从 Ready 选择 `release-observability-no-ssh-v2`。`dashboard-ops-polish-v2` 按用户最新要求暂停，不作为当前主线。
 
 ## Paused Closeout
 
@@ -57,7 +58,7 @@
 
 **目标**：在不影响正常发布节奏的前提下，补齐自更新失败路径的故障注入验证。
 
-**当前状态**：已开始过一个 WIP，但用户要求先不继续；当前草稿隔离在 `stash@{0}: wip: paused update failure hardening`，Trellis 任务指针已清空。后续需要安全窗口或更明确的 no-SSH 验证入口后再恢复。
+**当前状态**：已开始过一个 WIP，但用户要求先不继续；当前草稿隔离在本地 stash `wip: paused update failure hardening`，Trellis 任务指针已清空。后续需要安全窗口或更明确的 no-SSH 验证入口后再恢复。
 
 **暂缓 TODO**：
 
@@ -88,6 +89,20 @@
 
 - [ ] 按用户确认后再做 Trellis 任务归档和最终文档收尾。
 - [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
+
+### P2 — `dashboard-ops-polish-v2`
+
+**目标**：把新增的 xray、订阅源、抓取源和验证能力接入 Web Dashboard，同时继续坚持只展示真实可用动作。
+
+**当前状态**：用户最新要求“先不做这个”，因此暂停。已产生过一份前端草稿，但已经隔离在本地 stash `wip: paused dashboard ops polish v2`，不纳入当前 TODO 主线、不提交、不推送。
+
+**暂缓 TODO**：
+
+- [ ] xray 节点生命周期摘要和失败原因展示。
+- [ ] 订阅源状态、刷新结果和解析预览展示。
+- [ ] fetcher circuit state、手动 probe 结果和错误原因展示打磨。
+- [ ] validator 多目标结果展示。
+- [ ] 移除或禁用所有没有后端支持的操作按钮。
 
 ## Done
 
@@ -187,7 +202,7 @@
 - [x] `fetcher_status` 和 `/api/fetchers` 展示熔断状态、失败原因和下次探测时间。
 - [x] `refresh_fetcher` 对暂停源支持显式手动探测，并返回结构化结果。
 - [x] Web Fetchers 页面展示真实 circuit state、失败次数、最近错误、下次探测和手动探测入口。
-- [x] 未恢复或混入隔离的 `stash@{1}`。
+- [x] 未恢复或混入隔离的 `wip: paused fetcher circuit work`。
 - [x] `cargo test --workspace --all-targets` 通过。
 - [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 - [x] `npm run build` 通过。
@@ -251,7 +266,7 @@
 
 - [x] Roadmap 新增 `Paused Closeout` 状态。
 - [x] `gateway-route-debugging` 从 Now 移到 `Paused Closeout`，发布后文档/归档收尾按用户要求暂缓。
-- [x] `fetcher-validator-quality` 保持暂缓，WIP 继续隔离在 `stash@{1}`。
+- [x] `fetcher-validator-quality` 保持暂缓，WIP 继续隔离在本地 stash `wip: paused fetcher circuit work`。
 - [x] Trellis 中 `gateway-route-debugging` 和 `fetcher-validator-quality` 的状态从 `in_progress` 改为 `paused`。
 - [x] 当前 Trellis 会话任务指针已清空，`task.py current --source` 返回 none。
 - [x] 下一项正式开发任务明确为 `no-ssh-dev-validation`。
@@ -292,18 +307,6 @@
 
 ## Ready
 
-### P2 — `dashboard-ops-polish-v2`
-
-**目标**：把新增的 xray、订阅源、抓取源和验证能力接入 Web Dashboard，同时继续坚持只展示真实可用动作。
-
-**候选功能**：
-
-- [ ] xray 节点生命周期摘要和失败原因展示。
-- [ ] 订阅源状态、刷新结果和解析预览展示。
-- [ ] fetcher circuit state、手动 probe 结果和错误原因展示打磨。
-- [ ] validator 多目标结果展示；若后端尚未完成矩阵模式，则显示明确不可用状态。
-- [ ] 移除或禁用所有没有后端支持的操作按钮。
-
 ### P2 — `release-observability-no-ssh-v2`
 
 **目标**：继续强化不直接 SSH 的发布验证闭环，让 dev 是否已运行目标镜像、最近更新状态和失败原因更容易通过公开入口判断。
@@ -315,8 +318,6 @@
 - [ ] README / `docs/dev-validation.md` 补充 post-push 检查顺序和故障分流。
 - [ ] 不做破坏性故障注入，不修改 dev compose，不直接 SSH。
 
-## Next
-
 ### P2 — `mcp-api-contract-smoke-v2`
 
 **目标**：为最近新增的 REST/MCP 运维入口补齐契约级 smoke，减少 API 与 MCP 字段漂移。
@@ -324,9 +325,11 @@
 **候选功能**：
 
 - [ ] 统一列出 REST endpoint 与 MCP tool 的等价关系。
-- [ ] 对 status、fetchers、subscriptions、xray status、route test、score explanation 增加轻量 smoke。
+- [ ] 对 status、fetchers、subscriptions、xray status、route test、score explanation、proxy check matrix 增加轻量 smoke。
 - [ ] 集成测试只依赖本地进程或公开 HTTP/MCP 入口，不依赖直接 SSH。
 - [ ] README 中把运维入口按“可查询 / dry-run / apply”分类。
+
+## Next
 
 ### P2 — `proxy-quality-history-lite`
 
@@ -416,10 +419,10 @@
 1. `xray-node-lifecycle-mvp` — xray 节点生命周期和失败原因。
 2. `subscription-source-ops-mvp` — 订阅源状态、手动刷新和解析预览。
 3. `validator-observability-multitarget` — 已完成，多目标验证矩阵和更细阶段耗时。
-4. `dashboard-ops-polish-v2` — 下一项建议，接入新增真实运维能力，移除假动作。
-5. `release-observability-no-ssh-v2` — 发布状态、镜像元数据和最近更新结果的 no-SSH 可观测性。
-6. `mcp-api-contract-smoke-v2` — REST/MCP 运维入口契约 smoke。
-7. `proxy-quality-history-lite` — 代理质量轻量趋势和 dry-run 清理建议。
+4. `release-observability-no-ssh-v2` — 下一项建议，发布状态、镜像元数据和最近更新结果的 no-SSH 可观测性。
+5. `mcp-api-contract-smoke-v2` — REST/MCP 运维入口契约 smoke。
+6. `proxy-quality-history-lite` — 代理质量轻量趋势和 dry-run 清理建议。
+7. `dashboard-ops-polish-v2` — 用户重新确认后再恢复 Dashboard 运维整合草稿。
 8. `xray-config-dry-run-and-remove` — 用户重新确认后再恢复 xray 配置 dry-run 和单节点移除。
 9. `warp-ops-enhancement` — 用户重新确认后再恢复 WARP 运维增强。
 10. `update-failure-hardening` — 用户确认后再恢复自更新失败路径结构化错误和 no-SSH 验证。
