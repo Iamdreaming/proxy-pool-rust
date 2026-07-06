@@ -125,6 +125,31 @@ class TestMcpGetProxy:
         assert "port" in data
 
 
+class TestMcpScoreExplanations:
+    """Test score explanation tools."""
+
+    def test_explain_proxy_scores_structure(self, mcp_client):
+        result = mcp_client.call_tool("explain_proxy_scores", {"protocol": "http", "limit": 2})
+        text = _extract_text(result)
+        data = json.loads(text)
+
+        assert "count" in data
+        assert "proxies" in data
+        assert isinstance(data["proxies"], list)
+        if not data["proxies"]:
+            pytest.skip("No http proxies available")
+
+        first = data["proxies"][0]
+        assert "proxy" in first
+        assert "score" in first
+        trend = first["score"]["trend"]
+        assert isinstance(trend["recent_samples"], int)
+        assert isinstance(trend["recent_failures"], int)
+        assert "recent_success_rate" in trend
+        assert "recent_latency_p50" in trend
+        assert "last_checked_at_unix_secs" in trend
+
+
 class TestMcpCheckProxy:
     """Test check_proxy tool."""
 

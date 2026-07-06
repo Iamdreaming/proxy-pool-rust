@@ -336,6 +336,15 @@ impl Scheduler {
             let working_keys: std::collections::HashSet<String> =
                 working.iter().map(|p| p.key()).collect();
 
+            for p in &working {
+                if let Err(e) = self.store.add(p).await {
+                    tracing::warn!(
+                        "failed to update successful validation for {}: {e}",
+                        p.key()
+                    );
+                }
+            }
+
             for p in &existing {
                 if !working_keys.contains(&p.key())
                     && let Err(e) = self.store.mark_failed_with_circuit(p).await

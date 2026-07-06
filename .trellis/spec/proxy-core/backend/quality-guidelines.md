@@ -453,7 +453,18 @@ The selector owns route decisions; API, MCP, metrics, and gateway handlers consu
 | `latency` | object | Raw latency, normalized value, weight, and contribution |
 | `success` | object | Success/fail counts, success rate, weight, and contribution |
 | `anonymity` | object | Raw anonymity, normalized value, weight, and contribution |
+| `trend` | object | Recent-quality summary derived from bounded proxy history |
 | `retention` | enum | `keep`, `below_min_score`, or `hard_failure_evict` |
+
+`trend` fields:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `recent_samples` | integer | Number of retained validation observations |
+| `recent_success_rate` | optional number | Successes divided by retained samples |
+| `recent_latency_p50` | optional number | Median latency from retained successful observations |
+| `recent_failures` | integer | Failed observations in the retained window |
+| `last_checked_at_unix_secs` | optional integer | Unix timestamp for the newest retained sample |
 
 Cleanup is dry-run by default. MCP callers must pass `apply: true` before any stored proxy is removed.
 
@@ -469,17 +480,20 @@ Cleanup is dry-run by default. MCP callers must pass `apply: true` before any st
 | Hard failure and below min score both apply | Hard failure wins |
 | `cleanup_low_score_proxies` called without `apply` | Returns candidates but removes zero proxies |
 | Store query/remove fails | API returns 500; MCP returns `Err("Error: ...")` |
+| Stored proxy JSON has no quality history | Deserializes with an empty default trend |
+| Score explanation has no retained samples | `trend.recent_samples=0`, optional trend fields are `null` |
 
 ### 5. Good/Base/Bad Cases
 
 - Good: API and MCP call `ProxyStore::query_scored` and serialize `ScoredProxy`.
+- Good: trend fields are derived by `proxy-core` from `Proxy.quality_history`.
 - Base: `score(proxy, weights)` remains available and numerically compatible for Redis sorted-set ordering.
-- Bad: API/MCP recompute latency, success, anonymity, or retention locally. That creates drift from Redis score ordering and cleanup behavior.
+- Bad: API/MCP recompute latency, success, anonymity, trend, or retention locally. That creates drift from Redis score ordering and cleanup behavior.
 
 ### 6. Tests Required
 
-- `proxy-core` tests for neutral score, fast elite score, component contributions, below-min retention, hard-failure retention, and retention serialization.
-- `proxy-api` response serialization test for `ScoredProxiesResponse`.
+- `proxy-core` tests for neutral score, fast elite score, component contributions, quality trend, below-min retention, hard-failure retention, and retention serialization.
+- `proxy-api` response serialization test for `ScoredProxiesResponse`, including trend fields.
 - `proxy-mcp` parameter deserialization tests for `CleanupLowScoreParam`.
 - Integration tests should assert `/api/proxies/scores` response shape and MCP tool listing includes `explain_proxy_scores` and `cleanup_low_score_proxies`.
 

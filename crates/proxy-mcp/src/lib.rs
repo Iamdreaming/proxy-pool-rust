@@ -1526,6 +1526,41 @@ mod tests {
     }
 
     #[test]
+    fn test_scored_proxy_json_includes_quality_trend() {
+        let mut proxy =
+            proxy_core::models::Proxy::new("1.2.3.4", 8080, proxy_core::models::Protocol::Http);
+        proxy
+            .quality_history
+            .samples
+            .push(proxy_core::models::QualitySample {
+                checked_at_unix_secs: 1,
+                success: true,
+                latency_ms: Some(90.0),
+                error: None,
+            });
+        let score = proxy_core::store::explain_score(
+            &proxy,
+            &proxy_core::config::ScoreWeights {
+                latency: 0.5,
+                success: 0.3,
+                anonymity: 0.2,
+            },
+            0.1,
+        );
+        let scored = proxy_core::store::ScoredProxy { proxy, score };
+
+        let json = to_json(serde_json::json!({
+            "count": 1,
+            "proxies": [scored],
+        }));
+
+        assert!(json.contains("\"trend\""));
+        assert!(json.contains("\"recent_samples\": 1"));
+        assert!(json.contains("\"recent_success_rate\": 1.0"));
+        assert!(json.contains("\"recent_latency_p50\": 90.0"));
+    }
+
+    #[test]
     fn test_scheduler_handle_clone() {
         let (cmd_tx, _cmd_rx) = mpsc::channel::<SchedulerCommand>(8);
         let handle = SchedulerHandle::new(cmd_tx);

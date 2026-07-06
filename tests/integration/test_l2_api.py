@@ -69,6 +69,12 @@ class TestApiProxies:
             assert "latency" in first["score"]
             assert "success" in first["score"]
             assert "anonymity" in first["score"]
+            trend = first["score"]["trend"]
+            assert isinstance(trend["recent_samples"], int)
+            assert isinstance(trend["recent_failures"], int)
+            assert "recent_success_rate" in trend
+            assert "recent_latency_p50" in trend
+            assert "last_checked_at_unix_secs" in trend
 
     def test_proxy_check_matrix_structure(self, api_client):
         """Proxy check matrix returns per-target diagnostics."""

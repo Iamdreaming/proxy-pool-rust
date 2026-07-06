@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::SocketAddr;
 
+/// Maximum number of recent validation samples retained per proxy.
+pub const QUALITY_HISTORY_LIMIT: usize = 10;
+
 // ---------------------------------------------------------------------------
 // Protocol
 // ---------------------------------------------------------------------------
@@ -132,6 +135,9 @@ pub struct Proxy {
     // -- reliability counters --
     pub success_count: u32,
     pub fail_count: u32,
+    /// Bounded recent validation history used for trend explanations.
+    #[serde(default, skip_serializing_if = "QualityHistory::is_empty")]
+    pub quality_history: QualityHistory,
 
     // -- GeoIP --
     pub country: Option<String>,
@@ -172,6 +178,7 @@ impl Proxy {
             last_check: None,
             success_count: 0,
             fail_count: 0,
+            quality_history: QualityHistory::default(),
             country: None,
             country_name: None,
             is_overseas: false,
@@ -210,6 +217,119 @@ impl Proxy {
     /// success, or is brand-new).
     pub fn is_alive(&self) -> bool {
         !self.circuit_open
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Quality history
+// ---------------------------------------------------------------------------
+
+/// One recent validation observation for a proxy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QualitySample {
+    /// Unix timestamp seconds when the observation happened.
+    pub checked_at_unix_secs: i64,
+    /// Whether the validation observation succeeded.
+    pub success: bool,
+    /// Rounded latency in milliseconds when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+    /// Stable failure category or short reason when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Bounded validation history embedded in stored proxy JSON.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct QualityHistory {
+    #[serde(default)]
+    pub samples: Vec<QualitySample>,
+}
+
+/// Derived recent-quality trend included in score explanations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QualityTrend {
+    pub recent_samples: usize,
+    pub recent_success_rate: Option<f64>,
+    pub recent_latency_p50: Option<f64>,
+    pub recent_failures: usize,
+    pub last_checked_at_unix_secs: Option<i64>,
+}
+
+impl QualityHistory {
+    /// Return true when no recent observations are stored.
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    /// Append a successful validation sample while preserving the bounded size.
+    pub fn record_success(&mut self, checked_at: DateTime<Utc>, latency_ms: Option<f64>) {
+        self.push_sample(QualitySample {
+            checked_at_unix_secs: checked_at.timestamp(),
+            success: true,
+            latency_ms,
+            error: None,
+        });
+    }
+
+    /// Append a failed validation sample while preserving the bounded size.
+    pub fn record_failure(&mut self, checked_at: DateTime<Utc>, error: impl Into<String>) {
+        self.push_sample(QualitySample {
+            checked_at_unix_secs: checked_at.timestamp(),
+            success: false,
+            latency_ms: None,
+            error: Some(error.into()),
+        });
+    }
+
+    /// Summarize recent validation quality for score explanations.
+    pub fn trend(&self) -> QualityTrend {
+        let sample_count = self.samples.len();
+        let successes = self.samples.iter().filter(|sample| sample.success).count();
+        let failures = sample_count.saturating_sub(successes);
+        let success_rate = (sample_count > 0).then_some(successes as f64 / sample_count as f64);
+        let last_checked = self
+            .samples
+            .last()
+            .map(|sample| sample.checked_at_unix_secs);
+
+        let mut latencies: Vec<f64> = self
+            .samples
+            .iter()
+            .filter_map(|sample| sample.latency_ms)
+            .collect();
+        latencies.sort_by(f64::total_cmp);
+        let latency_p50 = median(&latencies);
+
+        QualityTrend {
+            recent_samples: sample_count,
+            recent_success_rate: success_rate,
+            recent_latency_p50: latency_p50,
+            recent_failures: failures,
+            last_checked_at_unix_secs: last_checked,
+        }
+    }
+
+    fn push_sample(&mut self, sample: QualitySample) {
+        if self.samples.last() == Some(&sample) {
+            return;
+        }
+        self.samples.push(sample);
+        let overflow = self.samples.len().saturating_sub(QUALITY_HISTORY_LIMIT);
+        if overflow > 0 {
+            self.samples.drain(0..overflow);
+        }
+    }
+}
+
+fn median(sorted_values: &[f64]) -> Option<f64> {
+    match sorted_values.len() {
+        0 => None,
+        len if len % 2 == 1 => Some(sorted_values[len / 2]),
+        len => {
+            let upper = len / 2;
+            Some((sorted_values[upper - 1] + sorted_values[upper]) / 2.0)
+        }
     }
 }
 
@@ -380,5 +500,74 @@ mod tests {
             ..Default::default()
         };
         assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn proxy_deserializes_without_quality_history() {
+        let json = r#"{
+            "host":"1.1.1.1",
+            "port":80,
+            "protocol":"http",
+            "latency_ms":null,
+            "anonymity":null,
+            "last_check":null,
+            "success_count":0,
+            "fail_count":0,
+            "country":null,
+            "country_name":null,
+            "is_overseas":false,
+            "warp_chain_ok":false,
+            "warp_chain_latency_ms":null,
+            "warp_chain_last_test":null,
+            "circuit_open":false,
+            "circuit_open_until":null,
+            "source":null
+        }"#;
+
+        let proxy: Proxy = serde_json::from_str(json).unwrap();
+        assert!(proxy.quality_history.is_empty());
+    }
+
+    #[test]
+    fn quality_history_keeps_latest_samples_and_summarizes_trend() {
+        let base = Utc::now();
+        let mut history = QualityHistory::default();
+        for i in 0..12 {
+            let checked_at = base + chrono::Duration::seconds(i);
+            if i % 3 == 0 {
+                history.record_failure(checked_at, "timeout");
+            } else {
+                history.record_success(checked_at, Some((i * 10) as f64));
+            }
+        }
+
+        assert_eq!(history.samples.len(), QUALITY_HISTORY_LIMIT);
+        assert_eq!(
+            history
+                .samples
+                .first()
+                .map(|sample| sample.checked_at_unix_secs),
+            Some((base + chrono::Duration::seconds(2)).timestamp())
+        );
+
+        let trend = history.trend();
+        assert_eq!(trend.recent_samples, QUALITY_HISTORY_LIMIT);
+        assert_eq!(trend.recent_failures, 3);
+        assert_eq!(trend.recent_success_rate, Some(0.7));
+        assert_eq!(trend.recent_latency_p50, Some(70.0));
+        assert_eq!(
+            trend.last_checked_at_unix_secs,
+            Some((base + chrono::Duration::seconds(11)).timestamp())
+        );
+    }
+
+    #[test]
+    fn quality_history_deduplicates_identical_last_sample() {
+        let checked_at = Utc::now();
+        let mut history = QualityHistory::default();
+        history.record_success(checked_at, Some(42.0));
+        history.record_success(checked_at, Some(42.0));
+
+        assert_eq!(history.samples.len(), 1);
     }
 }

@@ -67,7 +67,21 @@ Hard failure eviction wins over the min-score decision.
 ## Explainability
 
 Use REST `/api/proxies/scores` or MCP `explain_proxy_scores` to inspect stored
-proxies with score components and retention decisions.
+proxies with score components, recent quality trend, and retention decisions.
+
+Each score explanation includes a `trend` object derived from the proxy's
+bounded recent validation history:
+
+| Field | Meaning |
+|-------|---------|
+| `recent_samples` | Number of retained recent validation observations |
+| `recent_success_rate` | Successes divided by retained samples, or `null` with no samples |
+| `recent_latency_p50` | Median latency from retained successful observations |
+| `recent_failures` | Failed observations in the retained window |
+| `last_checked_at_unix_secs` | Unix timestamp for the newest retained sample |
+
+The trend is read-only evidence for operators. It does not change the Redis
+sorted-set score formula or cleanup behavior.
 
 ## Cleanup
 

@@ -617,6 +617,35 @@ mod tests {
     }
 
     #[test]
+    fn test_scored_proxies_response_serializes_quality_trend() {
+        let mut proxy = Proxy::new("1.2.3.4", 8080, Protocol::Http);
+        proxy
+            .quality_history
+            .record_success(chrono::Utc::now(), Some(120.0));
+        let score = proxy_core::store::explain_score(
+            &proxy,
+            &proxy_core::config::ScoreWeights {
+                latency: 0.5,
+                success: 0.3,
+                anonymity: 0.2,
+            },
+            0.1,
+        );
+        let resp = ScoredProxiesResponse {
+            protocol: "http".into(),
+            count: 1,
+            proxies: vec![ScoredProxy { proxy, score }],
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+
+        assert!(json.contains("\"trend\""));
+        assert!(json.contains("\"recent_samples\":1"));
+        assert!(json.contains("\"recent_success_rate\":1.0"));
+        assert!(json.contains("\"recent_latency_p50\":120.0"));
+    }
+
+    #[test]
     fn test_fetchers_response_serialization() {
         let resp = FetchersResponse { fetchers: vec![] };
         let json = serde_json::to_string(&resp).unwrap();

@@ -35,7 +35,7 @@
 
 当前已按用户要求暂不推进 `update-failure-hardening` 和 `xray-config-dry-run-and-remove`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp`、`validator-observability-v2` 与 `validator-observability-multitarget`：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 能返回目标、耗时、HTTP 状态和出口信息，`check_proxy_matrix` / `/api/proxy/check-matrix` 也能按多个目标返回验证矩阵。
 
-用户最新要求先不做 `mcp-api-contract-smoke-v2`，因此该契约 smoke 草稿已暂停并隔离，不作为当前 Ready/Next 主线。`dashboard-ops-polish-v2` 也继续保持暂停。当前新 TODO 队列改为优先推进代理质量闭环：先沉淀轻量质量历史，再输出 dry-run 清理/降权建议，之后再按来源质量和只读 Dashboard 展示扩展。
+用户最新要求先不做 `mcp-api-contract-smoke-v2`，因此该契约 smoke 草稿已暂停并隔离，不作为当前 Ready/Next 主线。`dashboard-ops-polish-v2` 也继续保持暂停。当前新 TODO 队列改为优先推进代理质量闭环：`proxy-quality-history-lite` 已完成，下一步输出 dry-run 清理/降权建议，之后再按来源质量和只读 Dashboard 展示扩展。
 
 **工作区注意事项**：
 
@@ -51,7 +51,7 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议从 Ready 选择 `proxy-quality-history-lite`。`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求暂停，不作为当前主线。
+当前无 Now 任务；下一步建议从 Ready 选择 `proxy-quality-recommendations-dry-run`。`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求暂停，不作为当前主线。
 
 ## Paused Closeout
 
@@ -119,6 +119,28 @@
 - [ ] README 中把运维入口按“可查询 / dry-run / apply”分类。
 
 ## Done
+
+### P1 — `proxy-quality-history-lite`
+
+**目标**：在现有评分解释基础上，记录轻量级质量趋势，帮助判断代理是短暂波动还是持续变差。
+
+**当前状态**：已完成 MVP。`Proxy` 现在带有向后兼容的 bounded `quality_history`，旧 Redis JSON 缺少该字段时会默认反序列化为空历史；`ScoreExplanation` 新增 `trend` 对象，REST `/api/proxies/scores` 与 MCP `explain_proxy_scores` 继续直接序列化 `proxy-core` 的 `ScoredProxy`，不在 adapter 层重算趋势。
+
+**主要完成项**：
+
+- [x] 为代理保留最近 10 次验证摘要，包含成功/失败、检查时间、成功 latency 和失败原因。
+- [x] `mark_success`、`mark_failed`、`mark_failed_with_circuit` 和成功 revalidation 写路径会更新质量历史。
+- [x] `ScoreExplanation.trend` 返回 `recent_samples`、`recent_success_rate`、`recent_latency_p50`、`recent_failures` 和 `last_checked_at_unix_secs`。
+- [x] `score()` 数值公式和 Redis sorted-set score 语义保持兼容。
+- [x] REST/MCP 单元测试和 integration shape 断言已覆盖 trend 字段。
+- [x] `docs/score-retention.md` 和 `.trellis/spec/proxy-core/backend/quality-guidelines.md` 已同步趋势契约。
+- [x] `cargo fmt --all --check` 通过。
+- [x] `cargo test -p proxy-core` 通过。
+- [x] `cargo test -p proxy-api` 通过。
+- [x] `cargo test -p proxy-mcp` 通过。
+- [x] `cargo test --workspace --all-targets` 通过。
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+- [x] `python -m py_compile tests\integration\test_l2_api.py tests\integration\test_l4_mcp.py` 通过。
 
 ### P2 — `release-observability-no-ssh-v2`
 
@@ -342,21 +364,6 @@
 
 ## Ready
 
-### P1 — `proxy-quality-history-lite`
-
-**目标**：在现有评分解释基础上，记录轻量级质量趋势，帮助判断代理是短暂波动还是持续变差。
-
-**候选功能**：
-
-- [ ] 为代理保留最近 N 次验证摘要或滚动统计，优先复用现有 Redis key 命名与 score 数据流。
-- [ ] score explanation 返回趋势字段，如 `recent_success_rate`、`recent_latency_p50`、`recent_failures`。
-- [ ] API/MCP 只读查询能解释“当前分数 + 最近趋势”，不直接扩大自动删除策略。
-- [ ] 保持 Redis schema 兼容；如需要迁移，先单独评估并记录回滚方式。
-- [ ] 增加 core 单元测试和 API/MCP 契约测试，验证趋势字段稳定序列化。
-- [ ] 验证继续遵循 no-SSH 规则，只跑本地测试和公开 HTTP/MCP smoke。
-
-## Next
-
 ### P1 — `proxy-quality-recommendations-dry-run`
 
 **目标**：基于当前分数和轻量质量历史，给出可解释的清理/降权建议，但默认不修改代理池。
@@ -367,6 +374,8 @@
 - [ ] 建议规则同时考虑 score、最近成功率、延迟和连续失败。
 - [ ] 默认不删除、不降权、不刷新；未来 apply 入口需单独任务确认。
 - [ ] 保留可测试的规则函数，避免 API/MCP adapter 重复计算。
+
+## Next
 
 ### P1 — `fetcher-source-quality-ranking`
 
@@ -467,8 +476,8 @@
 2. `subscription-source-ops-mvp` — 订阅源状态、手动刷新和解析预览。
 3. `validator-observability-multitarget` — 已完成，多目标验证矩阵和更细阶段耗时。
 4. `release-observability-no-ssh-v2` — 已完成，发布状态、镜像元数据和最近更新结果的 no-SSH 可观测性。
-5. `proxy-quality-history-lite` — 下一项建议，代理质量轻量趋势和只读解释字段。
-6. `proxy-quality-recommendations-dry-run` — 基于趋势输出清理/降权建议，默认 dry-run。
+5. `proxy-quality-history-lite` — 已完成，代理质量轻量趋势和只读解释字段。
+6. `proxy-quality-recommendations-dry-run` — 下一项建议，基于趋势输出清理/降权建议，默认 dry-run。
 7. `fetcher-source-quality-ranking` — 来源维度质量排名和退化提示。
 8. `quality-dashboard-readonly-v1` — 只读展示质量趋势，不恢复暂停的操作按钮草稿。
 9. `mcp-api-contract-smoke-v2` — 用户重新确认后再恢复 REST/MCP 运维入口契约 smoke。

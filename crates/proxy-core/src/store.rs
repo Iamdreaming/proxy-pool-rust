@@ -2,7 +2,7 @@
 
 use crate::circuit::{self, CircuitBreakerConfig};
 use crate::config::ScoreWeights;
-use crate::models::{Anonymity, Protocol, Proxy, ProxyFilter};
+use crate::models::{Anonymity, Protocol, Proxy, ProxyFilter, QualityTrend};
 use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
 use serde::{Deserialize, Serialize};
@@ -64,6 +64,7 @@ pub struct ScoreExplanation {
     pub latency: LatencyScoreComponent,
     pub success: SuccessScoreComponent,
     pub anonymity: AnonymityScoreComponent,
+    pub trend: QualityTrend,
     pub retention: RetentionDecision,
 }
 
@@ -101,8 +102,22 @@ pub fn explain_score(proxy: &Proxy, weights: &ScoreWeights, min_score: f64) -> S
         latency: parts.latency,
         success: parts.success,
         anonymity: parts.anonymity,
+        trend: proxy.quality_history.trend(),
         retention,
     }
+}
+
+fn record_success_sample(proxy: &mut Proxy) {
+    let checked_at = proxy.last_check.unwrap_or_else(chrono::Utc::now);
+    proxy
+        .quality_history
+        .record_success(checked_at, proxy.latency_ms);
+}
+
+fn record_failure_sample(proxy: &mut Proxy, error: &'static str) {
+    proxy
+        .quality_history
+        .record_failure(chrono::Utc::now(), error);
 }
 
 fn retention_decision(proxy: &Proxy, score: f64, min_score: f64) -> RetentionDecision {
@@ -239,8 +254,12 @@ impl ProxyStore {
     /// before inserting, so that stale stats don't create duplicate ZSET members.
     pub async fn add(&self, proxy: &Proxy) -> anyhow::Result<()> {
         self.remove_existing(&proxy.protocol, proxy).await?;
-        let s = score(proxy, &self.weights);
-        let member = serde_json::to_string(proxy)?;
+        let mut proxy = proxy.clone();
+        if proxy.last_check.is_some() {
+            record_success_sample(&mut proxy);
+        }
+        let s = score(&proxy, &self.weights);
+        let member = serde_json::to_string(&proxy)?;
         let key = redis_key(&proxy.protocol);
         let mut conn = self.conn();
         let _: () = conn.zadd(&key, &member, s).await?;
@@ -316,6 +335,7 @@ impl ProxyStore {
         self.remove_existing(&proxy.protocol, proxy).await?;
         let mut updated = proxy.clone();
         updated.fail_count += 1;
+        record_failure_sample(&mut updated, "validation_failed");
 
         // Hard eviction: too many failures
         if hard_failure_evict(&updated) || score(&updated, &self.weights) < self.min_score {
@@ -334,6 +354,7 @@ impl ProxyStore {
         self.remove_existing(&proxy.protocol, proxy).await?;
         let mut updated = proxy.clone();
         updated.success_count += 1;
+        record_success_sample(&mut updated);
         let s = score(&updated, &self.weights);
         let member = serde_json::to_string(&updated)?;
         let mut conn = self.conn();
@@ -350,6 +371,7 @@ impl ProxyStore {
         self.remove_existing(&proxy.protocol, proxy).await?;
         let mut updated = proxy.clone();
         updated.fail_count += 1;
+        record_failure_sample(&mut updated, "validation_failed");
 
         // Check circuit breaker
         if circuit::should_trip(&updated, &self.circuit_config) {
@@ -376,6 +398,7 @@ impl ProxyStore {
         self.remove_existing(&proxy.protocol, proxy).await?;
         let mut updated = proxy.clone();
         updated.success_count += 1;
+        record_success_sample(&mut updated);
 
         // Reset circuit breaker if it was half-open
         if circuit::is_half_open(&updated) {
@@ -825,6 +848,10 @@ mod tests {
         p.success_count = 8;
         p.fail_count = 2;
         p.anonymity = Some(Anonymity::Anonymous);
+        p.quality_history
+            .record_success(chrono::Utc::now(), Some(100.0));
+        p.quality_history
+            .record_failure(chrono::Utc::now(), "timeout");
 
         let explanation = explain_score(&p, &default_weights(), 0.1);
 
@@ -834,6 +861,9 @@ mod tests {
         assert!((explanation.success.success_rate - 0.6).abs() < 0.001);
         assert_eq!(explanation.anonymity.anonymity, Some(Anonymity::Anonymous));
         assert!((explanation.anonymity.component.normalized - 0.5).abs() < 0.001);
+        assert_eq!(explanation.trend.recent_samples, 2);
+        assert_eq!(explanation.trend.recent_failures, 1);
+        assert_eq!(explanation.trend.recent_latency_p50, Some(100.0));
         assert!((explanation.score - score(&p, &default_weights())).abs() < 0.001);
     }
 
@@ -869,5 +899,35 @@ mod tests {
         let json = serde_json::to_string(&explanation).unwrap();
         assert!(json.contains("\"retention\":\"keep\""));
         assert!(json.contains("\"min_score\":0.1"));
+        assert!(json.contains("\"trend\""));
+        assert!(json.contains("\"recent_samples\":0"));
+    }
+
+    #[test]
+    fn record_success_sample_uses_last_check_and_latency() {
+        let mut p = make_proxy("5.5.5.5", 8080);
+        let checked_at = chrono::Utc::now();
+        p.last_check = Some(checked_at);
+        p.latency_ms = Some(123.0);
+
+        record_success_sample(&mut p);
+
+        let sample = p.quality_history.samples.first().unwrap();
+        assert!(sample.success);
+        assert_eq!(sample.checked_at_unix_secs, checked_at.timestamp());
+        assert_eq!(sample.latency_ms, Some(123.0));
+    }
+
+    #[test]
+    fn record_failure_sample_adds_failure_trend() {
+        let mut p = make_proxy("6.6.6.6", 8080);
+
+        record_failure_sample(&mut p, "validation_failed");
+
+        let trend = p.quality_history.trend();
+        assert_eq!(trend.recent_samples, 1);
+        assert_eq!(trend.recent_failures, 1);
+        assert_eq!(trend.recent_success_rate, Some(0.0));
+        assert_eq!(trend.recent_latency_p50, None);
     }
 }
