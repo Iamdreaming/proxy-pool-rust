@@ -30,29 +30,40 @@
 | P2 | 可观测性和运维效率 | metrics、MCP 运维工具、route dry-run、Dashboard MVP |
 | P3 | 能力扩展 | WARP pinning、xray 生命周期、高级订阅管理 |
 
+## Current Planning Decision
+
+当前暂停继续实现 `fetcher-validator-quality` 的剩余内部增强，先把后续队列重排为更贴近日常排障和运维闭环的方向。
+
+**工作区注意事项**：
+
+- 当前本地存在一组未完成的 `fetcher-validator-quality` WIP 改动，下一项正式开发前应先隔离：保留到 draft 分支、stash，或在用户确认后清理。
+- `.codex/config.toml` 属于非本任务改动，不纳入任何 roadmap 提交或后续功能提交。
+- 按用户要求，不直接 SSH 到 dev 地址；dev 验证默认走 HTTP、MCP、GitHub Actions、容器已有自更新入口和公开状态接口。
+
 ## Now
 
-### P1 — `fetcher-validator-quality`
+### P1 — `gateway-route-debugging`
 
-**目标**：提升代理来源质量、验证结果可解释性和错误诊断能力。
+**目标**：让网关路由决策和 fallback 链路可解释、可观测、可测试。
 
-**当前状态**：Trellis 任务已存在：`.trellis/tasks/07-07-fetcher-validator-quality/`。第一批实现已覆盖 fetcher 运行报告、单源刷新、API/MCP 运维入口和 `check_proxy` 结构化错误；剩余重点是源级熔断和多目标验证。
+**为什么先做**：当前服务已经能发布、更新和暴露基础状态；下一步最影响真实可用性的是“请求为什么这样走、失败时 fallback 到了哪里、最后为什么 502”。这也是后续评分、清理和 Dashboard 的共同数据基础。
 
-**主要 TODO**：
+**建议范围**：
 
-- [x] 为每个 fetcher 记录最近抓取时间、成功/失败状态、抓取数量、解析数量和错误原因。
-- [x] 支持按 fetcher 手动刷新，避免每次全量刷新。
-- [ ] 增加源级熔断：连续失败后暂停，恢复时半开探测。
-- [ ] 验证结果记录 TCP 连接时间、请求耗时、出口 IP、国家/地区。
-- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
-- [x] 验证错误分类：invalid proxy URL、client build failed、timeout、request failed、bad status、body read failed。
-- [x] MCP `check_proxy` 返回结构化错误类型。
+- [ ] 为网关请求记录 route rule、GeoIP 结果、出口选择、fallback 次数和最终状态。
+- [ ] 新增 route dry-run 能力：输入 host/url，返回预计命中规则、GeoIP、出口和 fallback 顺序。
+- [ ] MCP 增加 `route_test` 工具。
+- [ ] 对 `free_pool → WARP → xray → 502` 回退链增加 Prometheus 指标。
+- [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
+- [ ] 增加 gateway 集成测试：direct 成功、free_pool fallback、全部失败返回 502。
 
-**已验证**：
+**验收标准**：
 
-- [x] `cargo fmt --all --check`
-- [x] `cargo test --workspace --all-targets`
-- [x] `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] REST 或 MCP 可以对单个目标返回可解释的路由决策链。
+- [ ] 网关真实请求路径有指标能区分 direct、free_pool、WARP、xray 和 502。
+- [ ] 测试覆盖 direct、fallback 和全失败路径。
+- [ ] `cargo test --workspace --all-targets` 通过。
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
 ## Done
 
@@ -92,23 +103,6 @@
 
 ## Ready
 
-暂无。当前 `fetcher-validator-quality` 仍在推进，完成后再从 Next 中选择下一项创建 Trellis 任务。
-
-## Next
-
-### P1 — `gateway-route-debugging`
-
-**目标**：让网关路由决策和 fallback 链路可解释、可观测、可测试。
-
-**建议范围**：
-
-- [ ] 为网关请求记录 route rule、GeoIP 结果、出口选择、fallback 次数和最终状态。
-- [ ] 新增 route dry-run 能力：输入 host/url，返回预计命中规则、GeoIP、出口和 fallback 顺序。
-- [ ] MCP 增加 `route_test` 工具。
-- [ ] 对 `free_pool → WARP → xray → 502` 回退链增加 Prometheus 指标。
-- [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
-- [ ] 增加 gateway 集成测试：direct 成功、free_pool fallback、全部失败返回 502。
-
 ### P1 — `score-retention-policy`
 
 **目标**：让代理评分、降权和清理策略更稳定、可解释。
@@ -123,7 +117,80 @@
 - [ ] 增加低质量代理自动清理任务。
 - [ ] MCP 增加 `cleanup_low_score_proxies` 工具，并加安全开关。
 
+**验收标准**：
+
+- [ ] 文档明确当前 score 公式、降权规则和清理规则。
+- [ ] API/MCP 至少一个运维入口能返回 score explain。
+- [ ] 失败、过期和低分代理的保留/降权/清理行为有自动化测试覆盖。
+- [ ] `cargo test --workspace --all-targets` 通过。
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+
+### P0 — `no-ssh-dev-validation`
+
+**目标**：形成不依赖直接 SSH 的 dev 验证闭环，避免部署和故障验证依赖人工登录服务器。
+
+**建议范围**：
+
+- [ ] 明确 dev 验证只使用 HTTP、MCP、GitHub Actions、容器内已有 update_service 和公开状态接口。
+- [ ] 清理或隔离测试 helper 中“需要 SSH / 直接 Docker API”的假设。
+- [ ] 补充一份可重复的 dev-only 验证步骤：构建、推送、等待 Actions、触发更新、验证 `/api/status.git_hash`、验证 MCP。
+- [ ] 把不能自动化的故障注入项标记为手工/延后，并说明风险。
+
+**验收标准**：
+
+- [ ] 不使用 SSH 即可完成一次发布后冒烟验证。
+- [ ] 相关测试 helper 不再把 SSH 作为默认路径。
+- [ ] 文档说明 dev 验证步骤和禁止事项。
+- [ ] `python -m py_compile tests/integration/**/*.py` 或等价 Python 检查通过。
+
+## Next
+
+### P1 — `validator-observability-v2`
+
+**目标**：进一步提升 `check_proxy` 和批量验证结果的解释能力，说明代理“能连哪里、慢在哪里、出口是谁”。
+
+**候选功能**：
+
+- [ ] 验证结果记录 TCP 连接时间和请求耗时。
+- [ ] 验证结果记录出口 IP、国家/地区。
+- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
+- [ ] MCP `check_proxy` 返回多目标检查结果和稳定错误分类。
+
+### P2 — `web-dashboard-real-ops-mvp`
+
+**目标**：把 Web Dashboard 从演示面板推进为真实可用的运维入口。
+
+**候选功能**：
+
+- [ ] 首页总览使用真实 `/api/status`、`/api/metrics` 或新增摘要接口。
+- [ ] MCP Debug 工具列表同步后端真实工具，包括 `service_status`、`fetcher_status`、`refresh_fetcher`、`update_service` 和后续 `route_test`。
+- [ ] Logs 页面移除模拟数据，改为真实 API / SSE / WebSocket 方案，或在后端能力未完成前隐藏该入口。
+- [ ] 抓取源页面展示源状态、手动刷新、错误历史。
+- [ ] 路由调试页面对接 `route_test`。
+
 ## Later
+
+### P1 — `fetcher-validator-quality`
+
+**目标**：继续提升代理来源质量、验证结果可解释性和错误诊断能力。
+
+**当前状态**：Trellis 任务已存在：`.trellis/tasks/07-07-fetcher-validator-quality/`。第一批实现已覆盖 fetcher 运行报告、单源刷新、API/MCP 运维入口和 `check_proxy` 结构化错误；剩余内部增强暂缓，等待当前 WIP 被隔离或重新确认后再恢复。
+
+**已完成并验证**：
+
+- [x] 为每个 fetcher 记录最近抓取时间、成功/失败状态、抓取数量、解析数量和错误原因。
+- [x] 支持按 fetcher 手动刷新，避免每次全量刷新。
+- [x] 验证错误分类：invalid proxy URL、client build failed、timeout、request failed、bad status、body read failed。
+- [x] MCP `check_proxy` 返回结构化错误类型。
+- [x] `cargo fmt --all --check`
+- [x] `cargo test --workspace --all-targets`
+- [x] `cargo clippy --workspace --all-targets -- -D warnings`
+
+**暂缓 TODO**：
+
+- [ ] 增加源级熔断：连续失败后暂停，恢复时半开探测。
+- [ ] 验证结果记录 TCP 连接时间、请求耗时、出口 IP、国家/地区。
+- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
 
 ### P0 — `update-failure-hardening`
 
@@ -136,30 +203,6 @@
 - [ ] Watchtower HTTP endpoint 不可达时，`update_service` 返回结构化错误，旧容器继续运行。
 - [ ] 形成一份可重复执行的 dev-only 验证步骤，避免误操作生产配置。
 - [ ] 必要时增加自动化集成测试或最小脚本化检查。
-
-### P2 — `mcp-ops-tooling`
-
-**目标**：增强 LLM/运维侧对代理池的诊断和控制能力。
-
-**候选功能**：
-
-- [ ] `fetcher_status`：查询抓取源状态。
-- [ ] `gateway_status`：查询网关运行状态和最近 fallback 摘要。
-- [ ] `refresh_fetcher`：指定单个 fetcher 刷新。
-- [ ] `route_test`：路由 dry-run。
-- [ ] 危险工具配置开关：`update_service`、删除代理、清理代理、强制刷新。
-
-### P2 — `web-dashboard-mvp`
-
-**目标**：提供最小可用管理面板，用于查看服务状态、代理列表和基础运维动作。
-
-**候选功能**：
-
-- [ ] 首页总览：版本、git hash、pool 数量、可用率、最近刷新时间、WARP/xray 状态。
-- [ ] 代理列表：协议筛选、分数排序、延迟排序、地区筛选、删除、手动验证。
-- [ ] 抓取源页面：源状态、手动刷新、错误历史。
-- [ ] 路由调试页面：输入目标域名，查看决策链。
-- [ ] 部署页面：当前 git hash、镜像 digest、触发更新、更新日志。
 
 ### P3 — `warp-ops-enhancement`
 
@@ -207,14 +250,15 @@
 
 建议按以下顺序创建和推进任务：
 
-1. `fetcher-validator-quality` — 推荐下一步，先提高代理输入质量。
-2. `gateway-route-debugging` — 路由和 fallback 可诊断性。
-3. `score-retention-policy` — 基于更完整的验证结果做评分、降权和清理。
-4. `mcp-ops-tooling` — 运维工具补全。
-5. `update-failure-hardening` — 仅在允许故障注入 dev 配置时执行。
-6. `warp-ops-enhancement` — WARP 运维增强。
-7. `xray-subscription-ops` — xray 和订阅源管理。
-8. `web-dashboard-mvp` — 管理面板 MVP。
+1. `gateway-route-debugging` — 路由和 fallback 可诊断性，建议作为下一项正式开发任务。
+2. `score-retention-policy` — 基于现有验证结果做评分、降权和清理。
+3. `no-ssh-dev-validation` — 固化无 SSH 的 dev 验证闭环。
+4. `web-dashboard-real-ops-mvp` — 管理面板接入真实运维数据。
+5. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
+6. `fetcher-validator-quality` — 恢复暂缓的源级熔断等内部增强。
+7. `update-failure-hardening` — 仅在允许故障注入 dev 配置且不需要 SSH 时执行。
+8. `warp-ops-enhancement` — WARP 运维增强。
+9. `xray-subscription-ops` — xray 和订阅源管理。
 
 ## 任务 PRD 模板
 
