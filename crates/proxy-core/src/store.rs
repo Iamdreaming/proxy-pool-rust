@@ -2,7 +2,7 @@
 
 use crate::circuit::{self, CircuitBreakerConfig};
 use crate::config::ScoreWeights;
-use crate::models::{Protocol, Proxy};
+use crate::models::{Anonymity, Protocol, Proxy, ProxyFilter};
 use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
 use std::sync::Arc;
@@ -294,5 +294,320 @@ impl ProxyStore {
             }
         }
         Ok(found)
+    }
+
+    // -----------------------------------------------------------------------
+    // Filtered query methods
+    // -----------------------------------------------------------------------
+
+    /// Query proxies with a composite filter, sorted by score descending.
+    ///
+    /// Applies all non-`None` fields of `filter` and returns up to `limit`
+    /// matching proxies.
+    pub async fn query(
+        &self,
+        protocol: Protocol,
+        filter: &ProxyFilter,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Proxy>> {
+        let all = self.all(protocol).await?;
+        let filtered = apply_filter(all, filter, &self.weights);
+        Ok(filtered.into_iter().take(limit).collect())
+    }
+
+    /// Get the highest-scored proxy matching the filter.
+    ///
+    /// If no proxy matches, returns `Ok(None)`.
+    pub async fn get_best_filtered(
+        &self,
+        protocol: Protocol,
+        filter: &ProxyFilter,
+    ) -> anyhow::Result<Option<Proxy>> {
+        let all = self.all(protocol).await?;
+        let filtered = apply_filter(all, filter, &self.weights);
+        Ok(filtered.into_iter().next())
+    }
+
+    /// Get a random proxy matching the filter (weighted by score).
+    ///
+    /// If no proxy matches, returns `Ok(None)`.
+    pub async fn get_random_filtered(
+        &self,
+        protocol: Protocol,
+        filter: &ProxyFilter,
+    ) -> anyhow::Result<Option<Proxy>> {
+        let all = self.all(protocol).await?;
+        let filtered = apply_filter(all, filter, &self.weights);
+        if filtered.is_empty() {
+            return Ok(None);
+        }
+        let score_fn = |p: &Proxy| score(p, &self.weights);
+        Ok(weighted_random_choice(&filtered, score_fn))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Filter logic
+// ---------------------------------------------------------------------------
+
+/// Apply a composite filter to a list of proxies.
+///
+/// Each `Some` field in `filter` acts as a constraint; `None` fields are
+/// ignored. The `weights` are required for `min_score` filtering.
+fn apply_filter(proxies: Vec<Proxy>, filter: &ProxyFilter, weights: &ScoreWeights) -> Vec<Proxy> {
+    if filter.is_empty() {
+        return proxies;
+    }
+    proxies
+        .into_iter()
+        .filter(|p| {
+            if let Some(ref country) = filter.country
+                && p.country.as_deref() != Some(country.as_str())
+            {
+                return false;
+            }
+            if let Some(ref min_anon) = filter.anonymity {
+                let min_level =
+                    Anonymity::from_str_loose(min_anon).unwrap_or(Anonymity::Transparent);
+                match p.anonymity {
+                    Some(a) if a.meets(min_level) => {}
+                    _ => return false,
+                }
+            }
+            if let Some(max_lat) = filter.max_latency
+                && p.latency_ms.is_none_or(|l| l > max_lat)
+            {
+                return false;
+            }
+            if let Some(overseas) = filter.overseas
+                && p.is_overseas != overseas
+            {
+                return false;
+            }
+            if let Some(min_score) = filter.min_score
+                && score(p, weights) < min_score
+            {
+                return false;
+            }
+            if let Some(ref source) = filter.source
+                && p.source.as_deref() != Some(source.as_str())
+            {
+                return false;
+            }
+            if filter.alive == Some(true) && p.circuit_open {
+                return false;
+            }
+            true
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_weights() -> ScoreWeights {
+        ScoreWeights {
+            latency: 0.5,
+            success: 0.3,
+            anonymity: 0.2,
+        }
+    }
+
+    fn make_proxy(host: &str, port: u16) -> Proxy {
+        Proxy::new(host, port, Protocol::Http)
+    }
+
+    // -- apply_filter: empty filter passes all --
+
+    #[test]
+    fn empty_filter_returns_all() {
+        let proxies = vec![make_proxy("1.1.1.1", 80), make_proxy("2.2.2.2", 8080)];
+        let filter = ProxyFilter::default();
+        let result = apply_filter(proxies, &filter, &default_weights());
+        assert_eq!(result.len(), 2);
+    }
+
+    // -- apply_filter: country --
+
+    #[test]
+    fn country_filter_exact_match() {
+        let mut p = make_proxy("1.1.1.1", 80);
+        p.country = Some("US".into());
+        let p2 = make_proxy("2.2.2.2", 8080); // no country
+        let filter = ProxyFilter {
+            country: Some("US".into()),
+            ..Default::default()
+        };
+        let result = apply_filter(vec![p, p2], &filter, &default_weights());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].host, "1.1.1.1");
+    }
+
+    // -- apply_filter: anonymity --
+
+    #[test]
+    fn anonymity_filter_elite_excludes_anonymous() {
+        let mut p1 = make_proxy("1.1.1.1", 80);
+        p1.anonymity = Some(Anonymity::Elite);
+        let mut p2 = make_proxy("2.2.2.2", 8080);
+        p2.anonymity = Some(Anonymity::Anonymous);
+        let p3 = make_proxy("3.3.3.3", 9090); // no anonymity data
+        let filter = ProxyFilter {
+            anonymity: Some("elite".into()),
+            ..Default::default()
+        };
+        let result = apply_filter(vec![p1, p2, p3], &filter, &default_weights());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].host, "1.1.1.1");
+    }
+
+    #[test]
+    fn anonymity_filter_anonymous_includes_elite() {
+        let mut p1 = make_proxy("1.1.1.1", 80);
+        p1.anonymity = Some(Anonymity::Elite);
+        let mut p2 = make_proxy("2.2.2.2", 8080);
+        p2.anonymity = Some(Anonymity::Anonymous);
+        let mut p3 = make_proxy("3.3.3.3", 9090);
+        p3.anonymity = Some(Anonymity::Transparent);
+        let filter = ProxyFilter {
+            anonymity: Some("anonymous".into()),
+            ..Default::default()
+        };
+        let result = apply_filter(vec![p1, p2, p3], &filter, &default_weights());
+        assert_eq!(result.len(), 2); // elite + anonymous
+    }
+
+    // -- apply_filter: max_latency --
+
+    #[test]
+    fn max_latency_excludes_slow_and_unknown() {
+        let mut p1 = make_proxy("1.1.1.1", 80);
+        p1.latency_ms = Some(100.0);
+        let mut p2 = make_proxy("2.2.2.2", 8080);
+        p2.latency_ms = Some(600.0);
+        let p3 = make_proxy("3.3.3.3", 9090); // no latency data
+        let filter = ProxyFilter {
+            max_latency: Some(500.0),
+            ..Default::default()
+        };
+        let result = apply_filter(vec![p1, p2, p3], &filter, &default_weights());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].host, "1.1.1.1");
+    }
+
+    // -- apply_filter: overseas --
+
+    #[test]
+    fn overseas_filter() {
+        let mut p1 = make_proxy("1.1.1.1", 80);
+        p1.is_overseas = true;
+        let mut p2 = make_proxy("2.2.2.2", 8080);
+        p2.is_overseas = false;
+        let filter = ProxyFilter {
+            overseas: Some(true),
+            ..Default::default()
+        };
+        let result = apply_filter(vec![p1, p2], &filter, &default_weights());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].host, "1.1.1.1");
+    }
+
+    // -- apply_filter: alive (circuit breaker) --
+
+    #[test]
+    fn alive_excludes_circuit_open() {
+        let mut p1 = make_proxy("1.1.1.1", 80);
+        p1.circuit_open = false;
+        let mut p2 = make_proxy("2.2.2.2", 8080);
+        p2.circuit_open = true;
+        let filter = ProxyFilter {
+            alive: Some(true),
+            ..Default::default()
+        };
+        let result = apply_filter(vec![p1, p2], &filter, &default_weights());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].host, "1.1.1.1");
+    }
+
+    // -- apply_filter: source --
+
+    #[test]
+    fn source_filter_exact_match() {
+        let mut p1 = make_proxy("1.1.1.1", 80);
+        p1.source = Some("fate0".into());
+        let mut p2 = make_proxy("2.2.2.2", 8080);
+        p2.source = Some("other".into());
+        let filter = ProxyFilter {
+            source: Some("fate0".into()),
+            ..Default::default()
+        };
+        let result = apply_filter(vec![p1, p2], &filter, &default_weights());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].host, "1.1.1.1");
+    }
+
+    // -- apply_filter: min_score --
+
+    #[test]
+    fn min_score_filter() {
+        let mut p1 = make_proxy("1.1.1.1", 80);
+        p1.latency_ms = Some(50.0);
+        p1.success_count = 10;
+        p1.anonymity = Some(Anonymity::Elite);
+        let mut p2 = make_proxy("2.2.2.2", 8080);
+        p2.latency_ms = Some(1500.0);
+        p2.fail_count = 5;
+        let filter = ProxyFilter {
+            min_score: Some(0.5),
+            ..Default::default()
+        };
+        let result = apply_filter(vec![p1, p2], &filter, &default_weights());
+        assert!(result.len() >= 1);
+        assert_eq!(result[0].host, "1.1.1.1");
+    }
+
+    // -- apply_filter: combined filters --
+
+    #[test]
+    fn combined_country_and_alive() {
+        let mut p1 = make_proxy("1.1.1.1", 80);
+        p1.country = Some("US".into());
+        p1.circuit_open = false;
+        let mut p2 = make_proxy("2.2.2.2", 8080);
+        p2.country = Some("US".into());
+        p2.circuit_open = true;
+        let mut p3 = make_proxy("3.3.3.3", 9090);
+        p3.country = Some("JP".into());
+        p3.circuit_open = false;
+        let filter = ProxyFilter {
+            country: Some("US".into()),
+            alive: Some(true),
+            ..Default::default()
+        };
+        let result = apply_filter(vec![p1, p2, p3], &filter, &default_weights());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].host, "1.1.1.1");
+    }
+
+    // -- score function --
+
+    #[test]
+    fn score_untested_proxy_is_neutral() {
+        let p = make_proxy("1.1.1.1", 80);
+        let s = score(&p, &default_weights());
+        // latency=5000→0.0, success_rate=0.5, anonymity=0.0
+        // 0.5*0.0 + 0.3*0.5 + 0.2*0.0 = 0.15
+        assert!((s - 0.15).abs() < 0.001);
+    }
+
+    #[test]
+    fn score_fast_elite_proxy() {
+        let mut p = make_proxy("1.1.1.1", 80);
+        p.latency_ms = Some(50.0);
+        p.success_count = 10;
+        p.anonymity = Some(Anonymity::Elite);
+        let s = score(&p, &default_weights());
+        assert!(s > 0.8);
     }
 }

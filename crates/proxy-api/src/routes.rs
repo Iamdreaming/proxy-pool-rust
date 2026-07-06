@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get, post},
 };
-use proxy_core::models::{Protocol, Proxy, WarpInstance};
+use proxy_core::models::{Protocol, Proxy, ProxyFilter, WarpInstance};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 
@@ -21,17 +21,65 @@ use crate::AppState;
 pub struct ProxyQuery {
     pub protocol: Option<String>,
     pub limit: Option<usize>,
+    // -- filter fields --
+    pub country: Option<String>,
+    pub anonymity: Option<String>,
+    pub max_latency: Option<f64>,
+    pub overseas: Option<bool>,
+    pub min_score: Option<f64>,
+    pub source: Option<String>,
+    pub alive: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ProxyProtocolQuery {
+pub struct ProxyFilterQuery {
     pub protocol: Option<String>,
+    // -- filter fields --
+    pub country: Option<String>,
+    pub anonymity: Option<String>,
+    pub max_latency: Option<f64>,
+    pub overseas: Option<bool>,
+    pub min_score: Option<f64>,
+    pub source: Option<String>,
+    pub alive: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct DeleteProxyPath {
     pub key: String, // host:port
+}
+
+// ---------------------------------------------------------------------------
+// Query → ProxyFilter conversion
+// ---------------------------------------------------------------------------
+
+impl From<&ProxyQuery> for ProxyFilter {
+    fn from(q: &ProxyQuery) -> Self {
+        ProxyFilter {
+            country: q.country.clone(),
+            anonymity: q.anonymity.clone(),
+            max_latency: q.max_latency,
+            overseas: q.overseas,
+            min_score: q.min_score,
+            source: q.source.clone(),
+            alive: q.alive,
+        }
+    }
+}
+
+impl From<&ProxyFilterQuery> for ProxyFilter {
+    fn from(q: &ProxyFilterQuery) -> Self {
+        ProxyFilter {
+            country: q.country.clone(),
+            anonymity: q.anonymity.clone(),
+            max_latency: q.max_latency,
+            overseas: q.overseas,
+            min_score: q.min_score,
+            source: q.source.clone(),
+            alive: q.alive,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -136,16 +184,14 @@ async fn list_proxies(
     let protocol_str = params.protocol.as_deref().unwrap_or("http");
     let protocol = Protocol::from_str_loose(protocol_str).unwrap_or(Protocol::Http);
     let limit = params.limit.unwrap_or(20);
+    let filter = ProxyFilter::from(&params);
 
-    match state.store.all(protocol).await {
-        Ok(all) => {
-            let proxies: Vec<Proxy> = all.into_iter().take(limit).collect();
-            Json(ProxiesResponse {
-                protocol: protocol_str.to_string(),
-                count: proxies.len(),
-                proxies,
-            })
-        }
+    match state.store.query(protocol, &filter, limit).await {
+        Ok(proxies) => Json(ProxiesResponse {
+            protocol: protocol_str.to_string(),
+            count: proxies.len(),
+            proxies,
+        }),
         Err(e) => {
             tracing::error!("list_proxies error: {e}");
             Json(ProxiesResponse {
@@ -159,12 +205,13 @@ async fn list_proxies(
 
 async fn get_random_proxy(
     State(state): State<AppState>,
-    Query(params): Query<ProxyProtocolQuery>,
+    Query(params): Query<ProxyFilterQuery>,
 ) -> impl IntoResponse {
     let protocol_str = params.protocol.as_deref().unwrap_or("http");
     let protocol = Protocol::from_str_loose(protocol_str).unwrap_or(Protocol::Http);
+    let filter = ProxyFilter::from(&params);
 
-    match state.store.get_random(protocol).await {
+    match state.store.get_random_filtered(protocol, &filter).await {
         Ok(Some(proxy)) => Json(Some(proxy)),
         Ok(None) => Json(None),
         Err(e) => {
@@ -176,12 +223,13 @@ async fn get_random_proxy(
 
 async fn get_best_proxy(
     State(state): State<AppState>,
-    Query(params): Query<ProxyProtocolQuery>,
+    Query(params): Query<ProxyFilterQuery>,
 ) -> impl IntoResponse {
     let protocol_str = params.protocol.as_deref().unwrap_or("http");
     let protocol = Protocol::from_str_loose(protocol_str).unwrap_or(Protocol::Http);
+    let filter = ProxyFilter::from(&params);
 
-    match state.store.get_best(protocol).await {
+    match state.store.get_best_filtered(protocol, &filter).await {
         Ok(Some(proxy)) => Json(Some(proxy)),
         Ok(None) => Json(None),
         Err(e) => {
@@ -333,7 +381,26 @@ mod tests {
             },
         };
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"http\":10"));
+        assert!(json.contains("\"version\":\"0.1.0\""));
         assert!(json.contains("\"git_hash\":\"abc1234\""));
+        assert!(json.contains("\"http\":10"));
+        assert!(json.contains("\"https\":5"));
+        assert!(json.contains("\"socks5\":3"));
+    }
+
+    #[test]
+    fn test_status_response_serialization_unknown_hash() {
+        let resp = StatusResponse {
+            version: "0.1.0",
+            git_hash: "unknown",
+            pool: PoolStatus {
+                http: 0,
+                https: 0,
+                socks5: 0,
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"version\":\"0.1.0\""));
+        assert!(json.contains("\"git_hash\":\"unknown\""));
     }
 }

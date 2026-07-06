@@ -81,6 +81,20 @@ impl Anonymity {
         }
     }
 
+    /// Ordering level: Transparent=0, Anonymous=1, Elite=2.
+    pub fn level(&self) -> u8 {
+        match self {
+            Anonymity::Transparent => 0,
+            Anonymity::Anonymous => 1,
+            Anonymity::Elite => 2,
+        }
+    }
+
+    /// Whether this anonymity meets the given minimum level.
+    pub fn meets(&self, min: Anonymity) -> bool {
+        self.level() >= min.level()
+    }
+
     pub fn from_str_loose(s: &str) -> Option<Anonymity> {
         match s.to_ascii_lowercase().as_str() {
             "transparent" => Some(Anonymity::Transparent),
@@ -253,4 +267,118 @@ pub enum EncryptedProxyState {
     Active { local_socks5_port: u16 },
     /// Configuration failed or xray unavailable.
     Failed,
+}
+
+// ---------------------------------------------------------------------------
+// ProxyFilter
+// ---------------------------------------------------------------------------
+
+/// Composite filter for proxy queries.
+///
+/// All fields are optional; when `None`, that dimension is not filtered.
+/// Used by both the REST API and MCP tools to let clients select proxies
+/// by region, quality, anonymity, and other criteria.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProxyFilter {
+    /// ISO country code (e.g. "US", "JP"). Exact match.
+    pub country: Option<String>,
+    /// Minimum anonymity level (case-insensitive).
+    /// "elite" matches elite only;
+    /// "anonymous" matches anonymous + elite;
+    /// "transparent" matches all.
+    pub anonymity: Option<String>,
+    /// Maximum acceptable latency in milliseconds.
+    pub max_latency: Option<f64>,
+    /// `true` = overseas only, `false` = domestic only, `None` = no filter.
+    pub overseas: Option<bool>,
+    /// Minimum composite score (0.0..1.0).
+    pub min_score: Option<f64>,
+    /// Filter by source name (exact match).
+    pub source: Option<String>,
+    /// `true` = exclude circuit-open proxies, `false`/`None` = include all.
+    pub alive: Option<bool>,
+}
+
+impl ProxyFilter {
+    /// Returns `true` when every field is `None` (no filtering).
+    pub fn is_empty(&self) -> bool {
+        self.country.is_none()
+            && self.anonymity.is_none()
+            && self.max_latency.is_none()
+            && self.overseas.is_none()
+            && self.min_score.is_none()
+            && self.source.is_none()
+            && self.alive.is_none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- Anonymity::level / meets --
+
+    #[test]
+    fn anonymity_level_ordering() {
+        assert_eq!(Anonymity::Transparent.level(), 0);
+        assert_eq!(Anonymity::Anonymous.level(), 1);
+        assert_eq!(Anonymity::Elite.level(), 2);
+    }
+
+    #[test]
+    fn anonymity_meets_same_level() {
+        assert!(Anonymity::Transparent.meets(Anonymity::Transparent));
+        assert!(Anonymity::Anonymous.meets(Anonymity::Anonymous));
+        assert!(Anonymity::Elite.meets(Anonymity::Elite));
+    }
+
+    #[test]
+    fn anonymity_meets_higher_includes_lower() {
+        // Elite meets any minimum
+        assert!(Anonymity::Elite.meets(Anonymity::Transparent));
+        assert!(Anonymity::Elite.meets(Anonymity::Anonymous));
+        // Anonymous meets transparent but not elite
+        assert!(Anonymity::Anonymous.meets(Anonymity::Transparent));
+        assert!(!Anonymity::Anonymous.meets(Anonymity::Elite));
+        // Transparent only meets transparent
+        assert!(!Anonymity::Transparent.meets(Anonymity::Anonymous));
+        assert!(!Anonymity::Transparent.meets(Anonymity::Elite));
+    }
+
+    #[test]
+    fn anonymity_from_str_loose() {
+        assert_eq!(Anonymity::from_str_loose("elite"), Some(Anonymity::Elite));
+        assert_eq!(
+            Anonymity::from_str_loose("ANONYMOUS"),
+            Some(Anonymity::Anonymous)
+        );
+        assert_eq!(
+            Anonymity::from_str_loose("Transparent"),
+            Some(Anonymity::Transparent)
+        );
+        assert_eq!(Anonymity::from_str_loose("unknown"), None);
+    }
+
+    // -- ProxyFilter::is_empty --
+
+    #[test]
+    fn filter_empty_when_all_none() {
+        let f = ProxyFilter::default();
+        assert!(f.is_empty());
+    }
+
+    #[test]
+    fn filter_not_empty_when_any_set() {
+        let f = ProxyFilter {
+            country: Some("US".into()),
+            ..Default::default()
+        };
+        assert!(!f.is_empty());
+
+        let f = ProxyFilter {
+            alive: Some(true),
+            ..Default::default()
+        };
+        assert!(!f.is_empty());
+    }
 }

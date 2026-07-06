@@ -10,6 +10,7 @@
 //! Supports both stdio and Streamable HTTP transports.
 
 use proxy_core::geoip::GeoIPLookup;
+use proxy_core::models::ProxyFilter;
 use proxy_core::scheduler::SchedulerHandle;
 use proxy_core::store::ProxyStore;
 use proxy_core::warp::balancer::WarpBalancer;
@@ -27,14 +28,42 @@ use tokio::sync::Mutex;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ProtocolParam {
+pub struct ProxyFilterParam {
     pub protocol: Option<String>,
+    /// ISO country code (e.g. "US", "JP"). Exact match.
+    pub country: Option<String>,
+    /// Minimum anonymity level: "transparent", "anonymous", or "elite".
+    pub anonymity: Option<String>,
+    /// Maximum acceptable latency in milliseconds.
+    pub max_latency: Option<f64>,
+    /// `true` = overseas only, `false` = domestic only.
+    pub overseas: Option<bool>,
+    /// Minimum composite score (0.0..1.0).
+    pub min_score: Option<f64>,
+    /// Filter by source name (exact match).
+    pub source: Option<String>,
+    /// `true` = exclude circuit-open proxies.
+    pub alive: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListProxiesParam {
     pub protocol: Option<String>,
     pub limit: Option<usize>,
+    /// ISO country code (e.g. "US", "JP"). Exact match.
+    pub country: Option<String>,
+    /// Minimum anonymity level: "transparent", "anonymous", or "elite".
+    pub anonymity: Option<String>,
+    /// Maximum acceptable latency in milliseconds.
+    pub max_latency: Option<f64>,
+    /// `true` = overseas only, `false` = domestic only.
+    pub overseas: Option<bool>,
+    /// Minimum composite score (0.0..1.0).
+    pub min_score: Option<f64>,
+    /// Filter by source name (exact match).
+    pub source: Option<String>,
+    /// `true` = exclude circuit-open proxies.
+    pub alive: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -102,44 +131,72 @@ impl ProxyPoolMcp {
             .and_then(proxy_core::models::Protocol::from_str_loose)
             .unwrap_or(proxy_core::models::Protocol::Http)
     }
+
+    fn to_filter(param: &ProxyFilterParam) -> ProxyFilter {
+        ProxyFilter {
+            country: param.country.clone(),
+            anonymity: param.anonymity.clone(),
+            max_latency: param.max_latency,
+            overseas: param.overseas,
+            min_score: param.min_score,
+            source: param.source.clone(),
+            alive: param.alive,
+        }
+    }
+
+    fn to_filter_from_list(param: &ListProxiesParam) -> ProxyFilter {
+        ProxyFilter {
+            country: param.country.clone(),
+            anonymity: param.anonymity.clone(),
+            max_latency: param.max_latency,
+            overseas: param.overseas,
+            min_score: param.min_score,
+            source: param.source.clone(),
+            alive: param.alive,
+        }
+    }
 }
 
 #[tool_router(router = tool_router)]
 impl ProxyPoolMcp {
+    #[tool(description = "Get a random working proxy from the pool. \
+        Optionally specify protocol (http, https, socks4, socks5) \
+        and filter by country, anonymity, max_latency, overseas, min_score, source, alive.")]
+    async fn get_proxy(&self, params: Parameters<ProxyFilterParam>) -> Result<String, String> {
+        let filter = Self::to_filter(&params.0);
+        let proto = self.resolve_protocol(params.0.protocol.as_deref());
+        match self.store.get_random_filtered(proto, &filter).await {
+            Ok(Some(proxy)) => Ok(to_json(serde_json::to_value(&proxy).unwrap_or_default())),
+            Ok(None) => Ok("No proxy available matching the filter criteria".into()),
+            Err(e) => Err(format!("Error: {e}")),
+        }
+    }
+
+    #[tool(description = "Get the best (highest scored) proxy from the pool. \
+        Optionally filter by country, anonymity, max_latency, overseas, min_score, source, alive.")]
+    async fn get_best_proxy(&self, params: Parameters<ProxyFilterParam>) -> Result<String, String> {
+        let filter = Self::to_filter(&params.0);
+        let proto = self.resolve_protocol(params.0.protocol.as_deref());
+        match self.store.get_best_filtered(proto, &filter).await {
+            Ok(Some(proxy)) => Ok(to_json(serde_json::to_value(&proxy).unwrap_or_default())),
+            Ok(None) => Ok("No proxy available matching the filter criteria".into()),
+            Err(e) => Err(format!("Error: {e}")),
+        }
+    }
+
     #[tool(
-        description = "Get a random working proxy from the pool. Optionally specify protocol: http, https, socks4, socks5"
+        description = "List proxies in the pool with optional protocol filter, limit, \
+        and advanced filters: country, anonymity, max_latency, overseas, min_score, source, alive."
     )]
-    async fn get_proxy(&self, params: Parameters<ProtocolParam>) -> Result<String, String> {
-        let protocol = params.0.protocol;
-        let proto = self.resolve_protocol(protocol.as_deref());
-        match self.store.get_random(proto).await {
-            Ok(Some(proxy)) => Ok(to_json(serde_json::to_value(&proxy).unwrap_or_default())),
-            Ok(None) => Ok("No proxy available for the requested protocol".into()),
-            Err(e) => Err(format!("Error: {e}")),
-        }
-    }
-
-    #[tool(description = "Get the best (highest scored) proxy from the pool")]
-    async fn get_best_proxy(&self, params: Parameters<ProtocolParam>) -> Result<String, String> {
-        let protocol = params.0.protocol;
-        let proto = self.resolve_protocol(protocol.as_deref());
-        match self.store.get_best(proto).await {
-            Ok(Some(proxy)) => Ok(to_json(serde_json::to_value(&proxy).unwrap_or_default())),
-            Ok(None) => Ok("No proxy available".into()),
-            Err(e) => Err(format!("Error: {e}")),
-        }
-    }
-
-    #[tool(description = "List proxies in the pool with optional protocol filter and limit")]
     async fn list_proxies(&self, params: Parameters<ListProxiesParam>) -> Result<String, String> {
-        let protocol = params.0.protocol;
+        let filter = Self::to_filter_from_list(&params.0);
         let limit = params.0.limit.unwrap_or(20);
-        let proto = self.resolve_protocol(protocol.as_deref());
-        match self.store.all(proto).await {
-            Ok(all) => {
-                let proxies: Vec<_> = all.into_iter().take(limit).collect();
-                Ok(to_json(serde_json::json!({ "proxies": proxies })))
-            }
+        let proto = self.resolve_protocol(params.0.protocol.as_deref());
+        match self.store.query(proto, &filter, limit).await {
+            Ok(proxies) => Ok(to_json(serde_json::json!({
+                "count": proxies.len(),
+                "proxies": proxies,
+            }))),
             Err(e) => Err(format!("Error: {e}")),
         }
     }
@@ -392,7 +449,7 @@ async fn read_http_response(
     per_read_timeout_secs: u64,
 ) -> Result<Vec<u8>, String> {
     use tokio::io::AsyncReadExt;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let mut buf = Vec::with_capacity(8192);
     let mut tmp = [0u8; 8192];
@@ -403,7 +460,12 @@ async fn read_http_response(
         if buf.windows(4).any(|w| w == b"\r\n\r\n") {
             break;
         }
-        match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
+        match timeout(
+            Duration::from_secs(per_read_timeout_secs),
+            stream.read(&mut tmp),
+        )
+        .await
+        {
             Ok(Ok(0)) => return Ok(buf), // EOF before headers — let parse_docker_response handle it
             Ok(Ok(n)) => {
                 buf.extend_from_slice(&tmp[..n]);
@@ -417,10 +479,7 @@ async fn read_http_response(
     }
 
     // Find header/body boundary
-    let header_end = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .unwrap();
+    let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
     let header_str = String::from_utf8_lossy(&buf[..header_end]);
     let body_start = header_end + 4;
     let body_received = buf.len().saturating_sub(body_start);
@@ -433,7 +492,12 @@ async fn read_http_response(
             if body_part.windows(5).any(|w| w == b"0\r\n\r\n") {
                 break;
             }
-            match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
+            match timeout(
+                Duration::from_secs(per_read_timeout_secs),
+                stream.read(&mut tmp),
+            )
+            .await
+            {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => {
                     buf.extend_from_slice(&tmp[..n]);
@@ -442,9 +506,7 @@ async fn read_http_response(
                     }
                 }
                 Ok(Err(e)) => return Err(format!("read: {e}")),
-                Err(_) => {
-                    return Err(format!("read: timed out after {per_read_timeout_secs}s"))
-                }
+                Err(_) => return Err(format!("read: timed out after {per_read_timeout_secs}s")),
             }
         }
     } else if let Some(content_length) = extract_content_length(&header_str) {
@@ -452,7 +514,12 @@ async fn read_http_response(
         let needed = content_length.saturating_sub(body_received);
         let mut remaining = needed;
         while remaining > 0 {
-            match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
+            match timeout(
+                Duration::from_secs(per_read_timeout_secs),
+                stream.read(&mut tmp),
+            )
+            .await
+            {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => {
                     buf.extend_from_slice(&tmp[..n]);
@@ -462,9 +529,7 @@ async fn read_http_response(
                     }
                 }
                 Ok(Err(e)) => return Err(format!("read: {e}")),
-                Err(_) => {
-                    return Err(format!("read: timed out after {per_read_timeout_secs}s"))
-                }
+                Err(_) => return Err(format!("read: timed out after {per_read_timeout_secs}s")),
             }
         }
     }
@@ -493,7 +558,7 @@ fn extract_content_length(header_str: &str) -> Option<usize> {
 async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
@@ -522,7 +587,7 @@ async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Val
 async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
@@ -555,7 +620,7 @@ async fn docker_api_post_json(
 ) -> Result<serde_json::Value, String> {
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
@@ -587,7 +652,7 @@ async fn docker_api_post_json(
 async fn docker_api_delete(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
         .await
@@ -648,9 +713,8 @@ fn parse_docker_response(buf: &[u8]) -> Result<serde_json::Value, String> {
 
     // Check status line
     let status_line = header_part.lines().next().unwrap_or("");
-    let is_success = status_line.contains("200")
-        || status_line.contains("201")
-        || status_line.contains("204");
+    let is_success =
+        status_line.contains("200") || status_line.contains("201") || status_line.contains("204");
 
     // Handle chunked transfer-encoding
     let body = if header_part.contains("chunked") {
@@ -728,17 +792,29 @@ mod tests {
     use tokio::sync::mpsc;
 
     #[test]
-    fn test_protocol_param_deserialize() {
+    fn test_proxy_filter_param_deserialize() {
         let json = r#"{"protocol":"socks5"}"#;
-        let param: ProtocolParam = serde_json::from_str(json).unwrap();
+        let param: ProxyFilterParam = serde_json::from_str(json).unwrap();
         assert_eq!(param.protocol.as_deref(), Some("socks5"));
+        assert!(param.country.is_none());
     }
 
     #[test]
-    fn test_protocol_param_optional() {
+    fn test_proxy_filter_param_optional() {
         let json = r#"{}"#;
-        let param: ProtocolParam = serde_json::from_str(json).unwrap();
+        let param: ProxyFilterParam = serde_json::from_str(json).unwrap();
         assert!(param.protocol.is_none());
+    }
+
+    #[test]
+    fn test_proxy_filter_param_with_filters() {
+        let json = r#"{"protocol":"http","country":"US","anonymity":"elite","max_latency":500.0,"alive":true}"#;
+        let param: ProxyFilterParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.protocol.as_deref(), Some("http"));
+        assert_eq!(param.country.as_deref(), Some("US"));
+        assert_eq!(param.anonymity.as_deref(), Some("elite"));
+        assert_eq!(param.max_latency, Some(500.0));
+        assert_eq!(param.alive, Some(true));
     }
 
     #[test]
