@@ -1,26 +1,29 @@
-"""Docker control helpers for fault injection tests.
+"""Safe integration helpers for deployment validation.
 
-These functions require SSH access to the server or direct Docker API access.
-For integration tests running from outside the server, they use the MCP
-update_service and docker APIs through the proxy-pool container's socket.
+Fault injection must not use direct SSH or host Docker API access from the test
+runner. Destructive container controls are unavailable until the service exposes
+an explicit safe MCP/API operation for that scenario.
 """
 
-import httpx
+
+class FaultInjectionUnavailable(RuntimeError):
+    """Raised when a test asks for unsafe or unsupported fault injection."""
+
+
+_FAULT_INJECTION_MESSAGE = (
+    "WARP container fault injection is unavailable without an explicit safe "
+    "MCP/API control surface; direct SSH or host Docker access is forbidden."
+)
 
 
 async def stop_warp_container(host: str, mcp_port: int = 9000) -> None:
-    """Stop all WARP containers via Docker API to simulate WARP failure.
-
-    Uses the proxy-pool container's Docker socket access.
-    """
-    # WARP instances run as separate containers managed by docker-compose
-    # We stop them via the Docker Engine API exposed through the proxy-pool container
-    pass  # TODO: implement when WARP containers are accessible
+    """Reject WARP fault injection until a safe MCP/API operation exists."""
+    raise FaultInjectionUnavailable(_FAULT_INJECTION_MESSAGE)
 
 
 async def start_warp_container(host: str, mcp_port: int = 9000) -> None:
-    """Restart WARP containers after fault injection."""
-    pass  # TODO: implement when WARP containers are accessible
+    """Reject WARP restart until a safe MCP/API operation exists."""
+    raise FaultInjectionUnavailable(_FAULT_INJECTION_MESSAGE)
 
 
 async def clear_proxy_pool(host: str, api_port: int = 8000) -> int:

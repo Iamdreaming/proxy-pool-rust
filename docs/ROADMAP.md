@@ -33,7 +33,7 @@
 
 ## Current Planning Decision
 
-当前已按用户要求暂停继续推进 `gateway-route-debugging` 的发布后收尾，并完成第一轮 Roadmap / Trellis 状态清理。下一项正式推进 `no-ssh-dev-validation`，先把不依赖直接 SSH 的 dev 验证闭环固化，再进入代理评分与保留策略。
+当前已按用户要求暂停继续推进 `gateway-route-debugging` 的发布后收尾，并完成 Roadmap / Trellis 状态清理和无 SSH dev 验证规范。下一项正式推进 `score-retention-policy`，把代理评分、降权和低质量清理变成可解释、可测试的核心质量闭环。
 
 **工作区注意事项**：
 
@@ -44,25 +44,29 @@
 
 ## Now
 
-### P0 — `no-ssh-dev-validation`
+### P1 — `score-retention-policy`
 
-**目标**：形成不依赖直接 SSH 的 dev 验证闭环，避免部署和故障验证依赖人工登录服务器。
+**目标**：让代理评分、降权和清理策略更稳定、可解释。
 
-**为什么先做**：用户已经明确禁止直接 SSH 到 dev 地址。后续每个发布、冒烟和故障验证任务都依赖这条规则，先固化流程可以避免后面重复犹豫或误用服务器登录。
+**为什么先做**：抓取、验证、路由诊断和无 SSH 发布验证都已有基础闭环；下一步影响真实代理池质量的是“哪些代理值得保留、为什么降权、什么时候清理”。这也是后续 Dashboard 和自动运维的核心数据基础。
 
 **建议范围**：
 
-- [ ] 明确 dev 验证只使用 HTTP、MCP、GitHub Actions、容器内已有 update_service 和公开状态接口。
-- [ ] 清理或隔离测试 helper 中“需要 SSH / 直接 Docker API”的假设。
-- [ ] 补充一份可重复的 dev-only 验证步骤：构建、推送、等待 Actions、触发更新、验证 `/api/status.git_hash`、验证 MCP。
-- [ ] 把不能自动化的故障注入项标记为手工/延后，并说明风险。
+- [ ] 明确当前 score 计算公式并写入文档。
+- [ ] 返回 score 解释字段：latency、success rate、anonymity、penalty。
+- [ ] 长时间未验证的代理降权。
+- [ ] 多次失败代理快速降权。
+- [ ] 支持按协议配置 `min_score`。
+- [ ] 增加低质量代理自动清理任务。
+- [ ] MCP 增加 `cleanup_low_score_proxies` 工具，并加安全开关。
 
 **验收标准**：
 
-- [ ] 不使用 SSH 即可完成一次发布后冒烟验证。
-- [ ] 相关测试 helper 不再把 SSH 作为默认路径。
-- [ ] 文档说明 dev 验证步骤和禁止事项。
-- [ ] `python -m py_compile tests/integration/**/*.py` 或等价 Python 检查通过。
+- [ ] 文档明确当前 score 公式、降权规则和清理规则。
+- [ ] API/MCP 至少一个运维入口能返回 score explain。
+- [ ] 失败、过期和低分代理的保留/降权/清理行为有自动化测试覆盖。
+- [ ] `cargo test --workspace --all-targets` 通过。
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
 ## Paused Closeout
 
@@ -88,6 +92,21 @@
 - [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
 
 ## Done
+
+### P0 — `no-ssh-dev-validation`
+
+**目标**：形成不依赖直接 SSH 的 dev 验证闭环，避免部署和故障验证依赖人工登录服务器。
+
+**当前状态**：已完成文档和 helper hardening；后续 dev 验证默认走 GitHub Actions、MCP、HTTP 状态接口和集成测试，不走直接 SSH。
+
+**主要完成项**：
+
+- [x] 新增 `docs/dev-validation.md`，说明允许/禁止的验证入口和 post-push 检查清单。
+- [x] `CLAUDE.md` 的部署验证流程明确禁止直接 SSH 到 dev 地址，并指向 `docs/dev-validation.md`。
+- [x] `tests/integration/helpers/docker_control.py` 不再把 SSH 或 host Docker API 作为默认路径。
+- [x] WARP fault-injection helper 不再静默通过，而是抛出 `FaultInjectionUnavailable`。
+- [x] 新增 `tests/integration/test_l0_no_ssh_helpers.py` 覆盖 helper 拒绝 unsafe fault injection。
+- [x] `python -m py_compile` 和 no-SSH helper 测试通过。
 
 ### P0 — `todo-queue-and-task-state-cleanup`
 
@@ -140,27 +159,7 @@
 
 ## Ready
 
-### P1 — `score-retention-policy`
-
-**目标**：让代理评分、降权和清理策略更稳定、可解释。
-
-**建议范围**：
-
-- [ ] 明确当前 score 计算公式并写入文档。
-- [ ] 返回 score 解释字段：latency、success rate、anonymity、penalty。
-- [ ] 长时间未验证的代理降权。
-- [ ] 多次失败代理快速降权。
-- [ ] 支持按协议配置 `min_score`。
-- [ ] 增加低质量代理自动清理任务。
-- [ ] MCP 增加 `cleanup_low_score_proxies` 工具，并加安全开关。
-
-**验收标准**：
-
-- [ ] 文档明确当前 score 公式、降权规则和清理规则。
-- [ ] API/MCP 至少一个运维入口能返回 score explain。
-- [ ] 失败、过期和低分代理的保留/降权/清理行为有自动化测试覆盖。
-- [ ] `cargo test --workspace --all-targets` 通过。
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+当前无已细化且等待排队的任务；下一批从 Next 中细化。
 
 ## Next
 

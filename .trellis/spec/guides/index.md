@@ -39,6 +39,16 @@ These guides help you **ask the right questions before coding**.
 
 → Read [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md)
 
+### When to Think About Deployment Validation
+
+- [ ] You pushed or plan to push a change that must be verified on dev
+- [ ] You are about to validate `git_hash`, container update, MCP tools, or health endpoints
+- [ ] You are considering SSH, host Docker access, or fault injection
+
+→ Read `docs/dev-validation.md`. Dev validation uses GitHub Actions, MCP, HTTP
+status endpoints, and integration tests; direct SSH to the dev address is not
+part of the workflow.
+
 ### When to Think About Code Reuse
 
 - [ ] You're writing similar code to something that exists

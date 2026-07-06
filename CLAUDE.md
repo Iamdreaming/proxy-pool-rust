@@ -32,6 +32,9 @@ Rust workspace 代理池服务，包含代理获取、验证、网关路由、MC
 
 ## 修复后部署与端到端验证工作流
 
+禁止直接 SSH 到 dev 地址。部署后验证必须走 GitHub Actions、MCP `update_service`、
+HTTP 状态接口和 MCP 工具；完整检查清单见 `docs/dev-validation.md`。
+
 1. 修复/实现代码后，先在本地运行 `cargo test` 和 `cargo clippy -- -D warnings`，零失败零警告方可进入下一步。
 2. 提交并用 conventional commits 格式（如 `fix(core): ...` / `feat(api): ...`，破坏性变更加 `!`）。
 3. `git push origin main` 推送到远程 main 分支。
