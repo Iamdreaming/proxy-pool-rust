@@ -65,6 +65,8 @@ cp config/settings.example.yaml config/settings.yaml
 cd deploy
 cp ../config/settings.example.yaml ../config/settings.yaml
 # 编辑 settings.yaml（至少修改 redis.url）
+# 可选：设置 Watchtower 更新 token；不设置时使用 compose 中的默认本地 token
+# export PROXY_POOL_UPDATE_TOKEN="your-token"
 docker compose up -d
 ```
 

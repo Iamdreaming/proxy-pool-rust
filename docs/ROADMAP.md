@@ -40,13 +40,13 @@
 
 **主要 TODO**：
 
-- [ ] GitHub Actions 构建并推送 GHCR 镜像。
-- [ ] `docker-compose.yml` 改用 GHCR 镜像，并保留本地 build 参考。
-- [ ] MCP 增加 `update_service` 工具。
-- [ ] `/api/status` 增加 `version` 和 `git_hash`。
-- [ ] 更新前后返回镜像 digest 对比。
+- [x] GitHub Actions workflow 已配置构建并推送 GHCR 镜像（远程运行待 push 验证）。
+- [x] `docker-compose.yml` 改用 GHCR 镜像，并保留本地 build 参考。
+- [x] MCP 增加 `update_service` 工具，并通过显式环境变量安全开关启用。
+- [x] `/api/status` 增加 `version` 和 `git_hash`。
+- [x] 更新前后返回镜像 ID / digest 对比。
 - [ ] 更新失败时旧容器继续运行。
-- [ ] 本地通过 `cargo test` 和 `cargo clippy -- -D warnings`。
+- [x] 本地通过 `cargo test` 和 `cargo clippy -- -D warnings`。
 - [ ] 推送后监控 `docker-build.yml` GitHub Actions。
 - [ ] 通过 MCP 更新线上服务，并验证 `/api/status.git_hash`。
 

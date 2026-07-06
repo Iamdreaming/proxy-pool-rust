@@ -100,6 +100,71 @@ fn to_json(value: serde_json::Value) -> String {
     serde_json::to_string_pretty(&value).expect("infallible: Value serialization")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateServiceConfig {
+    enabled: bool,
+    socket_path: String,
+    container_name: String,
+    image: String,
+    image_repo: String,
+    image_tag: String,
+    watchtower_url: String,
+    watchtower_token: Option<String>,
+}
+
+impl UpdateServiceConfig {
+    fn from_env() -> Self {
+        Self::from_lookup(|key| std::env::var(key).ok())
+    }
+
+    fn from_lookup(mut get: impl FnMut(&str) -> Option<String>) -> Self {
+        let image = get("PROXY_POOL_UPDATE_IMAGE")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "ghcr.io/iamdreaming/proxy-pool-rust:latest".into());
+        let (image_repo, image_tag) = split_image_ref(&image);
+
+        Self {
+            enabled: parse_bool_env(get("PROXY_POOL_UPDATE_ENABLED").as_deref()),
+            socket_path: get("PROXY_POOL_UPDATE_DOCKER_SOCKET")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "/var/run/docker.sock".into()),
+            container_name: get("PROXY_POOL_UPDATE_CONTAINER")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "proxy-pool".into()),
+            image,
+            image_repo,
+            image_tag,
+            watchtower_url: get("PROXY_POOL_UPDATE_WATCHTOWER_URL")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "http://watchtower-proxy-pool:8080/v1/update".into()),
+            watchtower_token: get("PROXY_POOL_UPDATE_TOKEN")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+        }
+    }
+}
+
+fn parse_bool_env(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()),
+        Some(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on")
+    )
+}
+
+fn split_image_ref(image: &str) -> (String, String) {
+    let last_colon = image.rfind(':');
+    let last_slash = image.rfind('/');
+    if let Some(colon_idx) = last_colon
+        && last_slash.is_none_or(|slash_idx| colon_idx > slash_idx)
+    {
+        return (
+            image[..colon_idx].to_string(),
+            image[colon_idx + 1..].to_string(),
+        );
+    }
+    (image.to_string(), "latest".into())
+}
+
 // ---------------------------------------------------------------------------
 // MCP Server implementation
 // ---------------------------------------------------------------------------
@@ -358,20 +423,33 @@ impl ProxyPoolMcp {
     }
 
     #[tool(
-        description = "Update the proxy-pool service by pulling the latest Docker image, creating a new container (blue-green), and swapping. Uses Docker Engine API via Unix socket (no docker CLI required)."
+        description = "Update the proxy-pool service by pulling the configured Docker image and triggering Watchtower. Requires PROXY_POOL_UPDATE_ENABLED=true."
     )]
     async fn update_service(&self) -> String {
-        let socket_path = "/var/run/docker.sock";
-        let image_repo = "ghcr.io/iamdreaming/proxy-pool-rust";
-        let image_tag = "latest";
-        let image = format!("{image_repo}:{image_tag}");
-        let container_name = "proxy-pool";
+        let config = UpdateServiceConfig::from_env();
+        if !config.enabled {
+            return to_json(serde_json::json!({
+                "status": "disabled",
+                "message": "update_service is disabled; set PROXY_POOL_UPDATE_ENABLED=true to allow Docker/Watchtower updates",
+                "required_env": "PROXY_POOL_UPDATE_ENABLED=true",
+            }));
+        }
 
-        // Step 1: Inspect current container to get previous_digest
-        tracing::info!("update_service: inspecting current container {container_name}");
+        let Some(watchtower_token) = config.watchtower_token.as_deref() else {
+            return to_json(serde_json::json!({
+                "status": "error",
+                "message": "PROXY_POOL_UPDATE_TOKEN must be set when update_service is enabled",
+            }));
+        };
+
+        // Step 1: Inspect current container to get previous image identity.
+        tracing::info!(
+            container = %config.container_name,
+            "update_service: inspecting current container"
+        );
         let old_inspect = match docker_api_get(
-            socket_path,
-            &format!("/containers/{container_name}/json"),
+            &config.socket_path,
+            &format!("/containers/{}/json", config.container_name),
         )
         .await
         {
@@ -384,20 +462,20 @@ impl ProxyPoolMcp {
             }
         };
 
-        let previous_digest = old_inspect
+        let previous_image_id = old_inspect
             .get("Image")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
 
         // Step 2: Pull latest image (pre-fetch so Watchtower doesn't need to)
-        tracing::info!("update_service: pulling image {image}");
+        tracing::info!(image = %config.image, "update_service: pulling image");
         if let Err(e) = docker_api_post(
-            socket_path,
+            &config.socket_path,
             &format!(
                 "/images/create?fromImage={}&tag={}",
-                docker_api_escape(image_repo),
-                docker_api_escape(image_tag)
+                docker_api_escape(&config.image_repo),
+                docker_api_escape(&config.image_tag)
             ),
         )
         .await
@@ -405,13 +483,13 @@ impl ProxyPoolMcp {
             return to_json(serde_json::json!({
                 "status": "error",
                 "message": format!("docker pull failed: {e}"),
-                "previous_digest": previous_digest,
+                "previous_image_id": previous_image_id,
             }));
         }
 
         let new_inspect = match docker_api_get(
-            socket_path,
-            &format!("/images/{}/json", docker_api_escape(&image)),
+            &config.socket_path,
+            &format!("/images/{}/json", docker_api_escape(&config.image)),
         )
         .await
         {
@@ -420,25 +498,35 @@ impl ProxyPoolMcp {
                 return to_json(serde_json::json!({
                     "status": "error",
                     "message": format!("failed to inspect pulled image: {e}"),
-                    "previous_digest": previous_digest,
-                    "image": image,
+                    "previous_image_id": previous_image_id,
+                    "image": config.image,
                 }));
             }
         };
         let new_digest = docker_image_digest(&new_inspect).unwrap_or_else(|| "unknown".into());
-        let digest_changed = previous_digest != "unknown"
-            && new_digest != "unknown"
-            && previous_digest != new_digest;
+        let new_image_id = docker_image_id(&new_inspect).unwrap_or_else(|| "unknown".into());
+        let digest_changed = image_identity_changed(&previous_image_id, &new_image_id);
+
+        if !digest_changed {
+            return to_json(serde_json::json!({
+                "status": "already_current",
+                "previous_image_id": previous_image_id,
+                "new_image_id": new_image_id,
+                "new_digest": new_digest,
+                "digest_changed": false,
+                "image": config.image,
+                "message": "Pulled image matches the running container image; Watchtower was not triggered.",
+            }));
+        }
 
         // Step 3: Trigger Watchtower to update the container
         // Watchtower is an independent container that handles stop/recreate/start
         // safely — it doesn't have the "self-surgery" problem.
         tracing::info!("update_service: triggering Watchtower update");
-        let watchtower_url = "http://watchtower-proxy-pool:8080/v1/update";
         let client = reqwest::Client::new();
         let resp = client
-            .post(watchtower_url)
-            .header("Authorization", "Bearer proxy-pool-update")
+            .post(&config.watchtower_url)
+            .header("Authorization", format!("Bearer {watchtower_token}"))
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await;
@@ -451,10 +539,11 @@ impl ProxyPoolMcp {
                 // The success signal is the new container's git_hash changing (verified externally).
                 to_json(serde_json::json!({
                     "status": "update_triggered",
-                    "previous_digest": previous_digest,
+                    "previous_image_id": previous_image_id,
+                    "new_image_id": new_image_id,
                     "new_digest": new_digest,
                     "digest_changed": digest_changed,
-                    "image": image,
+                    "image": config.image,
                     "message": "Watchtower update triggered. The container will be recreated shortly.",
                 }))
             }
@@ -464,7 +553,8 @@ impl ProxyPoolMcp {
                 to_json(serde_json::json!({
                     "status": "error",
                     "message": format!("Watchtower returned {status}: {body}"),
-                    "previous_digest": previous_digest,
+                    "previous_image_id": previous_image_id,
+                    "new_image_id": new_image_id,
                     "new_digest": new_digest,
                     "digest_changed": digest_changed,
                 }))
@@ -472,7 +562,8 @@ impl ProxyPoolMcp {
             Err(e) => to_json(serde_json::json!({
                 "status": "error",
                 "message": format!("failed to reach Watchtower: {e}"),
-                "previous_digest": previous_digest,
+                "previous_image_id": previous_image_id,
+                "new_image_id": new_image_id,
                 "new_digest": new_digest,
                 "digest_changed": digest_changed,
             })),
@@ -827,6 +918,17 @@ fn docker_image_digest(image_inspect: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn docker_image_id(image_inspect: &serde_json::Value) -> Option<String> {
+    image_inspect
+        .get("Id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn image_identity_changed(previous_image_id: &str, new_image_id: &str) -> bool {
+    previous_image_id != "unknown" && new_image_id != "unknown" && previous_image_id != new_image_id
+}
+
 fn docker_api_escape(value: &str) -> String {
     value
         .replace('%', "%25")
@@ -937,6 +1039,69 @@ mod tests {
     }
 
     #[test]
+    fn test_update_service_config_defaults_to_disabled() {
+        let config = UpdateServiceConfig::from_lookup(|_| None);
+        assert!(!config.enabled);
+        assert_eq!(config.socket_path, "/var/run/docker.sock");
+        assert_eq!(config.container_name, "proxy-pool");
+        assert_eq!(config.image, "ghcr.io/iamdreaming/proxy-pool-rust:latest");
+        assert_eq!(config.image_repo, "ghcr.io/iamdreaming/proxy-pool-rust");
+        assert_eq!(config.image_tag, "latest");
+        assert_eq!(
+            config.watchtower_url,
+            "http://watchtower-proxy-pool:8080/v1/update"
+        );
+        assert_eq!(config.watchtower_token, None);
+    }
+
+    #[test]
+    fn test_update_service_config_from_lookup() {
+        let config = UpdateServiceConfig::from_lookup(|key| match key {
+            "PROXY_POOL_UPDATE_ENABLED" => Some("true".into()),
+            "PROXY_POOL_UPDATE_DOCKER_SOCKET" => Some("/tmp/docker.sock".into()),
+            "PROXY_POOL_UPDATE_CONTAINER" => Some("proxy-pool-blue".into()),
+            "PROXY_POOL_UPDATE_IMAGE" => Some("localhost:5000/proxy-pool:test".into()),
+            "PROXY_POOL_UPDATE_WATCHTOWER_URL" => Some("http://watchtower/v1/update".into()),
+            "PROXY_POOL_UPDATE_TOKEN" => Some("secret".into()),
+            _ => None,
+        });
+
+        assert!(config.enabled);
+        assert_eq!(config.socket_path, "/tmp/docker.sock");
+        assert_eq!(config.container_name, "proxy-pool-blue");
+        assert_eq!(config.image, "localhost:5000/proxy-pool:test");
+        assert_eq!(config.image_repo, "localhost:5000/proxy-pool");
+        assert_eq!(config.image_tag, "test");
+        assert_eq!(config.watchtower_url, "http://watchtower/v1/update");
+        assert_eq!(config.watchtower_token.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn test_parse_bool_env_truthy_values() {
+        for value in ["1", "true", "TRUE", "yes", "on"] {
+            assert!(parse_bool_env(Some(value)));
+        }
+        for value in [None, Some(""), Some("false"), Some("0"), Some("off")] {
+            assert!(!parse_bool_env(value));
+        }
+    }
+
+    #[test]
+    fn test_split_image_ref_handles_registry_port_and_missing_tag() {
+        assert_eq!(
+            split_image_ref("localhost:5000/proxy-pool:test"),
+            ("localhost:5000/proxy-pool".into(), "test".into())
+        );
+        assert_eq!(
+            split_image_ref("ghcr.io/iamdreaming/proxy-pool-rust"),
+            (
+                "ghcr.io/iamdreaming/proxy-pool-rust".into(),
+                "latest".into()
+            )
+        );
+    }
+
+    #[test]
     fn test_docker_image_digest_prefers_repo_digest() {
         let image = serde_json::json!({
             "Id": "sha256:image-id",
@@ -960,5 +1125,27 @@ mod tests {
             docker_image_digest(&image).as_deref(),
             Some("sha256:image-id")
         );
+    }
+
+    #[test]
+    fn test_docker_image_id_and_identity_change() {
+        let image = serde_json::json!({
+            "Id": "sha256:new-image-id",
+            "RepoDigests": ["ghcr.io/iamdreaming/proxy-pool-rust@sha256:repo-digest"]
+        });
+
+        assert_eq!(
+            docker_image_id(&image).as_deref(),
+            Some("sha256:new-image-id")
+        );
+        assert!(image_identity_changed(
+            "sha256:old-image-id",
+            "sha256:new-image-id"
+        ));
+        assert!(!image_identity_changed(
+            "sha256:new-image-id",
+            "sha256:new-image-id"
+        ));
+        assert!(!image_identity_changed("unknown", "sha256:new-image-id"));
     }
 }

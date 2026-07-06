@@ -144,3 +144,88 @@ All tools use `serde_json::to_string_pretty(&...).unwrap_or_default()` for outpu
 | Forgetting the `"Error: "` prefix in `Err` variants | LLM clients can't distinguish error from normal response | Always use `Err(format!("Error: {e}"))` |
 | Returning `Err` when a service is `None` | Feature-not-configured is not an error | Return a plain string like `"WARP not configured"` |
 | Adding custom error types | Adds complexity with no benefit — MCP tools only speak `String` | Keep errors as `String`; let `proxy-core` own the error types |
+
+## Scenario: Environment-Gated `update_service`
+
+### 1. Scope / Trigger
+
+- Trigger: `update_service` can touch `/var/run/docker.sock` and trigger Watchtower to recreate the running service.
+- This is an infra integration and must be explicit, auditable, and disabled by default outside managed deployment wiring.
+
+### 2. Signatures
+
+- MCP tool: `async fn update_service(&self) -> String`
+- Config helper: `UpdateServiceConfig::from_env() -> UpdateServiceConfig`
+- Docker helpers: `docker_api_get(socket_path, path)`, `docker_api_post(socket_path, path)`
+
+### 3. Contracts
+
+Environment variables:
+
+| Key | Required | Meaning |
+|-----|:---:|---------|
+| `PROXY_POOL_UPDATE_ENABLED` | Yes for updates | Must be one of `1`, `true`, `yes`, or `on` to permit any Docker/Watchtower action |
+| `PROXY_POOL_UPDATE_DOCKER_SOCKET` | Optional | Docker Unix socket path, defaults to `/var/run/docker.sock` |
+| `PROXY_POOL_UPDATE_CONTAINER` | Optional | Container inspected before update, defaults to `proxy-pool` |
+| `PROXY_POOL_UPDATE_IMAGE` | Optional | Image pulled before Watchtower trigger, defaults to `ghcr.io/iamdreaming/proxy-pool-rust:latest` |
+| `PROXY_POOL_UPDATE_WATCHTOWER_URL` | Optional | Watchtower HTTP API endpoint |
+| `PROXY_POOL_UPDATE_TOKEN` | Yes when enabled | Bearer token sent to Watchtower |
+
+Response contract:
+
+- Disabled: `{"status":"disabled","required_env":"PROXY_POOL_UPDATE_ENABLED=true",...}`
+- Config error: `{"status":"error","message":"PROXY_POOL_UPDATE_TOKEN must be set ..."}`
+- Already current: `{"status":"already_current","previous_image_id":...,"new_image_id":...,"digest_changed":false,...}`
+- Triggered: `{"status":"update_triggered","previous_image_id":...,"new_image_id":...,"new_digest":...,"digest_changed":true,...}`
+
+### 4. Validation & Error Matrix
+
+| Condition | Response |
+|-----------|----------|
+| Update switch absent or false | `status=disabled`; do not touch Docker socket |
+| Token missing while enabled | `status=error`; do not touch Docker socket |
+| Current container inspect fails | `status=error`, message starts `failed to inspect container` |
+| Image pull fails | `status=error`, message starts `docker pull failed` |
+| Pulled image inspect fails | `status=error`, message starts `failed to inspect pulled image` |
+| Image ID unchanged | `status=already_current`; do not call Watchtower |
+| Watchtower non-2xx or unreachable | `status=error` with old/new image identity fields |
+
+### 5. Good/Base/Bad Cases
+
+- Good: managed compose sets `PROXY_POOL_UPDATE_ENABLED=true` and matching Watchtower token, then `update_service` pulls the image and triggers Watchtower only when image ID changed.
+- Base: local dev environment leaves the switch unset; the tool returns `disabled`.
+- Bad: enabled without token; the tool returns `error` before any Docker call.
+
+### 6. Tests Required
+
+- Unit test `UpdateServiceConfig` defaults to disabled.
+- Unit test truthy bool parsing.
+- Unit test image ref splitting handles registry ports.
+- Unit test image ID / identity comparison.
+- Integration verification, when a deployed target is available: call MCP `update_service`, then poll `/api/status.git_hash`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let socket_path = "/var/run/docker.sock";
+let watchtower_url = "http://watchtower-proxy-pool:8080/v1/update";
+client.post(watchtower_url).header("Authorization", "Bearer proxy-pool-update");
+```
+
+This hard-codes a production mutation path and secret-like token into the binary.
+
+#### Correct
+
+```rust
+let config = UpdateServiceConfig::from_env();
+if !config.enabled {
+    return disabled_json();
+}
+let Some(token) = config.watchtower_token.as_deref() else {
+    return token_error_json();
+};
+```
+
+All mutation paths are explicitly enabled and configured by deployment wiring.

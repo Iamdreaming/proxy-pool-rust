@@ -10,7 +10,8 @@ How errors are handled during startup and service lifecycle in `proxy-server`.
 
 | Failure | Behavior | Line |
 |---------|----------|------|
-| Redis connection | **Panic** via `unwrap_or_else` → `panic!("Redis connection failed")` | 301–303 |
+| Primary Redis connection | **Fatal** via `?` from `main()` because the store is central to API, gateway, scheduler, and MCP | startup Redis connection |
+| Subscription Redis connection | **Log + skip** — subscription refresh is disabled when its secondary connection cannot be opened | subscription setup |
 | Config file missing | **Graceful fallback** — uses defaults, logs warning | `config.rs:267–269` |
 | Config YAML invalid | **Graceful fallback** — uses defaults, logs error | `config.rs:282–288` |
 | Xray process start | **Log + skip** — `xray_supervisor_handle = None`, service continues without xray | 200–217 |
@@ -70,7 +71,7 @@ their own restart logic (e.g., `XrayProcess::supervise` has built-in restart).
 | Scheduler fetch loop | `tracing::info!` the result, sleep, retry next interval |
 | Scheduler validate loop | `tracing::error!` on failure, sleep, retry next interval |
 | WarpHealthChecker | Individual probe failures logged inside `check_once()` |
-| API (axum) | `unwrap()` on bind — panics if port is taken |
+| API (axum) | Logs bind/serve errors explicitly; the API task exits so the main `select!` reports a fatal core-service stop |
 | Gateway (TCP) | `?` in `run()` propagates bind/accept errors |
 | MCP | Errors from `serve()` mapped to `anyhow` and returned |
 | XrayProcess | Built-in supervisor with exponential backoff restart |
@@ -100,7 +101,8 @@ their own restart logic (e.g., `XrayProcess::supervise` has built-in restart).
    ```
 
 2. **Using `unwrap()` on TCP bind**: If the port is already in use, the process
-   panics with an unhelpful message. Use `.expect("API server: failed to bind {addr}")`.
+   panics with an unhelpful message. Log the bind error with the address and
+   let the service task exit so the main `select!` can report the fatal stop.
 
 3. **Not handling the xray-disabled case**: Code that accesses xray handles must
    check for `None`. The `tokio::select!` uses `std::future::pending()` as a no-op

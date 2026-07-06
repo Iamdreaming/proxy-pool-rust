@@ -311,30 +311,38 @@ async fn main() -> anyhow::Result<()> {
         let discoverers = build_discoverers(&sub_config);
         let sub_source =
             SubscriptionSource::new(sub_config.cache_ttl_sec, sub_config.fetch_timeout_sec);
-        let pending = Arc::new(PendingStore::new(
-            redis_client
-                .get_multiplexed_async_connection()
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::error!("Redis connection for subscription failed: {e}");
-                    panic!("Redis connection failed");
-                }),
-        ));
-        tokio::spawn(subscription_refresh_loop(
-            sub_config,
-            discoverers,
-            sub_source,
-            store.clone(),
-            pending,
-        ))
+        match redis_client.get_multiplexed_async_connection().await {
+            Ok(conn) => {
+                let pending = Arc::new(PendingStore::new(conn));
+                Some(tokio::spawn(subscription_refresh_loop(
+                    sub_config,
+                    discoverers,
+                    sub_source,
+                    store.clone(),
+                    pending,
+                )))
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Redis connection for subscription failed: {e}; subscription refresh disabled"
+                );
+                None
+            }
+        }
     };
 
     let api_handle = {
         let addr = format!("{}:{}", settings.api.listen_host, settings.api.listen_port);
         tracing::info!("API server listening on {addr}");
         tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-            axum::serve(listener, api_app).await.unwrap();
+            match tokio::net::TcpListener::bind(&addr).await {
+                Ok(listener) => {
+                    if let Err(e) = axum::serve(listener, api_app).await {
+                        tracing::error!("API server error on {addr}: {e}");
+                    }
+                }
+                Err(e) => tracing::error!("API bind failed on {addr}: {e}"),
+            }
         })
     };
 
@@ -422,7 +430,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         r = scheduler_task => tracing::error!("scheduler stopped (fatal): {:?}", r),
         r = health_handle => tracing::info!("health checker stopped: {:?}", r),
-        r = sub_handle => tracing::info!("subscription refresh stopped: {:?}", r),
+        r = async { if let Some(h) = sub_handle { h.await } else { std::future::pending().await } } => tracing::info!("subscription refresh stopped: {:?}", r),
         r = api_handle => tracing::error!("API server stopped (fatal): {:?}", r),
         r = gateway_handle => tracing::error!("gateway stopped (fatal): {:?}", r),
         _r = async { if let Some(h) = xray_supervisor_handle { h.await } else { std::future::pending().await } } => tracing::info!("xray supervisor stopped"),

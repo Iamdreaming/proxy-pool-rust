@@ -31,6 +31,12 @@ services:
     environment:
       - RUST_LOG=info
       - PROXY_POOL_CONFIG=/app/config/settings.yaml
+      - PROXY_POOL_UPDATE_ENABLED=true
+      - PROXY_POOL_UPDATE_DOCKER_SOCKET=/var/run/docker.sock
+      - PROXY_POOL_UPDATE_CONTAINER=proxy-pool
+      - PROXY_POOL_UPDATE_IMAGE=ghcr.io/iamdreaming/proxy-pool-rust:latest
+      - PROXY_POOL_UPDATE_WATCHTOWER_URL=http://watchtower-proxy-pool:8080/v1/update
+      - PROXY_POOL_UPDATE_TOKEN=${PROXY_POOL_UPDATE_TOKEN:-proxy-pool-update}
     restart: unless-stopped
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
@@ -58,7 +64,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --http-api-update --cleanup --label-enable
     environment:
-      - WATCHTOWER_HTTP_API_TOKEN=proxy-pool-update
+      - WATCHTOWER_HTTP_API_TOKEN=${PROXY_POOL_UPDATE_TOKEN:-proxy-pool-update}
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
     restart: unless-stopped
