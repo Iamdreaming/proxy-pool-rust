@@ -35,7 +35,7 @@
 
 当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp` 与 `validator-observability-v2` 的 single-target diagnostics MVP：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 也能返回目标、耗时、HTTP 状态和出口信息。
 
-用户最新要求先不推进 `warp-ops-enhancement`，因此下一批从 xray 节点生命周期、订阅源运维和验证矩阵中继续推进。WARP 保留为后续能力扩展，不作为当前 Ready/Next 主线。`xray-node-lifecycle-mvp` 和 `subscription-source-ops-mvp` 已完成，下一项推荐推进 `xray-config-dry-run-and-remove`。
+用户最新要求先不推进 `xray-config-dry-run-and-remove`，因此该任务只保留暂停草稿，不作为当前 Ready/Next 主线。新的 TODO 队列优先选择三类不依赖直接 SSH、且能复用已落地能力的工作：验证矩阵、Dashboard 运维整合、发布状态可观测性。
 
 **工作区注意事项**：
 
@@ -43,12 +43,13 @@
 - 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`stash@{1}: wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
 - 当前 Trellis 里 `gateway-route-debugging` 和 `fetcher-validator-quality` 已从 `in_progress` 改为 `paused`，当前会话任务指针已清空。
 - `warp-ops-enhancement` 曾创建 planning 任务目录；按用户最新要求先不继续，任务状态保留为 `paused`，不作为 current task。
+- `xray-config-dry-run-and-remove` 曾创建 planning 任务目录；按用户最新要求先不继续，任务状态保留为 `paused`，不作为 current task。
 - `.codex/config.toml` 属于非本任务改动，不纳入任何 roadmap 提交或后续功能提交。
 - 按用户要求，不直接 SSH 到 dev 地址；dev 验证默认走 HTTP、MCP、GitHub Actions、容器已有自更新入口和公开状态接口。
 
 ## Now
 
-当前无 Now 任务；完成 `subscription-source-ops-mvp` 后，下一步从 Ready 选择 `xray-config-dry-run-and-remove`。
+当前无 Now 任务；下一步建议从 Ready 选择 `validator-observability-multitarget`。如需要先提升 Web 运维体验，也可以从 `dashboard-ops-polish-v2` 开始。
 
 ## Paused Closeout
 
@@ -273,19 +274,6 @@
 
 ## Ready
 
-### P2 — `xray-config-dry-run-and-remove`
-
-**目标**：让 xray 运维动作可预检、可回退，减少错误配置直接写入运行态的风险。
-
-**候选功能**：
-
-- [ ] xray 配置变更 dry-run 校验。
-- [ ] 手动移除单个 xray 节点。
-- [ ] 记录移除原因和操作结果。
-- [ ] MCP/API 返回结构化错误，便于 Web 和自动化工具展示。
-
-## Next
-
 ### P2 — `validator-observability-multitarget`
 
 **目标**：在 single-target diagnostics 稳定后，增加多目标验证矩阵，判断代理是否只对某些站点可用。
@@ -295,19 +283,68 @@
 - [ ] 默认目标、Cloudflare trace、httpbin 和可选国内/国外目标的验证矩阵。
 - [ ] 每个目标返回 HTTP 状态、耗时和出口信息。
 - [ ] MCP `check_proxy` 保持单目标兼容，新增显式矩阵模式。
+- [ ] REST/MCP 响应继续复用核心 validator 结果，避免重复解析和字段漂移。
+- [ ] 增加单元测试、MCP/API smoke 断言和 README 说明。
 
 ### P2 — `dashboard-ops-polish-v2`
 
-**目标**：把新增的 xray、订阅源和验证矩阵能力接入 Web Dashboard，同时继续坚持只展示真实可用动作。
+**目标**：把新增的 xray、订阅源、抓取源和验证能力接入 Web Dashboard，同时继续坚持只展示真实可用动作。
 
 **候选功能**：
 
 - [ ] xray 节点生命周期摘要和失败原因展示。
 - [ ] 订阅源状态、刷新结果和解析预览展示。
-- [ ] validator 多目标结果展示。
+- [ ] fetcher circuit state、手动 probe 结果和错误原因展示打磨。
+- [ ] validator 多目标结果展示；若后端尚未完成矩阵模式，则显示明确不可用状态。
 - [ ] 移除或禁用所有没有后端支持的操作按钮。
 
+### P2 — `release-observability-no-ssh-v2`
+
+**目标**：继续强化不直接 SSH 的发布验证闭环，让 dev 是否已运行目标镜像、最近更新状态和失败原因更容易通过公开入口判断。
+
+**候选功能**：
+
+- [ ] `/api/status` 或 MCP `service_status` 返回更完整的 image/tag/digest/build metadata。
+- [ ] MCP `update_service` 的最近一次结果可查询，便于区分 `already_current`、更新成功、更新失败和未触发。
+- [ ] README / `docs/dev-validation.md` 补充 post-push 检查顺序和故障分流。
+- [ ] 不做破坏性故障注入，不修改 dev compose，不直接 SSH。
+
+## Next
+
+### P2 — `mcp-api-contract-smoke-v2`
+
+**目标**：为最近新增的 REST/MCP 运维入口补齐契约级 smoke，减少 API 与 MCP 字段漂移。
+
+**候选功能**：
+
+- [ ] 统一列出 REST endpoint 与 MCP tool 的等价关系。
+- [ ] 对 status、fetchers、subscriptions、xray status、route test、score explanation 增加轻量 smoke。
+- [ ] 集成测试只依赖本地进程或公开 HTTP/MCP 入口，不依赖直接 SSH。
+- [ ] README 中把运维入口按“可查询 / dry-run / apply”分类。
+
+### P2 — `proxy-quality-history-lite`
+
+**目标**：在现有评分解释基础上，记录轻量级质量趋势，帮助判断代理是短暂波动还是持续变差。
+
+**候选功能**：
+
+- [ ] 为代理保留最近 N 次验证摘要或滚动统计。
+- [ ] score explanation 返回趋势字段，如 recent_success_rate、recent_latency_p50。
+- [ ] MCP/API 查询支持 dry-run 清理建议，不直接扩大自动删除策略。
+- [ ] 保持 Redis schema 兼容，必要迁移需单独评估。
+
 ## Later
+
+### P2 — `xray-config-dry-run-and-remove`
+
+**目标**：让 xray 运维动作可预检、可回退，减少错误配置直接写入运行态的风险。当前按用户要求先不推进，保留 paused Trellis 草稿供后续恢复。
+
+**候选功能**：
+
+- [ ] xray 配置变更 dry-run 校验。
+- [ ] 手动移除单个 xray 节点。
+- [ ] 记录移除原因和操作结果。
+- [ ] MCP/API 返回结构化错误，便于 Web 和自动化工具展示。
 
 ### P3 — `warp-ops-enhancement`
 
@@ -372,12 +409,15 @@
 
 1. `xray-node-lifecycle-mvp` — xray 节点生命周期和失败原因。
 2. `subscription-source-ops-mvp` — 订阅源状态、手动刷新和解析预览。
-3. `xray-config-dry-run-and-remove` — xray 配置 dry-run 和单节点移除。
-4. `validator-observability-multitarget` — 多目标验证矩阵和更细阶段耗时。
-5. `dashboard-ops-polish-v2` — 接入新增真实运维能力，移除假动作。
-6. `warp-ops-enhancement` — 用户重新确认后再恢复 WARP 运维增强。
-7. `update-failure-hardening` — 用户确认后再恢复自更新失败路径结构化错误和 no-SSH 验证。
-8. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
+3. `validator-observability-multitarget` — 多目标验证矩阵和更细阶段耗时。
+4. `dashboard-ops-polish-v2` — 接入新增真实运维能力，移除假动作。
+5. `release-observability-no-ssh-v2` — 发布状态、镜像元数据和最近更新结果的 no-SSH 可观测性。
+6. `mcp-api-contract-smoke-v2` — REST/MCP 运维入口契约 smoke。
+7. `proxy-quality-history-lite` — 代理质量轻量趋势和 dry-run 清理建议。
+8. `xray-config-dry-run-and-remove` — 用户重新确认后再恢复 xray 配置 dry-run 和单节点移除。
+9. `warp-ops-enhancement` — 用户重新确认后再恢复 WARP 运维增强。
+10. `update-failure-hardening` — 用户确认后再恢复自更新失败路径结构化错误和 no-SSH 验证。
+11. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
 
 ## 任务 PRD 模板
 
