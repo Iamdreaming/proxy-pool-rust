@@ -32,7 +32,7 @@ class TestMcpConnection:
             "get_proxy", "get_best_proxy", "list_proxies",
             "check_proxy", "service_status", "pool_status", "warp_status",
             "geoip_lookup", "remove_proxy", "refresh_pool",
-            "fetcher_status", "refresh_fetcher",
+            "fetcher_status", "refresh_fetcher", "route_test",
             "proxy_stats", "update_service",
         }
         missing = expected - tool_names
@@ -158,6 +158,22 @@ class TestMcpFetcherStatus:
             assert first["status"] in ("never_run", "success", "empty", "error")
             assert isinstance(first["fetched"], int)
             assert isinstance(first["parsed"], int)
+
+
+class TestMcpRouteTest:
+    """Test route_test tool."""
+
+    def test_route_test_structure(self, mcp_client):
+        result = mcp_client.call_tool("route_test", {"host": "github.com", "protocol": "http"})
+        text = _extract_text(result)
+        data = json.loads(text)
+        assert data["status"] == "ok"
+        decision = data["decision"]
+        assert decision["host"] == "github.com"
+        assert decision["protocol"] == "http"
+        assert decision["selected"] in ("direct", "free_pool", "warp", "xray", "no_proxy")
+        assert isinstance(decision["candidates"], list)
+        assert isinstance(decision["unavailable"], list)
 
 
 class TestMcpGeoIPLookup:

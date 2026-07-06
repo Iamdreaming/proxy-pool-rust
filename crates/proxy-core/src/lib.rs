@@ -11,6 +11,7 @@ pub mod fetcher;
 pub mod geoip;
 pub mod models;
 pub mod pacing;
+pub mod route_debug;
 pub mod router;
 pub mod scheduler;
 pub mod status;

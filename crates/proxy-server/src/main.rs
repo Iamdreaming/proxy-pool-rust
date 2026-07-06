@@ -29,7 +29,7 @@ use proxy_core::warp::balancer::WarpBalancer;
 use proxy_core::warp::health::WarpHealthChecker;
 use proxy_gateway::ProxyGateway;
 use proxy_gateway::UpstreamSelector;
-use proxy_mcp::ProxyPoolMcp;
+use proxy_mcp::{ProxyPoolMcp, ProxyPoolMcpConfig};
 use proxy_sub::pending::PendingStore;
 use proxy_sub::refresh::{build_discoverers, subscription_refresh_loop};
 use proxy_sub::source::SubscriptionSource;
@@ -170,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
         git_hash: GIT_HASH,
         started_at,
         balancer: Some(balancer.clone()),
+        route_selector: selector.clone(),
     };
     let api_app = proxy_api::create_app(api_state, Some("/app/web".to_string()));
 
@@ -180,15 +181,16 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // Build MCP server with geoip lookup and scheduler handle
-    let mcp_server = ProxyPoolMcp::new(
-        store.clone(),
-        Some(balancer.clone()),
-        mcp_geoip,
+    let mcp_server = ProxyPoolMcp::new(ProxyPoolMcpConfig {
+        store: store.clone(),
+        balancer: Some(balancer.clone()),
+        geoip: mcp_geoip,
         scheduler_handle,
-        xray_active_count.clone(),
-        GIT_HASH,
+        route_selector: selector.clone(),
+        xray_active_count: xray_active_count.clone(),
+        git_hash: GIT_HASH,
         started_at,
-    );
+    });
 
     tracing::info!("starting proxy-pool services");
 

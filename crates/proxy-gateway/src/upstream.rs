@@ -1,207 +1,7 @@
-//! Upstream selector: decides the proxy for each request.
-//!
-//! Full decision chain:
-//! 1. Router explicit match → group (direct / free_pool / warp / xray)
-//! 2. GeoIP auto-split (overseas → WARP → Xray → pool; domestic → Direct)
-//! 3. Default group fallback
-//! 4. Final fallback: pool → WARP → Xray → NoProxy
+//! Upstream connection helpers for gateway handlers.
 
-use proxy_core::geoip::GeoIPLookup;
-use proxy_core::models::{EncryptedProxyState, Protocol, Proxy};
-use proxy_core::router::Router;
-use proxy_core::store::ProxyStore;
-use proxy_core::warp::balancer::WarpBalancer;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-
-/// Result of upstream selection.
-#[derive(Debug)]
-pub enum Upstream {
-    /// Connect directly to the target.
-    Direct,
-    /// Route through a pool proxy.
-    Proxy(Proxy),
-    /// Route through a WARP instance (socks5://127.0.0.1:{port}).
-    Warp { socks5_port: u16 },
-    /// Route through an xray-node local SOCKS5 port.
-    Xray { local_socks5_port: u16 },
-    /// Chain: pool proxy → WARP → target (reserved, not yet implemented).
-    WarpChain { proxy: Proxy, socks5_port: u16 },
-    /// No upstream available — return 502.
-    NoProxy,
-}
-
-/// Selects upstream proxy based on routing rules, GeoIP, and history.
-pub struct UpstreamSelector {
-    store: Arc<ProxyStore>,
-    balancer: Option<Arc<WarpBalancer>>,
-    router: Option<Arc<Router>>,
-    geoip: Option<Arc<Mutex<GeoIPLookup>>>,
-}
-
-impl UpstreamSelector {
-    pub fn new(
-        store: Arc<ProxyStore>,
-        balancer: Option<Arc<WarpBalancer>>,
-        router: Option<Arc<Router>>,
-        geoip: Option<Arc<Mutex<GeoIPLookup>>>,
-    ) -> Self {
-        Self {
-            store,
-            balancer,
-            router,
-            geoip,
-        }
-    }
-
-    /// Select an upstream for the given host and protocol.
-    ///
-    /// Decision chain:
-    /// 1. Router explicit match → group
-    /// 2. GeoIP auto-split (if no explicit match needed)
-    /// 3. Default fallback chain: pool → WARP → Xray
-    pub async fn select(&self, host: &str, protocol: &str) -> Upstream {
-        // Step 1: Router explicit match
-        if let Some(ref router) = self.router {
-            let group = router.match_group(host);
-            match group {
-                "direct" => return Upstream::Direct,
-                "free_pool" => {
-                    if let Some(proxy) = self.try_pool(protocol).await {
-                        return Upstream::Proxy(proxy);
-                    }
-                    // Fall through to WARP
-                }
-                "warp" => {
-                    if let Some(port) = self.try_warp().await {
-                        return Upstream::Warp { socks5_port: port };
-                    }
-                    // Fall through to Xray
-                }
-                "xray" => {
-                    if let Some(port) = self.try_xray().await {
-                        return Upstream::Xray {
-                            local_socks5_port: port,
-                        };
-                    }
-                    // Fall through to pool
-                }
-                _ => {
-                    // Default group — apply GeoIP auto-split
-                    if let Some(ref geoip) = self.geoip {
-                        let is_overseas = {
-                            let mut geoip = geoip.lock().await;
-                            let info = geoip.lookup(host).await;
-                            geoip.is_overseas(&info.country)
-                        };
-
-                        if !is_overseas {
-                            return Upstream::Direct;
-                        }
-
-                        // Overseas: WARP → Xray → pool → NoProxy
-                        if let Some(port) = self.try_warp().await {
-                            return Upstream::Warp { socks5_port: port };
-                        }
-                        if let Some(port) = self.try_xray().await {
-                            return Upstream::Xray {
-                                local_socks5_port: port,
-                            };
-                        }
-                        if let Some(proxy) = self.try_pool(protocol).await {
-                            return Upstream::Proxy(proxy);
-                        }
-                        return Upstream::NoProxy;
-                    }
-                }
-            }
-        } else {
-            // No router — apply GeoIP if available
-            if let Some(ref geoip) = self.geoip {
-                let is_overseas = {
-                    let mut geoip = geoip.lock().await;
-                    let info = geoip.lookup(host).await;
-                    geoip.is_overseas(&info.country)
-                };
-
-                if !is_overseas {
-                    return Upstream::Direct;
-                }
-            }
-        }
-
-        // Step 3: General fallback chain: pool → WARP → Xray → NoProxy
-        if let Some(proxy) = self.try_pool(protocol).await {
-            return Upstream::Proxy(proxy);
-        }
-        if let Some(port) = self.try_warp().await {
-            return Upstream::Warp { socks5_port: port };
-        }
-        if let Some(port) = self.try_xray().await {
-            return Upstream::Xray {
-                local_socks5_port: port,
-            };
-        }
-        Upstream::NoProxy
-    }
-
-    /// Try to get a random proxy from the pool for the given protocol.
-    async fn try_pool(&self, protocol: &str) -> Option<Proxy> {
-        let proto = Protocol::from_str_loose(protocol).unwrap_or(Protocol::Http);
-        match self.store.get_random(proto).await {
-            Ok(Some(proxy)) => {
-                // Filter out circuit-open proxies and xray-encrypted proxies
-                if proxy.circuit_open || proxy.encrypted_state.is_some() {
-                    return None;
-                }
-                Some(proxy)
-            }
-            _ => None,
-        }
-    }
-
-    /// Try to get a WARP instance from the balancer.
-    async fn try_warp(&self) -> Option<u16> {
-        if let Some(ref balancer) = self.balancer
-            && let Some(inst) = balancer.next().await
-        {
-            return Some(inst.socks5_port);
-        }
-        None
-    }
-
-    /// Try to get an active xray encrypted proxy from the store.
-    async fn try_xray(&self) -> Option<u16> {
-        // Get from Socks5 pool (xray nodes are stored as Socks5 proxies)
-        // Filter for encrypted_state == Active
-        match self.store.all(Protocol::Socks5).await {
-            Ok(proxies) => {
-                let active_xray: Vec<&Proxy> = proxies
-                    .iter()
-                    .filter(|p| {
-                        matches!(p.encrypted_state, Some(EncryptedProxyState::Active { .. }))
-                    })
-                    .collect();
-                if active_xray.is_empty() {
-                    return None;
-                }
-                // Random selection among active xray nodes
-                let idx = rand::random_range(0..active_xray.len());
-                if let Some(EncryptedProxyState::Active { local_socks5_port }) =
-                    active_xray[idx].encrypted_state
-                {
-                    Some(local_socks5_port)
-                } else {
-                    None
-                }
-            }
-            Err(e) => {
-                tracing::debug!("try_xray: failed to query store: {e}");
-                None
-            }
-        }
-    }
-}
+use proxy_core::models::Proxy;
+use proxy_core::route_debug::Upstream;
 
 /// Perform a SOCKS5 CONNECT handshake on an already-connected stream.
 ///
@@ -315,6 +115,31 @@ pub async fn connect_via_warp_chain(
     Ok(stream)
 }
 
+/// Connect to `target_addr` using a concrete runtime upstream.
+pub async fn connect_to_upstream(
+    upstream: &Upstream,
+    target_addr: &str,
+) -> anyhow::Result<tokio::net::TcpStream> {
+    match upstream {
+        Upstream::Direct => Ok(tokio::net::TcpStream::connect(target_addr).await?),
+        Upstream::Proxy(proxy) => {
+            let upstream_addr = format!("{}:{}", proxy.host, proxy.port);
+            connect_via_socks5(&upstream_addr, target_addr).await
+        }
+        Upstream::Warp { socks5_port }
+        | Upstream::Xray {
+            local_socks5_port: socks5_port,
+        } => {
+            let upstream_addr = format!("127.0.0.1:{socks5_port}");
+            connect_via_socks5(&upstream_addr, target_addr).await
+        }
+        Upstream::WarpChain { proxy, socks5_port } => {
+            connect_via_warp_chain(proxy, *socks5_port, target_addr).await
+        }
+        Upstream::NoProxy => anyhow::bail!("no upstream available"),
+    }
+}
+
 /// Parse a target address string into (host, port).
 ///
 /// Handles:
@@ -343,6 +168,7 @@ fn parse_target_addr(target: &str) -> anyhow::Result<(String, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proxy_core::models::Protocol;
 
     #[test]
     fn test_parse_target_ipv4() {

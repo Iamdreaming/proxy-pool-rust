@@ -1,6 +1,9 @@
 //! SOCKS5 proxy handler (RFC 1928).
 
-use crate::upstream::{Upstream, UpstreamSelector, connect_via_socks5, connect_via_warp_chain};
+use crate::upstream::connect_to_upstream;
+use proxy_core::route_debug::{
+    GatewayAttemptStatus, GatewayRouteProtocol, RouteExit, Upstream, UpstreamSelector,
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -90,82 +93,51 @@ pub async fn handle(
 
     // --- Phase 3: Upstream selection ---
     let host = target_addr.split(':').next().unwrap_or(&target_addr);
-    let upstream = selector.select(host, "socks5").await;
+    let selection = selector.select_with_trace(host, "socks5").await;
+    let metrics = selector.metrics();
+    for candidate in &selection.upstream_candidates {
+        if matches!(candidate.upstream, Upstream::NoProxy) {
+            metrics.record(
+                GatewayRouteProtocol::Socks5,
+                RouteExit::NoProxy,
+                GatewayAttemptStatus::Unavailable,
+            );
+            continue;
+        }
 
-    match upstream {
-        Upstream::Direct => match TcpStream::connect(&target_addr).await {
+        match connect_to_upstream(&candidate.upstream, &target_addr).await {
             Ok(mut remote) => {
+                metrics.record(
+                    GatewayRouteProtocol::Socks5,
+                    candidate.exit,
+                    GatewayAttemptStatus::Success,
+                );
                 let local_addr = remote.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap());
                 let reply = socks5_reply_from_addr(0x00, &local_addr);
                 stream.write_all(&reply).await?;
                 bidirectional_copy(stream, &mut remote).await;
+                return Ok(());
             }
             Err(e) => {
-                tracing::warn!("SOCKS5: cannot connect to {target_addr}: {e}");
-                let reply = socks5_reply(0x05, "0.0.0.0:0"); // connection refused
-                stream.write_all(&reply).await?;
+                metrics.record(
+                    GatewayRouteProtocol::Socks5,
+                    candidate.exit,
+                    GatewayAttemptStatus::Failure,
+                );
+                tracing::warn!(
+                    target = %target_addr,
+                    route_group = ?selection.decision.matched_group,
+                    exit = ?candidate.exit,
+                    detail = ?candidate.detail,
+                    error = %e,
+                    "SOCKS5: upstream attempt failed"
+                );
             }
-        },
-        Upstream::Proxy(proxy) => {
-            let upstream_addr = format!("{}:{}", proxy.host, proxy.port);
-            match connect_via_socks5(&upstream_addr, &target_addr).await {
-                Ok(mut remote) => {
-                    let local_addr = remote.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap());
-                    let reply = socks5_reply_from_addr(0x00, &local_addr);
-                    stream.write_all(&reply).await?;
-                    bidirectional_copy(stream, &mut remote).await;
-                }
-                Err(e) => {
-                    tracing::warn!("SOCKS5: SOCKS5 chain via {} failed: {e}", upstream_addr);
-                    let reply = socks5_reply(0x05, "0.0.0.0:0");
-                    stream.write_all(&reply).await?;
-                }
-            }
-        }
-        Upstream::Warp { socks5_port }
-        | Upstream::Xray {
-            local_socks5_port: socks5_port,
-        } => {
-            let upstream_addr = format!("127.0.0.1:{socks5_port}");
-            match connect_via_socks5(&upstream_addr, &target_addr).await {
-                Ok(mut remote) => {
-                    let local_addr = remote.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap());
-                    let reply = socks5_reply_from_addr(0x00, &local_addr);
-                    stream.write_all(&reply).await?;
-                    bidirectional_copy(stream, &mut remote).await;
-                }
-                Err(e) => {
-                    tracing::warn!("SOCKS5: SOCKS5 chain via {upstream_addr} failed: {e}");
-                    let reply = socks5_reply(0x05, "0.0.0.0:0");
-                    stream.write_all(&reply).await?;
-                }
-            }
-        }
-        Upstream::WarpChain { proxy, socks5_port } => {
-            match connect_via_warp_chain(&proxy, socks5_port, &target_addr).await {
-                Ok(mut remote) => {
-                    let local_addr = remote.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap());
-                    let reply = socks5_reply_from_addr(0x00, &local_addr);
-                    stream.write_all(&reply).await?;
-                    bidirectional_copy(stream, &mut remote).await;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "SOCKS5: WarpChain via {}->WARP:{} failed: {e}",
-                        proxy.host,
-                        socks5_port
-                    );
-                    let reply = socks5_reply(0x05, "0.0.0.0:0");
-                    stream.write_all(&reply).await?;
-                }
-            }
-        }
-        Upstream::NoProxy => {
-            let reply = socks5_reply(0x05, "0.0.0.0:0"); // connection refused
-            stream.write_all(&reply).await?;
         }
     }
 
+    let reply = socks5_reply(0x05, "0.0.0.0:0");
+    stream.write_all(&reply).await?;
     Ok(())
 }
 

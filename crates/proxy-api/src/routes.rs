@@ -9,6 +9,7 @@ use axum::{
 };
 use proxy_core::fetcher::base::FetcherRunReport;
 use proxy_core::models::{Protocol, Proxy, ProxyFilter, WarpInstance};
+use proxy_core::route_debug::RouteDecision;
 use proxy_core::status::{collect_readiness, collect_service_status, render_prometheus_metrics};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
@@ -44,6 +45,12 @@ pub struct ProxyFilterQuery {
     pub min_score: Option<f64>,
     pub source: Option<String>,
     pub alive: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RouteTestQuery {
+    pub host: String,
+    pub protocol: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +126,12 @@ pub struct FetchersResponse {
     pub fetchers: Vec<FetcherRunReport>,
 }
 
+#[derive(Serialize)]
+pub struct RouteTestResponse {
+    pub status: String,
+    pub decision: Option<RouteDecision>,
+}
+
 // ---------------------------------------------------------------------------
 // Route builder
 // ---------------------------------------------------------------------------
@@ -128,6 +141,7 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/healthz", get(healthz))
         .route("/api/readyz", get(readyz))
         .route("/api/status", get(status))
+        .route("/api/routes/test", get(route_test))
         .route("/api/fetchers", get(fetcher_status))
         .route("/api/fetchers/{id}/refresh", post(refresh_fetcher))
         .route("/api/proxies", get(list_proxies))
@@ -187,6 +201,34 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn status(State(state): State<AppState>) -> impl IntoResponse {
     Json(service_status(&state).await)
+}
+
+async fn route_test(
+    State(state): State<AppState>,
+    Query(params): Query<RouteTestQuery>,
+) -> impl IntoResponse {
+    let host = params.host.trim();
+    if host.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(RouteTestResponse {
+                status: "host is required".into(),
+                decision: None,
+            }),
+        )
+            .into_response();
+    }
+
+    let protocol = params.protocol.as_deref().unwrap_or("http");
+    let decision = state.route_selector.dry_run(host, protocol).await;
+    (
+        StatusCode::OK,
+        Json(RouteTestResponse {
+            status: "ok".into(),
+            decision: Some(decision),
+        }),
+    )
+        .into_response()
 }
 
 async fn list_proxies(
@@ -345,7 +387,8 @@ async fn delete_proxy(State(state): State<AppState>, Path(key): Path<String>) ->
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let status = service_status(&state).await;
-    let lines = render_prometheus_metrics(&status);
+    let mut lines = render_prometheus_metrics(&status);
+    lines.push_str(&state.route_selector.render_gateway_metrics());
     ([("content-type", "text/plain")], lines)
 }
 
@@ -414,6 +457,26 @@ mod tests {
         let resp = FetchersResponse { fetchers: vec![] };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, "{\"fetchers\":[]}");
+    }
+
+    #[test]
+    fn test_route_test_response_serialization() {
+        let resp = RouteTestResponse {
+            status: "ok".into(),
+            decision: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"decision\":null"));
+    }
+
+    #[test]
+    fn test_route_test_query_deserialize() {
+        let query: RouteTestQuery =
+            serde_json::from_value(serde_json::json!({"host":"example.com","protocol":"socks5"}))
+                .unwrap();
+        assert_eq!(query.host, "example.com");
+        assert_eq!(query.protocol.as_deref(), Some("socks5"));
     }
 
     #[test]

@@ -117,6 +117,26 @@ class TestApiMetrics:
         assert "proxy_warp_instances_configured" in text
         assert "proxy_warp_instances_healthy" in text
         assert "proxy_xray_active_nodes" in text
+        assert "proxy_gateway_route_attempts_total" in text
+
+
+class TestApiRoutes:
+    """Test route dry-run endpoint."""
+
+    def test_route_test_structure(self, api_client):
+        resp = api_client.get(
+            f"{API_BASE}/api/routes/test",
+            params={"host": "github.com", "protocol": "http"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        decision = data["decision"]
+        assert decision["host"] == "github.com"
+        assert decision["protocol"] == "http"
+        assert decision["selected"] in ("direct", "free_pool", "warp", "xray", "no_proxy")
+        assert isinstance(decision["candidates"], list)
+        assert isinstance(decision["unavailable"], list)
 
 
 class TestApiFetchers:

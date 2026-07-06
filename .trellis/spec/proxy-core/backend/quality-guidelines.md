@@ -296,3 +296,94 @@ Json(FetchersResponse { fetchers })
 ```
 
 The scheduler owns fetcher state; API and MCP only serialize it.
+
+## Scenario: Gateway Route Decisions And Fallback Diagnostics
+
+### 1. Scope / Trigger
+
+- Trigger: gateway route dry-run, MCP `route_test`, gateway fallback metrics, and runtime fallback tracing span `proxy-core`, `proxy-gateway`, `proxy-api`, `proxy-mcp`, and `proxy-server`.
+- The route decision contract is owned by `proxy-core::route_debug`; adapters and protocol handlers must not reimplement route selection logic.
+
+### 2. Signatures
+
+- Route matching diagnostics: `Router::match_route(&self, host: &str) -> RouteMatch`.
+- Runtime selection: `UpstreamSelector::select(&self, host, protocol) -> Upstream` remains available for compatibility.
+- Traceable selection: `UpstreamSelector::select_with_trace(&self, host, protocol) -> RouteSelection`.
+- Dry-run: `UpstreamSelector::dry_run(&self, host, protocol) -> RouteDecision`.
+- Metrics render: `UpstreamSelector::render_gateway_metrics(&self) -> String`.
+- API endpoint: `GET /api/routes/test?host=<host>&protocol=<protocol>`.
+- MCP tool: `route_test` with `{ "host": "...", "protocol": "http|https|socks4|socks5" }`.
+
+### 3. Contracts
+
+`RouteDecision` fields:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `host` | string | Normalized target host evaluated by the selector |
+| `protocol` | string | Protocol used for pool lookup; invalid input falls back to `http` |
+| `matched_group` | optional string | Configured route group, when a router exists |
+| `matched_rule` | optional string | Matched suffix rule or `default`, when a router exists |
+| `matched_reason` | string | `route_rule`, `route_default_group`, `geoip_domestic`, `geoip_overseas`, or `general_fallback` |
+| `geoip` | optional object | Country and overseas decision when GeoIP was consulted |
+| `candidates` | array | Ordered exit candidates with availability and reason |
+| `selected` | enum | First available exit: `direct`, `free_pool`, `warp`, `xray`, `no_proxy` |
+| `unavailable` | array | Unavailable exits and skip reasons |
+
+Gateway route metrics use:
+
+```text
+proxy_gateway_route_attempts_total{protocol="<http_connect|socks5|other>",exit="<direct|free_pool|warp|xray|no_proxy>",status="<success|failure|unavailable>"} <count>
+```
+
+### 4. Validation & Error Matrix
+
+| Condition | Contract |
+|-----------|----------|
+| Missing or empty API `host` | HTTP 400 with structured JSON |
+| Missing MCP `protocol` | Defaults to `http` through MCP protocol resolution |
+| Unknown protocol | Falls back to `http`, matching existing MCP behavior |
+| Router suffix matches | `matched_reason=route_rule`, `matched_rule=<suffix>` |
+| Router default group selected | `matched_reason=route_default_group`, `matched_rule=default` |
+| No router but GeoIP available and domestic | Candidate order is `direct` |
+| No router but GeoIP available and overseas | Candidate order is `warp -> xray -> free_pool -> no_proxy` |
+| No router and no GeoIP | Candidate order is `free_pool -> warp -> xray -> no_proxy` |
+| Gateway upstream connection fails before success response | Record `status=failure`, try later concrete candidates, and only then return HTTP 502 / SOCKS failure |
+| No concrete upstream exists | Record `exit=no_proxy,status=unavailable` |
+
+### 5. Good/Base/Bad Cases
+
+- Good: API `/api/routes/test`, MCP `route_test`, and gateway handlers all call the same `UpstreamSelector` instance built in `proxy-server`.
+- Base: route dry-run returns candidate types and skip reasons without opening a target tunnel.
+- Bad: API or MCP reconstructs routing from config, GeoIP, store, or logs locally. That duplicates selector behavior and will drift from gateway runtime decisions.
+
+### 6. Tests Required
+
+- `proxy-core` tests for `RouteDecision` serialization, route suffix diagnostics, candidate order helpers, and gateway metric rendering.
+- `proxy-gateway` tests for upstream variants and connection helper compatibility.
+- `proxy-api` tests for `RouteTestResponse` serialization and route query deserialization.
+- `proxy-mcp` tests for `RouteTestParam` required and optional fields.
+- Integration tests should assert `/api/routes/test`, `/api/metrics` gateway labels, MCP tool listing, and MCP `route_test` response shape.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// API layer reimplements route behavior from route group strings.
+let selected = if host.ends_with(".cn") { "direct" } else { "warp" };
+```
+
+This diverges as soon as the gateway fallback order, GeoIP behavior, or route groups change.
+
+#### Correct
+
+```rust
+let decision = state.route_selector.dry_run(host, protocol).await;
+Json(RouteTestResponse {
+    status: "ok".into(),
+    decision: Some(decision),
+})
+```
+
+The selector owns route decisions; API, MCP, metrics, and gateway handlers consume that shared contract.

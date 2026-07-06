@@ -11,6 +11,7 @@
 
 use proxy_core::geoip::GeoIPLookup;
 use proxy_core::models::ProxyFilter;
+use proxy_core::route_debug::UpstreamSelector;
 use proxy_core::scheduler::SchedulerHandle;
 use proxy_core::status::collect_service_status;
 use proxy_core::store::ProxyStore;
@@ -92,6 +93,14 @@ pub struct RemoveProxyParam {
 pub struct RefreshFetcherParam {
     /// Stable fetcher id, such as "proxyscrape:http" or "geonode".
     pub fetcher: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RouteTestParam {
+    /// Target host to evaluate, such as "github.com".
+    pub host: String,
+    /// Optional protocol for pool lookup: http, https, socks4, socks5.
+    pub protocol: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -181,30 +190,36 @@ pub struct ProxyPoolMcp {
     balancer: Option<Arc<WarpBalancer>>,
     geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     scheduler_handle: SchedulerHandle,
+    route_selector: Arc<UpstreamSelector>,
     xray_active_count: Arc<AtomicUsize>,
     git_hash: &'static str,
     started_at: Instant,
     tool_router: ToolRouter<Self>,
 }
 
+/// Dependencies required to construct the MCP service.
+pub struct ProxyPoolMcpConfig {
+    pub store: Arc<ProxyStore>,
+    pub balancer: Option<Arc<WarpBalancer>>,
+    pub geoip: Option<Arc<Mutex<GeoIPLookup>>>,
+    pub scheduler_handle: SchedulerHandle,
+    pub route_selector: Arc<UpstreamSelector>,
+    pub xray_active_count: Arc<AtomicUsize>,
+    pub git_hash: &'static str,
+    pub started_at: Instant,
+}
+
 impl ProxyPoolMcp {
-    pub fn new(
-        store: Arc<ProxyStore>,
-        balancer: Option<Arc<WarpBalancer>>,
-        geoip: Option<Arc<Mutex<GeoIPLookup>>>,
-        scheduler_handle: SchedulerHandle,
-        xray_active_count: Arc<AtomicUsize>,
-        git_hash: &'static str,
-        started_at: Instant,
-    ) -> Self {
+    pub fn new(config: ProxyPoolMcpConfig) -> Self {
         Self {
-            store,
-            balancer,
-            geoip,
-            scheduler_handle,
-            xray_active_count,
-            git_hash,
-            started_at,
+            store: config.store,
+            balancer: config.balancer,
+            geoip: config.geoip,
+            scheduler_handle: config.scheduler_handle,
+            route_selector: config.route_selector,
+            xray_active_count: config.xray_active_count,
+            git_hash: config.git_hash,
+            started_at: config.started_at,
             tool_router: Self::tool_router(),
         }
     }
@@ -435,6 +450,20 @@ impl ProxyPoolMcp {
                 "message": format!("{e}"),
             })),
         }
+    }
+
+    #[tool(
+        description = "Test gateway route selection for a host. Optionally specify protocol: http, https, socks4, socks5"
+    )]
+    async fn route_test(&self, params: Parameters<RouteTestParam>) -> String {
+        let protocol = self
+            .resolve_protocol(params.0.protocol.as_deref())
+            .to_string();
+        let decision = self.route_selector.dry_run(&params.0.host, &protocol).await;
+        to_json(serde_json::json!({
+            "status": "ok",
+            "decision": decision,
+        }))
     }
 
     #[tool(description = "Get proxy pool statistics (protocol distribution)")]
@@ -1063,6 +1092,22 @@ mod tests {
         let json = r#"{"fetcher":"proxyscrape:http"}"#;
         let param: RefreshFetcherParam = serde_json::from_str(json).unwrap();
         assert_eq!(param.fetcher, "proxyscrape:http");
+    }
+
+    #[test]
+    fn test_route_test_param_deserialize() {
+        let json = r#"{"host":"github.com","protocol":"socks5"}"#;
+        let param: RouteTestParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.host, "github.com");
+        assert_eq!(param.protocol.as_deref(), Some("socks5"));
+    }
+
+    #[test]
+    fn test_route_test_param_optional_protocol() {
+        let json = r#"{"host":"github.com"}"#;
+        let param: RouteTestParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.host, "github.com");
+        assert!(param.protocol.is_none());
     }
 
     #[test]

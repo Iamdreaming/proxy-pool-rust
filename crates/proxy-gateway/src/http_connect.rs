@@ -1,6 +1,9 @@
 //! HTTP CONNECT proxy handler.
 
-use crate::upstream::{Upstream, UpstreamSelector, connect_via_socks5, connect_via_warp_chain};
+use crate::upstream::connect_to_upstream;
+use proxy_core::route_debug::{
+    GatewayAttemptStatus, GatewayRouteProtocol, RouteExit, Upstream, UpstreamSelector,
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -43,81 +46,50 @@ pub async fn handle(
     }
 
     let host = target.split(':').next().unwrap_or(&target);
-    let upstream = selector.select(host, "http").await;
+    let selection = selector.select_with_trace(host, "http").await;
+    let metrics = selector.metrics();
+    for candidate in &selection.upstream_candidates {
+        if matches!(candidate.upstream, Upstream::NoProxy) {
+            metrics.record(
+                GatewayRouteProtocol::HttpConnect,
+                RouteExit::NoProxy,
+                GatewayAttemptStatus::Unavailable,
+            );
+            continue;
+        }
 
-    match upstream {
-        Upstream::Direct => {
-            // Connect directly to target
-            match TcpStream::connect(&target).await {
-                Ok(mut remote) => {
-                    let resp = "HTTP/1.1 200 Connection Established\r\n\r\n";
-                    stream.write_all(resp.as_bytes()).await?;
-                    bidirectional_copy(stream, &mut remote).await;
-                }
-                Err(e) => {
-                    tracing::warn!("HTTP CONNECT: cannot connect to {target}: {e}");
-                    let resp = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
-                    stream.write_all(resp.as_bytes()).await?;
-                }
+        match connect_to_upstream(&candidate.upstream, &target).await {
+            Ok(mut remote) => {
+                metrics.record(
+                    GatewayRouteProtocol::HttpConnect,
+                    candidate.exit,
+                    GatewayAttemptStatus::Success,
+                );
+                let resp = "HTTP/1.1 200 Connection Established\r\n\r\n";
+                stream.write_all(resp.as_bytes()).await?;
+                bidirectional_copy(stream, &mut remote).await;
+                return Ok(());
             }
-        }
-        Upstream::Proxy(proxy) => {
-            let upstream_addr = format!("{}:{}", proxy.host, proxy.port);
-            match connect_via_socks5(&upstream_addr, &target).await {
-                Ok(mut remote) => {
-                    let resp = "HTTP/1.1 200 Connection Established\r\n\r\n";
-                    stream.write_all(resp.as_bytes()).await?;
-                    bidirectional_copy(stream, &mut remote).await;
-                }
-                Err(e) => {
-                    tracing::warn!("HTTP CONNECT: SOCKS5 via {} failed: {e}", upstream_addr);
-                    let resp = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
-                    stream.write_all(resp.as_bytes()).await?;
-                }
+            Err(e) => {
+                metrics.record(
+                    GatewayRouteProtocol::HttpConnect,
+                    candidate.exit,
+                    GatewayAttemptStatus::Failure,
+                );
+                tracing::warn!(
+                    target = %target,
+                    route_group = ?selection.decision.matched_group,
+                    exit = ?candidate.exit,
+                    detail = ?candidate.detail,
+                    error = %e,
+                    "HTTP CONNECT: upstream attempt failed"
+                );
             }
-        }
-        Upstream::Warp { socks5_port }
-        | Upstream::Xray {
-            local_socks5_port: socks5_port,
-        } => {
-            let upstream_addr = format!("127.0.0.1:{socks5_port}");
-            match connect_via_socks5(&upstream_addr, &target).await {
-                Ok(mut remote) => {
-                    let resp = "HTTP/1.1 200 Connection Established\r\n\r\n";
-                    stream.write_all(resp.as_bytes()).await?;
-                    bidirectional_copy(stream, &mut remote).await;
-                }
-                Err(e) => {
-                    tracing::warn!("HTTP CONNECT: SOCKS5 via {upstream_addr} failed: {e}");
-                    let resp = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
-                    stream.write_all(resp.as_bytes()).await?;
-                }
-            }
-        }
-        Upstream::WarpChain { proxy, socks5_port } => {
-            match connect_via_warp_chain(&proxy, socks5_port, &target).await {
-                Ok(mut remote) => {
-                    let resp = "HTTP/1.1 200 Connection Established\r\n\r\n";
-                    stream.write_all(resp.as_bytes()).await?;
-                    bidirectional_copy(stream, &mut remote).await;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "HTTP CONNECT: WarpChain via {}->WARP:{} failed: {e}",
-                        proxy.host,
-                        socks5_port
-                    );
-                    let resp = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
-                    stream.write_all(resp.as_bytes()).await?;
-                }
-            }
-        }
-        Upstream::NoProxy => {
-            let resp = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
-            stream.write_all(resp.as_bytes()).await?;
         }
     }
 
+    let resp = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
+    stream.write_all(resp.as_bytes()).await?;
     Ok(())
 }
 

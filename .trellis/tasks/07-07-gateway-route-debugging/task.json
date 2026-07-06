@@ -3,7 +3,7 @@
   "name": "gateway-route-debugging",
   "title": "Gateway route debugging",
   "description": "Make gateway routing decisions and fallback behavior explainable, observable, and testable.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": "proxy-gateway, proxy-core router, proxy-api, proxy-mcp, metrics, integration tests",
   "package": "proxy-gateway",

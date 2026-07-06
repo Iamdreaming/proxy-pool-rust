@@ -2,6 +2,7 @@
 
 mod routes;
 
+use proxy_core::route_debug::UpstreamSelector;
 use proxy_core::scheduler::SchedulerHandle;
 use proxy_core::store::ProxyStore;
 use proxy_core::warp::WarpBalancer;
@@ -23,6 +24,8 @@ pub struct AppState {
     pub started_at: Instant,
     /// Optional WARP balancer for reporting WARP instance status.
     pub balancer: Option<Arc<WarpBalancer>>,
+    /// Shared gateway route selector for route dry-run and metrics.
+    pub route_selector: Arc<UpstreamSelector>,
 }
 
 /// Build the axum router with all API routes and optional web UI.

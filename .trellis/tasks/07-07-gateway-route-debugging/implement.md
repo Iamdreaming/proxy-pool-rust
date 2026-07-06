@@ -10,48 +10,48 @@
 
 ## Phase 2: Route Decision Model
 
-- [ ] Add route decision and candidate structs with serde support.
-- [ ] Add stable exit/status enums.
-- [ ] Add tests for serialization and representative candidate orders.
+- [x] Add route decision and candidate structs with serde support.
+- [x] Add stable exit/status enums.
+- [x] Add tests for serialization and representative candidate orders.
 
 ## Phase 3: Traceable Selector
 
-- [ ] Add `select_with_trace(host, protocol)` while preserving `select(host, protocol)`.
-- [ ] Record matched route group and matched reason where current router data allows it.
-- [ ] Record GeoIP summary when GeoIP is consulted.
-- [ ] Record unavailable reasons for pool, WARP, xray, and no-proxy cases.
-- [ ] Add selector tests for explicit direct, explicit free_pool, overseas fallback, and no-upstream.
+- [x] Add `select_with_trace(host, protocol)` while preserving `select(host, protocol)`.
+- [x] Record matched route group and matched reason where current router data allows it.
+- [x] Record GeoIP summary when GeoIP is consulted.
+- [x] Record unavailable reasons for pool, WARP, xray, and no-proxy cases.
+- [x] Add selector tests for explicit direct, explicit free_pool, overseas fallback, and no-upstream.
 
 ## Phase 4: Gateway Runtime Attempts
 
-- [ ] Update HTTP CONNECT handler to use traceable selection.
-- [ ] Update SOCKS5 handler to use traceable selection.
-- [ ] Add structured attempt logging.
-- [ ] Implement retry-across-candidates before client success response if feasible within current handler structure.
-- [ ] Add gateway tests for success/failure and retry behavior if runtime retry is implemented.
+- [x] Update HTTP CONNECT handler to use traceable selection.
+- [x] Update SOCKS5 handler to use traceable selection.
+- [x] Add structured attempt logging.
+- [x] Implement retry-across-candidates before client success response if feasible within current handler structure.
+- [x] Add gateway tests for success/failure and retry behavior if runtime retry is implemented.
 
 ## Phase 5: API And MCP
 
-- [ ] Add route dry-run endpoint to `proxy-api`.
-- [ ] Add `route_test` tool to `proxy-mcp`.
-- [ ] Ensure API/MCP share selector logic instead of duplicating route decisions.
-- [ ] Add serialization/deserialization tests.
+- [x] Add route dry-run endpoint to `proxy-api`.
+- [x] Add `route_test` tool to `proxy-mcp`.
+- [x] Ensure API/MCP share selector logic instead of duplicating route decisions.
+- [x] Add serialization/deserialization tests.
 
 ## Phase 6: Metrics
 
-- [ ] Add gateway route outcome metrics with stable names and labels.
-- [ ] Render metrics through `/api/metrics`.
-- [ ] Add metrics unit tests.
+- [x] Add gateway route outcome metrics with stable names and labels.
+- [x] Render metrics through `/api/metrics`.
+- [x] Add metrics unit tests.
 
 ## Phase 7: Verification
 
-- [ ] `cargo fmt --all --check`
-- [ ] `cargo test -p proxy-core --lib`
-- [ ] `cargo test -p proxy-gateway --lib`
-- [ ] `cargo test -p proxy-api --lib`
-- [ ] `cargo test -p proxy-mcp --lib`
-- [ ] `cargo test --workspace --all-targets`
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
+- [x] `cargo fmt --all --check`
+- [x] `cargo test -p proxy-core --lib`
+- [x] `cargo test -p proxy-gateway --lib`
+- [x] `cargo test -p proxy-api --lib`
+- [x] `cargo test -p proxy-mcp --lib`
+- [x] `cargo test --workspace --all-targets`
+- [x] `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] If deployed, verify via HTTP/MCP only; do not SSH to the dev address.
 
 ## Risk Points
