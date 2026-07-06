@@ -3,13 +3,14 @@
 use crate::circuit;
 use crate::config::PoolSettings;
 use crate::dedup;
-use crate::fetcher::Fetcher;
+use crate::fetcher::base::FetcherRunReport;
+use crate::fetcher::{Fetcher, base::FetcherOutput};
 use crate::geoip::GeoIPLookup;
 use crate::models::{Protocol, Proxy};
 use crate::store::ProxyStore;
 use crate::validator::Validator;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 
 /// Result of a scheduler refresh cycle.
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -18,6 +19,7 @@ pub struct SchedulerResult {
     pub validated: usize,
     pub stored: usize,
     pub errors: usize,
+    pub fetchers: Vec<FetcherRunReport>,
 }
 
 /// Commands that can be sent to the scheduler from other tasks.
@@ -26,18 +28,38 @@ pub enum SchedulerCommand {
     Refresh {
         reply: oneshot::Sender<SchedulerResult>,
     },
+    /// Trigger one fetcher by id or unique name and report the result.
+    RefreshFetcher {
+        fetcher_id: String,
+        reply: oneshot::Sender<anyhow::Result<SchedulerResult>>,
+    },
 }
 
 /// Handle for sending commands to the scheduler from other tasks.
 #[derive(Clone)]
 pub struct SchedulerHandle {
     cmd_tx: mpsc::Sender<SchedulerCommand>,
+    fetcher_statuses: Arc<RwLock<Vec<FetcherRunReport>>>,
 }
 
 impl SchedulerHandle {
     /// Create a new handle from a channel sender.
     pub fn new(cmd_tx: mpsc::Sender<SchedulerCommand>) -> Self {
-        Self { cmd_tx }
+        Self {
+            cmd_tx,
+            fetcher_statuses: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    /// Create a handle wired to the scheduler's fetcher status snapshot.
+    pub fn with_fetcher_statuses(
+        cmd_tx: mpsc::Sender<SchedulerCommand>,
+        fetcher_statuses: Arc<RwLock<Vec<FetcherRunReport>>>,
+    ) -> Self {
+        Self {
+            cmd_tx,
+            fetcher_statuses,
+        }
     }
 
     /// Trigger a refresh cycle and wait for the result.
@@ -50,6 +72,28 @@ impl SchedulerHandle {
         rx.await
             .map_err(|_| anyhow::anyhow!("scheduler result dropped"))
     }
+
+    /// Trigger a refresh cycle for one configured fetcher id.
+    pub async fn refresh_fetcher(
+        &self,
+        fetcher_id: impl Into<String>,
+    ) -> anyhow::Result<SchedulerResult> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SchedulerCommand::RefreshFetcher {
+                fetcher_id: fetcher_id.into(),
+                reply: tx,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("scheduler channel closed"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("scheduler result dropped"))?
+    }
+
+    /// Return the latest run report for each configured fetcher.
+    pub async fn fetcher_statuses(&self) -> Vec<FetcherRunReport> {
+        self.fetcher_statuses.read().await.clone()
+    }
 }
 
 /// Runs the fetch → dedup → validate → store pipeline on a schedule.
@@ -59,6 +103,7 @@ pub struct Scheduler {
     store: Arc<ProxyStore>,
     settings: PoolSettings,
     geoip: Option<Arc<Mutex<GeoIPLookup>>>,
+    fetcher_statuses: Arc<RwLock<Vec<FetcherRunReport>>>,
 }
 
 impl Scheduler {
@@ -69,35 +114,83 @@ impl Scheduler {
         settings: PoolSettings,
         geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     ) -> Self {
+        let fetcher_statuses = Arc::new(RwLock::new(
+            fetchers
+                .iter()
+                .map(|f| FetcherRunReport::never_run(f.as_ref()))
+                .collect(),
+        ));
+
         Self {
             fetchers,
             validator: Arc::new(validator),
             store,
             settings,
             geoip,
+            fetcher_statuses,
         }
+    }
+
+    /// Shared latest fetcher status snapshot for API/MCP handles.
+    pub fn fetcher_statuses(&self) -> Arc<RwLock<Vec<FetcherRunReport>>> {
+        self.fetcher_statuses.clone()
     }
 
     /// One full pipeline pass: fetch all → dedup → filter circuit-broken → validate → store.
     ///
     /// Returns a `SchedulerResult` with counts of fetched, validated, stored proxies and errors.
     pub async fn run_once(&self) -> SchedulerResult {
+        self.run_selected(None).await.unwrap_or_else(|e| {
+            tracing::warn!("fetch cycle selection failed: {e}");
+            SchedulerResult {
+                errors: 1,
+                ..SchedulerResult::default()
+            }
+        })
+    }
+
+    /// One full pipeline pass for one configured fetcher.
+    pub async fn run_one_fetcher(&self, fetcher_id: &str) -> anyhow::Result<SchedulerResult> {
+        self.run_selected(Some(fetcher_id)).await
+    }
+
+    async fn run_selected(&self, fetcher_id: Option<&str>) -> anyhow::Result<SchedulerResult> {
         let mut result = SchedulerResult::default();
 
         // 1. Fetch from all sources concurrently
-        let mut all_proxies = Vec::new();
-        let results = futures::future::join_all(self.fetchers.iter().map(|f| f.fetch())).await;
+        let selected: Vec<_> = self
+            .fetchers
+            .iter()
+            .filter(|fetcher| match fetcher_id {
+                Some(id) => fetcher_matches(fetcher.as_ref(), id),
+                None => true,
+            })
+            .collect();
 
-        for proxies in results {
-            all_proxies.extend(proxies);
+        if selected.is_empty() {
+            let id = fetcher_id.unwrap_or_default();
+            return Err(anyhow::anyhow!("fetcher not found: {id}"));
         }
+
+        let outputs: Vec<FetcherOutput> =
+            futures::future::join_all(selected.iter().map(|f| f.fetch_with_report())).await;
+
+        let mut all_proxies = Vec::new();
+        for output in outputs {
+            if output.report.status == crate::fetcher::base::FetcherRunStatus::Error {
+                result.errors += 1;
+            }
+            result.fetchers.push(output.report);
+            all_proxies.extend(output.proxies);
+        }
+        self.update_fetcher_statuses(&result.fetchers).await;
         result.fetched = all_proxies.len();
 
         // 2. Dedup within this batch
         let unique = dedup::dedup(all_proxies);
         tracing::info!("fetched proxies ({} unique after dedup)", unique.len());
         if unique.is_empty() {
-            return result;
+            return Ok(result);
         }
 
         // 3. Filter out proxies whose circuit breaker is still open in the store
@@ -136,7 +229,18 @@ impl Scheduler {
         }
         result.stored = working.len() - result.errors;
 
-        result
+        Ok(result)
+    }
+
+    async fn update_fetcher_statuses(&self, reports: &[FetcherRunReport]) {
+        let mut statuses = self.fetcher_statuses.write().await;
+        for report in reports {
+            if let Some(existing) = statuses.iter_mut().find(|s| s.id == report.id) {
+                *existing = report.clone();
+            } else {
+                statuses.push(report.clone());
+            }
+        }
     }
 
     /// Remove newly-fetched proxies whose circuit breaker is still open in the store.
@@ -245,6 +349,10 @@ impl Scheduler {
                             let result = this.run_once().await;
                             let _ = reply.send(result);
                         }
+                        SchedulerCommand::RefreshFetcher { fetcher_id, reply } => {
+                            let result = this.run_one_fetcher(&fetcher_id).await;
+                            let _ = reply.send(result);
+                        }
                     }
                 }
             }));
@@ -253,6 +361,10 @@ impl Scheduler {
             let _ = h.await;
         }
     }
+}
+
+fn fetcher_matches(fetcher: &dyn Fetcher, requested: &str) -> bool {
+    fetcher.id().eq_ignore_ascii_case(requested) || fetcher.name().eq_ignore_ascii_case(requested)
 }
 
 #[cfg(test)]
@@ -276,10 +388,12 @@ mod tests {
             validated: 5,
             stored: 4,
             errors: 1,
+            fetchers: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"fetched\":10"));
         assert!(json.contains("\"validated\":5"));
+        assert!(json.contains("\"fetchers\""));
         assert!(json.contains("\"stored\":4"));
         assert!(json.contains("\"errors\":1"));
     }
@@ -301,9 +415,11 @@ mod tests {
                         validated: 50,
                         stored: 45,
                         errors: 5,
+                        fetchers: vec![],
                     })
                     .unwrap();
             }
+            SchedulerCommand::RefreshFetcher { .. } => panic!("expected refresh command"),
         }
 
         let received = refresh_task.await.unwrap().unwrap();

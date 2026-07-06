@@ -1,7 +1,9 @@
 //! TheSpeedX GitHub raw proxy list fetcher.
 
-use crate::fetcher::base::Fetcher;
+use crate::fetcher::base::{Fetcher, FetcherOutput};
 use crate::models::{Protocol, Proxy};
+use chrono::Utc;
+use std::time::Instant;
 
 const HTTP_URL: &str = "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt";
 const SOCKS5_URL: &str = "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt";
@@ -36,11 +38,22 @@ impl TheSpeedXFetcher {
 
 #[async_trait::async_trait]
 impl Fetcher for TheSpeedXFetcher {
+    fn id(&self) -> String {
+        format!("thespeedx:{}", self.protocol)
+    }
+
     fn name(&self) -> &str {
         "TheSpeedX"
     }
 
     async fn fetch(&self) -> Vec<Proxy> {
+        self.fetch_with_report().await.proxies
+    }
+
+    async fn fetch_with_report(&self) -> FetcherOutput {
+        let started_at = Utc::now();
+        let started = Instant::now();
+
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(self.timeout_secs))
             .build()
@@ -48,7 +61,14 @@ impl Fetcher for TheSpeedXFetcher {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("{}: build client failed: {e}", self.name());
-                return Vec::new();
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some(format!("build client failed: {e}")),
+                );
             }
         };
 
@@ -57,7 +77,14 @@ impl Fetcher for TheSpeedXFetcher {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("{}: fetch failed: {e}", self.name());
-                return Vec::new();
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some(format!("fetch failed: {e}")),
+                );
             }
         };
 
@@ -65,15 +92,32 @@ impl Fetcher for TheSpeedXFetcher {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!("{}: read body failed: {e}", self.name());
-                return Vec::new();
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some(format!("read body failed: {e}")),
+                );
             }
         };
 
         let protocol = match Protocol::from_str_loose(&self.protocol) {
             Some(p) => p,
-            None => return Vec::new(),
+            None => {
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some(format!("invalid protocol: {}", self.protocol)),
+                );
+            }
         };
 
+        let fetched = count_text_candidates(&text);
         let proxies: Vec<Proxy> = text
             .lines()
             .filter_map(|line| {
@@ -96,6 +140,15 @@ impl Fetcher for TheSpeedXFetcher {
             })
             .collect();
         tracing::info!("{}: fetched {} proxies", self.name(), proxies.len());
-        proxies
+        FetcherOutput::completed(self, started_at, started, fetched, proxies, None)
     }
+}
+
+fn count_text_candidates(text: &str) -> usize {
+    text.lines()
+        .filter(|line| {
+            let line = line.trim();
+            !line.is_empty() && line.contains(':')
+        })
+        .count()
 }

@@ -88,6 +88,12 @@ pub struct RemoveProxyParam {
     pub protocol: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RefreshFetcherParam {
+    /// Stable fetcher id, such as "proxyscrape:http" or "geonode".
+    pub fetcher: String,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -289,19 +295,7 @@ impl ProxyPoolMcp {
         let validator =
             proxy_core::validator::Validator::new("https://www.cloudflare.com/cdn-cgi/trace", 10);
 
-        match validator.validate_one(&proxy).await {
-            Some(alive) => to_json(serde_json::json!({
-                "alive": true,
-                "latency_ms": alive.latency_ms,
-                "anonymity": alive.anonymity.map(|a| a.to_string()),
-            })),
-            None => to_json(serde_json::json!({
-                "alive": false,
-                "host": host,
-                "port": port,
-                "protocol": protocol,
-            })),
-        }
+        to_json(serde_json::to_value(validator.check_one(&proxy).await).unwrap_or_default())
     }
 
     #[tool(
@@ -402,6 +396,39 @@ impl ProxyPoolMcp {
                 "validated": result.validated,
                 "stored": result.stored,
                 "errors": result.errors,
+                "fetchers": result.fetchers,
+            })),
+            Err(e) => to_json(serde_json::json!({
+                "status": "error",
+                "message": format!("{e}"),
+            })),
+        }
+    }
+
+    #[tool(description = "Get the latest status report for each configured proxy fetcher")]
+    async fn fetcher_status(&self) -> String {
+        let fetchers = self.scheduler_handle.fetcher_statuses().await;
+        to_json(serde_json::json!({
+            "fetchers": fetchers,
+        }))
+    }
+
+    #[tool(
+        description = "Refresh one configured proxy fetcher by id, such as proxyscrape:http or geonode"
+    )]
+    async fn refresh_fetcher(&self, params: Parameters<RefreshFetcherParam>) -> String {
+        match self
+            .scheduler_handle
+            .refresh_fetcher(params.0.fetcher.clone())
+            .await
+        {
+            Ok(result) => to_json(serde_json::json!({
+                "status": "ok",
+                "fetched": result.fetched,
+                "validated": result.validated,
+                "stored": result.stored,
+                "errors": result.errors,
+                "fetchers": result.fetchers,
             })),
             Err(e) => to_json(serde_json::json!({
                 "status": "error",
@@ -1029,6 +1056,13 @@ mod tests {
         assert_eq!(param.host, "1.2.3.4");
         assert_eq!(param.port, 8080);
         assert_eq!(param.protocol, "socks5");
+    }
+
+    #[test]
+    fn test_refresh_fetcher_param_deserialize() {
+        let json = r#"{"fetcher":"proxyscrape:http"}"#;
+        let param: RefreshFetcherParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.fetcher, "proxyscrape:http");
     }
 
     #[test]

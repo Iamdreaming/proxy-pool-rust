@@ -32,6 +32,7 @@ class TestMcpConnection:
             "get_proxy", "get_best_proxy", "list_proxies",
             "check_proxy", "service_status", "pool_status", "warp_status",
             "geoip_lookup", "remove_proxy", "refresh_pool",
+            "fetcher_status", "refresh_fetcher",
             "proxy_stats", "update_service",
         }
         missing = expected - tool_names
@@ -132,8 +133,31 @@ class TestMcpCheckProxy:
         check_text = _extract_text(check_result)
         check_data = json.loads(check_text)
         assert "alive" in check_data
+        assert "host" in check_data
+        assert "port" in check_data
+        assert "protocol" in check_data
+        if not check_data["alive"]:
+            assert check_data.get("error_type")
         # alive may be true or false depending on proxy health at test time
         # We just verify the structure is correct
+
+
+class TestMcpFetcherStatus:
+    """Test fetcher_status tool."""
+
+    def test_fetcher_status_structure(self, mcp_client):
+        result = mcp_client.call_tool("fetcher_status")
+        text = _extract_text(result)
+        data = json.loads(text)
+        assert "fetchers" in data
+        assert isinstance(data["fetchers"], list)
+        if data["fetchers"]:
+            first = data["fetchers"][0]
+            assert "id" in first
+            assert "name" in first
+            assert first["status"] in ("never_run", "success", "empty", "error")
+            assert isinstance(first["fetched"], int)
+            assert isinstance(first["parsed"], int)
 
 
 class TestMcpGeoIPLookup:

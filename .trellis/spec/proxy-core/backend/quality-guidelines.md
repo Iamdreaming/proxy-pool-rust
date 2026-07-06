@@ -202,3 +202,97 @@ Current test coverage:
 - [ ] New fetcher implementations follow the `fetch() -> Vec<Proxy>` pattern
 - [ ] `cargo clippy -- -D warnings` passes
 - [ ] `cargo test` passes
+
+## Scenario: Fetcher Run Reports And Validation Check Results
+
+### 1. Scope / Trigger
+
+- Trigger: API and MCP expose fetcher status, single-fetcher refresh, and structured proxy check results.
+- This is a cross-layer contract owned by `proxy-core`; adapters in `proxy-api` and `proxy-mcp` must serialize core types rather than reimplementing fetcher or validator logic.
+
+### 2. Signatures
+
+- Trait compatibility: `Fetcher::fetch(&self) -> Vec<Proxy>` remains available.
+- Structured fetch: `Fetcher::fetch_with_report(&self) -> FetcherOutput`.
+- Scheduler status: `SchedulerHandle::fetcher_statuses(&self) -> Vec<FetcherRunReport>`.
+- Single refresh: `SchedulerHandle::refresh_fetcher(&self, fetcher_id) -> anyhow::Result<SchedulerResult>`.
+- Structured validation: `Validator::check_one(&self, proxy: &Proxy) -> ProxyCheckResult`.
+- Compatibility validation: `Validator::validate_one(&self, proxy: &Proxy) -> Option<Proxy>` delegates to `check_one()`.
+
+### 3. Contracts
+
+Fetcher ids are stable machine ids used by API/MCP clients. Protocol-specific fetchers include the protocol, such as `proxyscrape:http` or `thespeedx:socks5`; single-source fetchers use stable snake-case ids such as `geonode`.
+
+`FetcherRunReport` fields:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `id` | string | Stable fetcher id |
+| `name` | string | Human-readable display name |
+| `status` | enum | `never_run`, `success`, `empty`, `error` |
+| `fetched` | integer | Raw candidate count when known |
+| `parsed` | integer | Parsed proxy count |
+| `error` | optional string | Error reason for failed fetch attempts |
+| `started_at` / `finished_at` | optional RFC3339 datetime | Run timing |
+| `duration_ms` | optional integer | Wall-clock run duration |
+
+`ProxyCheckResult` fields:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `alive` | boolean | Whether the proxy validated successfully |
+| `host` / `port` / `protocol` | proxy identity | Echoed from the checked proxy |
+| `latency_ms` | optional number | Present on success |
+| `anonymity` | optional enum | Present on success |
+| `error_type` | optional enum | Present on failure |
+| `error` | optional string | Human-readable failure detail |
+
+### 4. Validation & Error Matrix
+
+| Condition | Contract |
+|-----------|----------|
+| Fetcher has never run | `status=never_run`, counts are zero |
+| Fetcher succeeds with proxies | `status=success`, `parsed > 0` |
+| Fetcher succeeds but parses no proxies | `status=empty`, no error |
+| Fetcher build/fetch/body/parse fails | `status=error`, `error` contains the reason |
+| Unknown fetcher id | `refresh_fetcher` returns `Err("fetcher not found: ...")` |
+| Invalid proxy URL | `error_type=invalid_proxy_url` |
+| Client construction fails | `error_type=client_build_failed` |
+| Request timeout | `error_type=timeout` |
+| Other request failure | `error_type=request_failed` |
+| HTTP status >= 400 | `error_type=bad_status` |
+| Response body read fails | `error_type=body_read_failed` |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `GET /api/fetchers` and MCP `fetcher_status` return the same `FetcherRunReport` shape from `SchedulerHandle`.
+- Base: a new legacy fetcher only implements `fetch()`; the default `fetch_with_report()` still returns a valid report with fetched/parsed counts equal to the returned proxy count.
+- Bad: an API/MCP adapter parses logs or recomputes fetcher status locally. That duplicates business logic and will drift from scheduler state.
+
+### 6. Tests Required
+
+- `proxy-core` unit tests for report status constructors and validation result serialization.
+- `proxy-core` scheduler tests for refresh command compatibility.
+- `proxy-api` serialization tests for refresh and fetcher status response structs.
+- `proxy-mcp` deserialization tests for new tool params.
+- Deployed integration tests should assert `/api/fetchers`, MCP `fetcher_status`, and MCP tool listing include the new operations.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// API layer invents status from logs or counts.
+let fetchers = vec![json!({"name": "ProxyScrape", "status": "ok"})];
+```
+
+This makes API semantics diverge from the scheduler's actual latest run.
+
+#### Correct
+
+```rust
+let fetchers = state.scheduler_handle.fetcher_statuses().await;
+Json(FetchersResponse { fetchers })
+```
+
+The scheduler owns fetcher state; API and MCP only serialize it.

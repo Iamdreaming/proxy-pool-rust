@@ -1,7 +1,9 @@
 //! free-proxy-list.net HTML table scraper.
 
-use crate::fetcher::base::Fetcher;
+use crate::fetcher::base::{Fetcher, FetcherOutput};
 use crate::models::{Protocol, Proxy};
+use chrono::Utc;
+use std::time::Instant;
 
 const URL: &str = "https://free-proxy-list.net/";
 
@@ -29,11 +31,22 @@ impl FreeProxyListFetcher {
 
 #[async_trait::async_trait]
 impl Fetcher for FreeProxyListFetcher {
+    fn id(&self) -> String {
+        "free_proxy_list".into()
+    }
+
     fn name(&self) -> &str {
         "FreeProxyList"
     }
 
     async fn fetch(&self) -> Vec<Proxy> {
+        self.fetch_with_report().await.proxies
+    }
+
+    async fn fetch_with_report(&self) -> FetcherOutput {
+        let started_at = Utc::now();
+        let started = Instant::now();
+
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(self.timeout_secs))
             .build()
@@ -41,7 +54,14 @@ impl Fetcher for FreeProxyListFetcher {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("{}: build client failed: {e}", self.name());
-                return Vec::new();
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some(format!("build client failed: {e}")),
+                );
             }
         };
 
@@ -50,7 +70,14 @@ impl Fetcher for FreeProxyListFetcher {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("{}: fetch failed: {e}", self.name());
-                return Vec::new();
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some(format!("fetch failed: {e}")),
+                );
             }
         };
 
@@ -58,14 +85,31 @@ impl Fetcher for FreeProxyListFetcher {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!("{}: read body failed: {e}", self.name());
-                return Vec::new();
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some(format!("read body failed: {e}")),
+                );
             }
         };
 
+        let fetched = count_html_rows(&html);
         let proxies = parse_html_table(&html, self.name());
         tracing::info!("{}: fetched {} proxies", self.name(), proxies.len());
-        proxies
+        FetcherOutput::completed(self, started_at, started, fetched, proxies, None)
     }
+}
+
+fn count_html_rows(html: &str) -> usize {
+    let document = scraper::Html::parse_document(html);
+    let selector = match scraper::Selector::parse("table#proxylisttable tbody tr") {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    document.select(&selector).count()
 }
 
 fn parse_html_table(html: &str, source: &str) -> Vec<Proxy> {

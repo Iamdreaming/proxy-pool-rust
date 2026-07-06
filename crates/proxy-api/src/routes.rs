@@ -7,6 +7,7 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get, post},
 };
+use proxy_core::fetcher::base::FetcherRunReport;
 use proxy_core::models::{Protocol, Proxy, ProxyFilter, WarpInstance};
 use proxy_core::status::{collect_readiness, collect_service_status, render_prometheus_metrics};
 use serde::{Deserialize, Serialize};
@@ -110,6 +111,12 @@ pub struct RefreshResponse {
     pub validated: usize,
     pub stored: usize,
     pub errors: usize,
+    pub fetchers: Vec<FetcherRunReport>,
+}
+
+#[derive(Serialize)]
+pub struct FetchersResponse {
+    pub fetchers: Vec<FetcherRunReport>,
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +128,8 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/healthz", get(healthz))
         .route("/api/readyz", get(readyz))
         .route("/api/status", get(status))
+        .route("/api/fetchers", get(fetcher_status))
+        .route("/api/fetchers/{id}/refresh", post(refresh_fetcher))
         .route("/api/proxies", get(list_proxies))
         .route("/api/proxy/random", get(get_random_proxy))
         .route("/api/proxy/best", get(get_best_proxy))
@@ -251,6 +260,7 @@ async fn refresh_pool(State(state): State<AppState>) -> impl IntoResponse {
             validated: result.validated,
             stored: result.stored,
             errors: result.errors,
+            fetchers: result.fetchers,
         }),
         Err(e) => Json(RefreshResponse {
             status: format!("error: {e}"),
@@ -258,7 +268,53 @@ async fn refresh_pool(State(state): State<AppState>) -> impl IntoResponse {
             validated: 0,
             stored: 0,
             errors: 0,
+            fetchers: vec![],
         }),
+    }
+}
+
+async fn fetcher_status(State(state): State<AppState>) -> impl IntoResponse {
+    Json(FetchersResponse {
+        fetchers: state.scheduler_handle.fetcher_statuses().await,
+    })
+}
+
+async fn refresh_fetcher(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.scheduler_handle.refresh_fetcher(&id).await {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(RefreshResponse {
+                status: "ok".into(),
+                fetched: result.fetched,
+                validated: result.validated,
+                stored: result.stored,
+                errors: result.errors,
+                fetchers: result.fetchers,
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            let code = if e.to_string().contains("fetcher not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (
+                code,
+                Json(RefreshResponse {
+                    status: format!("error: {e}"),
+                    fetched: 0,
+                    validated: 0,
+                    stored: 0,
+                    errors: 0,
+                    fetchers: vec![],
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -344,11 +400,20 @@ mod tests {
             validated: 5,
             stored: 4,
             errors: 1,
+            fetchers: vec![],
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"fetched\":10"));
         assert!(json.contains("\"errors\":1"));
+        assert!(json.contains("\"fetchers\""));
+    }
+
+    #[test]
+    fn test_fetchers_response_serialization() {
+        let resp = FetchersResponse { fetchers: vec![] };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(json, "{\"fetchers\":[]}");
     }
 
     #[test]

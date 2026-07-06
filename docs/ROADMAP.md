@@ -32,7 +32,27 @@
 
 ## Now
 
-暂无进行中的代码任务。当前建议下一步创建并启动 `fetcher-validator-quality`，因为部署闭环和基础观测入口已经具备，下一瓶颈是代理输入质量、验证解释性和错误诊断能力。
+### P1 — `fetcher-validator-quality`
+
+**目标**：提升代理来源质量、验证结果可解释性和错误诊断能力。
+
+**当前状态**：Trellis 任务已存在：`.trellis/tasks/07-07-fetcher-validator-quality/`。第一批实现已覆盖 fetcher 运行报告、单源刷新、API/MCP 运维入口和 `check_proxy` 结构化错误；剩余重点是源级熔断和多目标验证。
+
+**主要 TODO**：
+
+- [x] 为每个 fetcher 记录最近抓取时间、成功/失败状态、抓取数量、解析数量和错误原因。
+- [x] 支持按 fetcher 手动刷新，避免每次全量刷新。
+- [ ] 增加源级熔断：连续失败后暂停，恢复时半开探测。
+- [ ] 验证结果记录 TCP 连接时间、请求耗时、出口 IP、国家/地区。
+- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
+- [x] 验证错误分类：invalid proxy URL、client build failed、timeout、request failed、bad status、body read failed。
+- [x] MCP `check_proxy` 返回结构化错误类型。
+
+**已验证**：
+
+- [x] `cargo fmt --all --check`
+- [x] `cargo test --workspace --all-targets`
+- [x] `cargo clippy --workspace --all-targets -- -D warnings`
 
 ## Done
 
@@ -72,35 +92,7 @@
 
 ## Ready
 
-### P1 — `fetcher-validator-quality`
-
-**目标**：提升代理来源质量、验证结果可解释性和错误诊断能力。
-
-**建议范围**：
-
-- [ ] 为每个 fetcher 记录最近抓取时间、成功/失败状态、抓取数量、解析数量和错误原因。
-- [ ] 支持按 fetcher 手动刷新，避免每次全量刷新。
-- [ ] 增加源级熔断：连续失败后暂停，恢复时半开探测。
-- [ ] 验证结果记录 TCP 连接时间、请求耗时、总延迟、出口 IP、匿名度、国家/地区。
-- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
-- [ ] 验证错误分类：timeout、connection refused、proxy auth error、invalid response、DNS error。
-- [ ] MCP `check_proxy` 返回结构化错误类型。
-
-**非目标**：
-
-- 不重写抓取器框架。
-- 不引入完整 Dashboard。
-- 不改变网关路由策略。
-- 不做大规模 Redis schema 破坏性迁移。
-
-**建议验收标准**：
-
-1. fetcher 状态能说明最近一次抓取是否成功、抓到多少、解析多少、失败原因是什么。
-2. 可以只刷新指定 fetcher，不必全量刷新所有来源。
-3. 连续失败的来源会进入暂停/半开探测状态，避免无意义重试。
-4. 验证结果包含延迟、出口 IP、匿名度、地区和结构化错误类型。
-5. MCP `check_proxy` 的失败结果可被程序稳定解析。
-6. `cargo test` 和 `cargo clippy -- -D warnings` 通过。
+暂无。当前 `fetcher-validator-quality` 仍在推进，完成后再从 Next 中选择下一项创建 Trellis 任务。
 
 ## Next
 

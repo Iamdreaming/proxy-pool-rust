@@ -119,6 +119,24 @@ class TestApiMetrics:
         assert "proxy_xray_active_nodes" in text
 
 
+class TestApiFetchers:
+    """Test fetcher status endpoints."""
+
+    def test_fetcher_status_structure(self, api_client):
+        resp = api_client.get(f"{API_BASE}/api/fetchers")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "fetchers" in data
+        assert isinstance(data["fetchers"], list)
+        if data["fetchers"]:
+            first = data["fetchers"][0]
+            assert "id" in first
+            assert "name" in first
+            assert first["status"] in ("never_run", "success", "empty", "error")
+            assert isinstance(first["fetched"], int)
+            assert isinstance(first["parsed"], int)
+
+
 class TestApiRefresh:
     """Test pool refresh endpoint."""
 

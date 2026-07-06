@@ -133,7 +133,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Create scheduler command channel so external tasks can trigger refreshes
     let (cmd_tx, cmd_rx) = mpsc::channel::<SchedulerCommand>(8);
-    let scheduler_handle = SchedulerHandle::new(cmd_tx);
+    let scheduler_handle =
+        SchedulerHandle::with_fetcher_statuses(cmd_tx, scheduler.fetcher_statuses());
 
     // Build UpstreamSelector with optional Router and GeoIP
     let router = if let Some(ref path) = settings.routes_path {

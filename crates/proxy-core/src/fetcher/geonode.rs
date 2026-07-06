@@ -1,7 +1,9 @@
 //! GeoNode API fetcher.
 
-use crate::fetcher::base::Fetcher;
+use crate::fetcher::base::{Fetcher, FetcherOutput};
 use crate::models::{Protocol, Proxy};
+use chrono::Utc;
+use std::time::Instant;
 
 const URL: &str = "https://proxylist.geonode.com/api/proxy-list";
 
@@ -29,11 +31,22 @@ impl GeoNodeFetcher {
 
 #[async_trait::async_trait]
 impl Fetcher for GeoNodeFetcher {
+    fn id(&self) -> String {
+        "geonode".into()
+    }
+
     fn name(&self) -> &str {
         "GeoNode"
     }
 
     async fn fetch(&self) -> Vec<Proxy> {
+        self.fetch_with_report().await.proxies
+    }
+
+    async fn fetch_with_report(&self) -> FetcherOutput {
+        let started_at = Utc::now();
+        let started = Instant::now();
+
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(self.timeout_secs))
             .build()
@@ -41,7 +54,14 @@ impl Fetcher for GeoNodeFetcher {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("{}: build client failed: {e}", self.name());
-                return Vec::new();
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some(format!("build client failed: {e}")),
+                );
             }
         };
 
@@ -60,7 +80,14 @@ impl Fetcher for GeoNodeFetcher {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("{}: fetch failed: {e}", self.name());
-                return Vec::new();
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some(format!("fetch failed: {e}")),
+                );
             }
         };
 
@@ -68,15 +95,32 @@ impl Fetcher for GeoNodeFetcher {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("{}: parse JSON failed: {e}", self.name());
-                return Vec::new();
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some(format!("parse JSON failed: {e}")),
+                );
             }
         };
 
         let proxies = match data.get("data").and_then(|d| d.as_array()) {
             Some(arr) => arr,
-            None => return Vec::new(),
+            None => {
+                return FetcherOutput::completed(
+                    self,
+                    started_at,
+                    started,
+                    0,
+                    Vec::new(),
+                    Some("missing data array".into()),
+                );
+            }
         };
 
+        let fetched = proxies.len();
         let result: Vec<Proxy> = proxies
             .iter()
             .filter_map(|item| {
@@ -103,6 +147,6 @@ impl Fetcher for GeoNodeFetcher {
             })
             .collect();
         tracing::info!("{}: fetched {} proxies", self.name(), result.len());
-        result
+        FetcherOutput::completed(self, started_at, started, fetched, result, None)
     }
 }
