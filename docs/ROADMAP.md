@@ -268,15 +268,14 @@
 
 建议按以下顺序创建和推进任务：
 
-1. `no-ssh-dev-validation` — 固化无 SSH 的 dev 验证闭环。
-2. `score-retention-policy` — 基于现有验证结果做评分、降权和清理。
-3. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
-4. `web-dashboard-real-ops-mvp` — 管理面板接入真实运维数据。
-5. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
-6. `fetcher-validator-quality` — 用户确认后恢复暂缓的源级熔断等内部增强。
-7. `update-failure-hardening` — 仅在允许故障注入 dev 配置且不需要 SSH 时执行。
-8. `warp-ops-enhancement` — WARP 运维增强。
-9. `xray-subscription-ops` — xray 和订阅源管理。
+1. `score-retention-policy` — 基于现有验证结果做评分、降权和清理。
+2. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
+3. `web-dashboard-real-ops-mvp` — 管理面板接入真实运维数据。
+4. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
+5. `fetcher-validator-quality` — 用户确认后恢复暂缓的源级熔断等内部增强。
+6. `update-failure-hardening` — 仅在允许故障注入 dev 配置且不需要 SSH 时执行。
+7. `warp-ops-enhancement` — WARP 运维增强。
+8. `xray-subscription-ops` — xray 和订阅源管理。
 
 ## 任务 PRD 模板
 
