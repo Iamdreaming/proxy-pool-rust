@@ -33,7 +33,7 @@
 
 ## Current Planning Decision
 
-当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp` 与 `fetcher-source-circuit-breaker-mvp`：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源也具备源级熔断和手动探测能力。下一批任务从验证可观测性、WARP 运维增强、xray 订阅运维中继续选择。
+当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp` 与 `validator-observability-v2` 的 single-target diagnostics MVP：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 也能返回目标、耗时、HTTP 状态和出口信息。下一批从 WARP/xray 运维增强中继续选择。
 
 **工作区注意事项**：
 
@@ -87,6 +87,28 @@
 - [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
 
 ## Done
+
+### P1 — `validator-observability-v2`
+
+**目标**：进一步提升 `check_proxy` 和批量验证结果的解释能力，说明代理“能连哪里、慢在哪里、出口是谁”。
+
+**当前状态**：已完成 single-target diagnostics MVP。`ProxyCheckResult` 现在返回目标 URL/host、HTTP 状态、request/body/total 耗时，以及从 Cloudflare trace 或 httpbin JSON 中解析出的出口 IP/国家。MCP `check_proxy` 继续直接序列化核心 `Validator::check_one()` 结果。
+
+**主要完成项**：
+
+- [x] `ProxyCheckResult` 返回 `target_url` 和 `target_host`。
+- [x] 验证结果返回 `timings.request_ms`、`timings.body_read_ms`、`timings.total_ms`。
+- [x] 收到 HTTP 响应时返回 `http_status`，bad status 也携带诊断字段。
+- [x] 从 Cloudflare trace 的 `ip=`/`loc=` 和 httpbin JSON 的 `origin` 解析出口信息。
+- [x] MCP `check_proxy` 继续直接序列化核心 `Validator::check_one()` 结果，不在 MCP 层重复解析。
+- [x] `validate_one()` 兼容批量验证，仍只在 alive 时返回 `Some(Proxy)`。
+- [x] `cargo test --workspace --all-targets` 通过。
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+
+**后续可选增强**：
+
+- [ ] 多目标验证矩阵：默认目标、国内目标、国外目标、Cloudflare trace。
+- [ ] 如需要精确 TCP/TLS 阶段耗时，单独评估是否引入更底层的连接探针。
 
 ### P1 — `fetcher-source-circuit-breaker-mvp`
 
@@ -211,24 +233,23 @@
 
 ## Next
 
-### P1 — `validator-observability-v2`
+### P3 — `warp-ops-enhancement`
 
-**目标**：进一步提升 `check_proxy` 和批量验证结果的解释能力，说明代理“能连哪里、慢在哪里、出口是谁”。
-
-**当前决策**：按用户最新要求暂不作为 Now。等 Dashboard 和更直接的运维入口完成后，再回到该任务。
+**目标**：增强 WARP endpoint 优选、健康检查和手动运维能力。
 
 **候选功能**：
 
-- [ ] 验证结果记录 TCP 连接时间和请求耗时。
-- [ ] 验证结果记录出口 IP、国家/地区。
-- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
-- [ ] MCP `check_proxy` 返回多目标检查结果和稳定错误分类。
+- [ ] 完善 WARP instance 状态模型：endpoint、latency、loss、healthy、assigned_at、fail_count。
+- [ ] 查询最近 WARP optimizer 扫描结果。
+- [ ] 支持手动触发 WARP endpoint 扫描。
+- [ ] 支持 endpoint pinning，允许临时禁用 optimizer 覆盖。
+- [ ] WARP 健康检查结果进入 Prometheus metrics。
+- [ ] 增加 WARP 链式代理端到端测试。
 
 **验收标准**：
 
-- [ ] `ProxyCheckResult` 或等价结构能表达分阶段耗时和出口信息。
-- [ ] MCP `check_proxy` 至少能返回默认目标的更细粒度诊断。
-- [ ] 多目标验证如范围较大，可先规划并明确首个实现切片。
+- [ ] API/MCP 至少能查询 WARP 当前实例、最近 optimizer 结果和失败原因。
+- [ ] Web WARP 页面只展示真实可用动作，不显示无后端支持的假按钮。
 - [ ] `cargo test --workspace --all-targets` 通过。
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
@@ -254,19 +275,6 @@
 
 - [ ] 源级熔断已拆为 `fetcher-source-circuit-breaker-mvp`。
 - [ ] 验证结果可观测性已拆为 `validator-observability-v2`。
-
-### P3 — `warp-ops-enhancement`
-
-**目标**：增强 WARP endpoint 优选、健康检查和手动运维能力。
-
-**候选功能**：
-
-- [ ] 完善 WARP instance 状态模型：endpoint、latency、loss、healthy、assigned_at、fail_count。
-- [ ] 查询最近 WARP optimizer 扫描结果。
-- [ ] 支持手动触发 WARP endpoint 扫描。
-- [ ] 支持 endpoint pinning，允许临时禁用 optimizer 覆盖。
-- [ ] WARP 健康检查结果进入 Prometheus metrics。
-- [ ] 增加 WARP 链式代理端到端测试。
 
 ### P3 — `xray-subscription-ops`
 
@@ -301,11 +309,11 @@
 
 建议按以下顺序创建和推进任务：
 
-1. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
-2. `update-failure-hardening` — 用户确认后再恢复自更新失败路径结构化错误和 no-SSH 验证。
-3. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
-4. `warp-ops-enhancement` — WARP 运维增强。
-5. `xray-subscription-ops` — xray 和订阅源管理。
+1. `warp-ops-enhancement` — WARP 运维增强。
+2. `xray-subscription-ops` — xray 和订阅源管理。
+3. `update-failure-hardening` — 用户确认后再恢复自更新失败路径结构化错误和 no-SSH 验证。
+4. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
+5. `validator-observability-multitarget` — 多目标验证矩阵和更细阶段耗时，等 single-target 合同稳定后再拆。
 
 ## 任务 PRD 模板
 

@@ -250,8 +250,14 @@ Fetcher ids are stable machine ids used by API/MCP clients. Protocol-specific fe
 |-------|------|---------|
 | `alive` | boolean | Whether the proxy validated successfully |
 | `host` / `port` / `protocol` | proxy identity | Echoed from the checked proxy |
+| `target_url` | string | Validation target URL used for the check |
+| `target_host` | optional string | Parsed host from `target_url` |
 | `latency_ms` | optional number | Present on success |
 | `anonymity` | optional enum | Present on success |
+| `http_status` | optional integer | Response status when headers were received |
+| `timings` | optional object | `request_ms`, `body_read_ms`, and `total_ms` when available |
+| `observed_ip` | optional string | Exit IP parsed from Cloudflare trace `ip=` or httpbin JSON `origin` |
+| `observed_country` | optional string | Country/location code parsed from Cloudflare trace `loc=` |
 | `error_type` | optional enum | Present on failure |
 | `error` | optional string | Human-readable failure detail |
 
@@ -272,10 +278,12 @@ Fetcher ids are stable machine ids used by API/MCP clients. Protocol-specific fe
 | Unknown fetcher id | `refresh_fetcher` returns `Err("fetcher not found: ...")` |
 | Invalid proxy URL | `error_type=invalid_proxy_url` |
 | Client construction fails | `error_type=client_build_failed` |
-| Request timeout | `error_type=timeout` |
-| Other request failure | `error_type=request_failed` |
-| HTTP status >= 400 | `error_type=bad_status` |
-| Response body read fails | `error_type=body_read_failed` |
+| Request timeout | `error_type=timeout`, `timings.request_ms` and `timings.total_ms` present |
+| Other request failure | `error_type=request_failed`, request/total timings present |
+| HTTP status >= 400 | `error_type=bad_status`, `http_status` and request/total timings present |
+| Response body read fails | `error_type=body_read_failed`, `http_status` and phase timings present |
+| Cloudflare trace body exposes `ip=` / `loc=` | `observed_ip` / `observed_country` populated |
+| httpbin JSON body exposes `origin` | `observed_ip` populated from the first origin value |
 
 ### 5. Good/Base/Bad Cases
 
@@ -285,7 +293,7 @@ Fetcher ids are stable machine ids used by API/MCP clients. Protocol-specific fe
 
 ### 6. Tests Required
 
-- `proxy-core` unit tests for report status constructors, source circuit transitions, and validation result serialization.
+- `proxy-core` unit tests for report status constructors, source circuit transitions, validation result serialization, and observed exit metadata parsing.
 - `proxy-core` scheduler tests for refresh command compatibility and automatic-vs-manual source skip decisions.
 - `proxy-api` serialization tests for refresh and fetcher status response structs.
 - `proxy-mcp` deserialization tests for new tool params.

@@ -117,7 +117,7 @@ docker compose logs -f proxy-pool
 | `list_proxies` | 列出池中代理（支持 protocol/limit 参数） |
 | `explain_proxy_scores` | 查看代理评分组成和保留决策 |
 | `cleanup_low_score_proxies` | dry-run 或显式 apply 清理低分代理 |
-| `check_proxy` | 验证指定代理可用性 |
+| `check_proxy` | 验证指定代理可用性，并返回目标、耗时、HTTP 状态和出口信息 |
 | `pool_status` | 查看池状态概览 |
 | `warp_status` | WARP 实例状态 |
 | `refresh_pool` | 触发抓取+验证（返回实际结果） |
