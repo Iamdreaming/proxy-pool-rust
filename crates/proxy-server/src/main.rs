@@ -54,6 +54,7 @@ fn setup_logging() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     setup_logging();
+    let started_at = std::time::Instant::now();
     tracing::info!("proxy-pool-rust starting (git_hash={GIT_HASH})");
 
     // Load configuration
@@ -166,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
         xray_active_count: xray_active_count.clone(),
         scheduler_handle: scheduler_handle.clone(),
         git_hash: GIT_HASH,
+        started_at,
         balancer: Some(balancer.clone()),
     };
     let api_app = proxy_api::create_app(api_state, Some("/app/web".to_string()));
@@ -182,6 +184,9 @@ async fn main() -> anyhow::Result<()> {
         Some(balancer.clone()),
         mcp_geoip,
         scheduler_handle,
+        xray_active_count.clone(),
+        GIT_HASH,
+        started_at,
     );
 
     tracing::info!("starting proxy-pool services");

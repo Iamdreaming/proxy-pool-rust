@@ -12,6 +12,7 @@
 use proxy_core::geoip::GeoIPLookup;
 use proxy_core::models::ProxyFilter;
 use proxy_core::scheduler::SchedulerHandle;
+use proxy_core::status::collect_service_status;
 use proxy_core::store::ProxyStore;
 use proxy_core::warp::balancer::WarpBalancer;
 use rmcp::handler::server::tool::ToolRouter;
@@ -21,6 +22,8 @@ use rmcp::{ServerHandler, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -107,6 +110,9 @@ pub struct ProxyPoolMcp {
     balancer: Option<Arc<WarpBalancer>>,
     geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     scheduler_handle: SchedulerHandle,
+    xray_active_count: Arc<AtomicUsize>,
+    git_hash: &'static str,
+    started_at: Instant,
     tool_router: ToolRouter<Self>,
 }
 
@@ -116,12 +122,18 @@ impl ProxyPoolMcp {
         balancer: Option<Arc<WarpBalancer>>,
         geoip: Option<Arc<Mutex<GeoIPLookup>>>,
         scheduler_handle: SchedulerHandle,
+        xray_active_count: Arc<AtomicUsize>,
+        git_hash: &'static str,
+        started_at: Instant,
     ) -> Self {
         Self {
             store,
             balancer,
             geoip,
             scheduler_handle,
+            xray_active_count,
+            git_hash,
+            started_at,
             tool_router: Self::tool_router(),
         }
     }
@@ -225,6 +237,23 @@ impl ProxyPoolMcp {
                 "protocol": protocol,
             })),
         }
+    }
+
+    #[tool(
+        description = "Get structured service status, including version, uptime, Redis, pool, WARP, and xray summaries"
+    )]
+    async fn service_status(&self) -> String {
+        let xray_active = self.xray_active_count.load(Ordering::Relaxed);
+        let status = collect_service_status(
+            &self.store,
+            self.balancer.as_deref(),
+            env!("CARGO_PKG_VERSION"),
+            self.git_hash,
+            self.started_at.elapsed().as_secs(),
+            xray_active,
+        )
+        .await;
+        serde_json::to_string_pretty(&status).unwrap_or_default()
     }
 
     #[tool(description = "Get the current status of the proxy pool")]

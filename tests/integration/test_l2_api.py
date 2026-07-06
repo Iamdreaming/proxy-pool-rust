@@ -15,6 +15,12 @@ class TestApiStatus:
         data = resp.json()
         assert data["version"]  # non-empty string
         assert data["git_hash"]  # non-empty string
+        assert isinstance(data["uptime_sec"], int)
+        assert data["redis"]["status"] in ("ok", "error")
+        assert isinstance(data["pool"]["total"], int)
+        assert isinstance(data["warp"]["configured"], int)
+        assert isinstance(data["warp"]["healthy"], int)
+        assert isinstance(data["xray"]["active_nodes"], int)
 
 
 class TestApiProxies:
@@ -106,6 +112,11 @@ class TestApiMetrics:
         assert resp.status_code == 200
         text = resp.text
         assert "proxy_pool_size" in text
+        assert 'proxy_pool_size{protocol="total"}' in text
+        assert "proxy_redis_ready" in text
+        assert "proxy_warp_instances_configured" in text
+        assert "proxy_warp_instances_healthy" in text
+        assert "proxy_xray_active_nodes" in text
 
 
 class TestApiRefresh:

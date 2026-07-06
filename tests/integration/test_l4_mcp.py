@@ -30,7 +30,7 @@ class TestMcpConnection:
 
         expected = {
             "get_proxy", "get_best_proxy", "list_proxies",
-            "check_proxy", "pool_status", "warp_status",
+            "check_proxy", "service_status", "pool_status", "warp_status",
             "geoip_lookup", "remove_proxy", "refresh_pool",
             "proxy_stats", "update_service",
         }
@@ -62,6 +62,29 @@ class TestMcpPoolStatus:
         pool = data["pool"]
         expected_total = pool["http"] + pool["https"] + pool["socks5"]
         assert pool["total"] == expected_total
+
+
+class TestMcpServiceStatus:
+    """Test service_status tool."""
+
+    def test_service_status_structure(self, mcp_client):
+        """service_status returns the shared operator status structure."""
+        result = mcp_client.call_tool("service_status")
+        text = _extract_text(result)
+        data = json.loads(text)
+
+        assert data["version"]
+        assert data["git_hash"]
+        assert isinstance(data["uptime_sec"], int)
+        assert "pool" in data
+        assert "redis" in data
+        assert "warp" in data
+        assert "xray" in data
+        assert data["redis"]["status"] in ("ok", "error")
+        assert isinstance(data["pool"]["total"], int)
+        assert isinstance(data["warp"]["configured"], int)
+        assert isinstance(data["warp"]["healthy"], int)
+        assert isinstance(data["xray"]["active_nodes"], int)
 
 
 class TestMcpGetProxy:

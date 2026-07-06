@@ -40,10 +40,31 @@ export interface PoolStatus {
   http: number
   https: number
   socks5: number
+  total: number
+}
+
+export interface DependencyStatus {
+  status: 'ok' | 'error'
+  message?: string
+}
+
+export interface WarpStatus {
+  configured: number
+  healthy: number
+}
+
+export interface XrayStatus {
+  active_nodes: number
 }
 
 export interface StatusResponse {
+  version: string
+  git_hash: string
+  uptime_sec: number
   pool: PoolStatus
+  redis: DependencyStatus
+  warp: WarpStatus
+  xray: XrayStatus
 }
 
 export interface ProxiesResponse {

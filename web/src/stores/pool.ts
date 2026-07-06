@@ -5,7 +5,7 @@ import { fetchStatus, fetchProxies, fetchRandomProxy } from '@/api'
 
 export const usePoolStore = defineStore('pool', () => {
   // -- State --
-  const status = ref<PoolStatus>({ http: 0, https: 0, socks5: 0 })
+  const status = ref<PoolStatus>({ http: 0, https: 0, socks5: 0, total: 0 })
   const proxies = ref<Proxy[]>([])
   const currentProtocol = ref<Protocol>('http')
   const loading = ref(false)
@@ -46,7 +46,8 @@ export const usePoolStore = defineStore('pool', () => {
   }
 
   // -- Getters --
-  const totalProxies = () => status.value.http + status.value.https + status.value.socks5
+  const totalProxies = () =>
+    status.value.total ?? status.value.http + status.value.https + status.value.socks5
   const overseasProxies = () => proxies.value.filter(p => p.is_overseas).length
   const domesticProxies = () => proxies.value.filter(p => !p.is_overseas).length
 

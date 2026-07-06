@@ -8,6 +8,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use proxy_core::models::{Protocol, Proxy, ProxyFilter, WarpInstance};
+use proxy_core::status::{collect_readiness, collect_service_status, render_prometheus_metrics};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 
@@ -44,14 +45,8 @@ pub struct ProxyFilterQuery {
     pub alive: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct DeleteProxyPath {
-    pub key: String, // host:port
-}
-
 // ---------------------------------------------------------------------------
-// Query → ProxyFilter conversion
+// Query to ProxyFilter conversion
 // ---------------------------------------------------------------------------
 
 impl From<&ProxyQuery> for ProxyFilter {
@@ -85,20 +80,6 @@ impl From<&ProxyFilterQuery> for ProxyFilter {
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-pub struct StatusResponse {
-    pub version: &'static str,
-    pub git_hash: &'static str,
-    pub pool: PoolStatus,
-}
-
-#[derive(Serialize)]
-pub struct PoolStatus {
-    pub http: usize,
-    pub https: usize,
-    pub socks5: usize,
-}
 
 #[derive(Serialize)]
 pub struct ProxiesResponse {
@@ -137,6 +118,8 @@ pub struct RefreshResponse {
 
 pub fn create_router() -> Router<AppState> {
     Router::new()
+        .route("/api/healthz", get(healthz))
+        .route("/api/readyz", get(readyz))
         .route("/api/status", get(status))
         .route("/api/proxies", get(list_proxies))
         .route("/api/proxy/random", get(get_random_proxy))
@@ -157,24 +140,44 @@ fn json_status(code: StatusCode, msg: impl Into<String>) -> axum::response::Resp
     (code, Json(SimpleResponse { status: msg.into() })).into_response()
 }
 
+fn uptime_sec(state: &AppState) -> u64 {
+    state.started_at.elapsed().as_secs()
+}
+
+async fn service_status(state: &AppState) -> proxy_core::status::ServiceStatus {
+    let xray_active = state.xray_active_count.load(Ordering::Relaxed);
+    collect_service_status(
+        &state.store,
+        state.balancer.as_deref(),
+        env!("CARGO_PKG_VERSION"),
+        state.git_hash,
+        uptime_sec(state),
+        xray_active,
+    )
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
-async fn status(State(state): State<AppState>) -> impl IntoResponse {
-    let http_count = state.store.count(Protocol::Http).await.unwrap_or(0);
-    let https_count = state.store.count(Protocol::Https).await.unwrap_or(0);
-    let socks5_count = state.store.count(Protocol::Socks5).await.unwrap_or(0);
-
-    Json(StatusResponse {
-        version: env!("CARGO_PKG_VERSION"),
-        git_hash: state.git_hash,
-        pool: PoolStatus {
-            http: http_count,
-            https: https_count,
-            socks5: socks5_count,
-        },
+async fn healthz() -> impl IntoResponse {
+    Json(SimpleResponse {
+        status: "ok".into(),
     })
+}
+
+async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
+    let readiness = collect_readiness(&state.store).await;
+    if readiness.is_ok() {
+        (StatusCode::OK, Json(readiness)).into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(readiness)).into_response()
+    }
+}
+
+async fn status(State(state): State<AppState>) -> impl IntoResponse {
+    Json(service_status(&state).await)
 }
 
 async fn list_proxies(
@@ -183,15 +186,18 @@ async fn list_proxies(
 ) -> impl IntoResponse {
     let protocol_str = params.protocol.as_deref().unwrap_or("http");
     let protocol = Protocol::from_str_loose(protocol_str).unwrap_or(Protocol::Http);
-    let limit = params.limit.unwrap_or(20);
+    let limit = params.limit.unwrap_or(100);
     let filter = ProxyFilter::from(&params);
 
     match state.store.query(protocol, &filter, limit).await {
-        Ok(proxies) => Json(ProxiesResponse {
-            protocol: protocol_str.to_string(),
-            count: proxies.len(),
-            proxies,
-        }),
+        Ok(mut proxies) => {
+            proxies.truncate(limit);
+            Json(ProxiesResponse {
+                protocol: protocol_str.to_string(),
+                count: proxies.len(),
+                proxies,
+            })
+        }
         Err(e) => {
             tracing::error!("list_proxies error: {e}");
             Json(ProxiesResponse {
@@ -212,8 +218,7 @@ async fn get_random_proxy(
     let filter = ProxyFilter::from(&params);
 
     match state.store.get_random_filtered(protocol, &filter).await {
-        Ok(Some(proxy)) => Json(Some(proxy)),
-        Ok(None) => Json(None),
+        Ok(proxy) => Json(proxy),
         Err(e) => {
             tracing::error!("get_random_proxy error: {e}");
             Json(None)
@@ -230,8 +235,7 @@ async fn get_best_proxy(
     let filter = ProxyFilter::from(&params);
 
     match state.store.get_best_filtered(protocol, &filter).await {
-        Ok(Some(proxy)) => Json(Some(proxy)),
-        Ok(None) => Json(None),
+        Ok(proxy) => Json(proxy),
         Err(e) => {
             tracing::error!("get_best_proxy error: {e}");
             Json(None)
@@ -259,7 +263,6 @@ async fn refresh_pool(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn delete_proxy(State(state): State<AppState>, Path(key): Path<String>) -> impl IntoResponse {
-    // Parse key format: "protocol:host:port"
     let parts: Vec<&str> = key.splitn(3, ':').collect();
     if parts.len() != 3 {
         return json_status(
@@ -285,16 +288,8 @@ async fn delete_proxy(State(state): State<AppState>, Path(key): Path<String>) ->
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    let http_count = state.store.count(Protocol::Http).await.unwrap_or(0);
-    let https_count = state.store.count(Protocol::Https).await.unwrap_or(0);
-    let socks5_count = state.store.count(Protocol::Socks5).await.unwrap_or(0);
-
-    let lines = format!(
-        "# HELP proxy_pool_size Number of proxies in pool\n\
-         proxy_pool_size{{protocol=\"http\"}} {http_count}\n\
-         proxy_pool_size{{protocol=\"https\"}} {https_count}\n\
-         proxy_pool_size{{protocol=\"socks5\"}} {socks5_count}\n"
-    );
+    let status = service_status(&state).await;
+    let lines = render_prometheus_metrics(&status);
     ([("content-type", "text/plain")], lines)
 }
 
@@ -319,7 +314,6 @@ mod tests {
 
     #[test]
     fn test_parse_delete_key_valid() {
-        // Test the key parsing logic used in delete_proxy
         let key = "http:1.2.3.4:8080";
         let parts: Vec<&str> = key.splitn(3, ':').collect();
         assert_eq!(parts.len(), 3);
@@ -337,9 +331,6 @@ mod tests {
 
     #[test]
     fn test_parse_delete_key_ipv6() {
-        // IPv6 addresses contain colons -- splitn(3, ':') splits on first two colons.
-        // This is a known limitation: IPv6 hosts in the key format are not supported.
-        // The key format "protocol:host:port" assumes IPv4 or domain host.
         let key = "socks5:[::1]:1080";
         let parts: Vec<&str> = key.splitn(3, ':').collect();
         assert_eq!(parts.len(), 3);
@@ -370,37 +361,10 @@ mod tests {
     }
 
     #[test]
-    fn test_status_response_serialization() {
-        let resp = StatusResponse {
-            version: "0.1.0",
-            git_hash: "abc1234",
-            pool: PoolStatus {
-                http: 10,
-                https: 5,
-                socks5: 3,
-            },
-        };
+    fn test_readyz_error_serialization() {
+        let resp = proxy_core::status::DependencyStatus::error("redis down");
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"version\":\"0.1.0\""));
-        assert!(json.contains("\"git_hash\":\"abc1234\""));
-        assert!(json.contains("\"http\":10"));
-        assert!(json.contains("\"https\":5"));
-        assert!(json.contains("\"socks5\":3"));
-    }
-
-    #[test]
-    fn test_status_response_serialization_unknown_hash() {
-        let resp = StatusResponse {
-            version: "0.1.0",
-            git_hash: "unknown",
-            pool: PoolStatus {
-                http: 0,
-                https: 0,
-                socks5: 0,
-            },
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"version\":\"0.1.0\""));
-        assert!(json.contains("\"git_hash\":\"unknown\""));
+        assert!(json.contains("\"status\":\"error\""));
+        assert!(json.contains("redis down"));
     }
 }

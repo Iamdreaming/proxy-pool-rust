@@ -13,6 +13,7 @@ pub mod models;
 pub mod pacing;
 pub mod router;
 pub mod scheduler;
+pub mod status;
 pub mod store;
 pub mod validator;
 pub mod warp;

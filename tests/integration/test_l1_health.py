@@ -15,7 +15,26 @@ class TestServiceHealth:
         data = server_ready
         assert "version" in data
         assert "git_hash" in data
+        assert "uptime_sec" in data
         assert "pool" in data
+        assert "redis" in data
+        assert "warp" in data
+        assert "xray" in data
+
+    def test_api_healthz(self, api_client):
+        """/api/healthz returns process liveness without dependency checks."""
+        resp = api_client.get(f"{API_BASE}/api/healthz")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_api_readyz(self, api_client):
+        """/api/readyz returns structured dependency readiness."""
+        resp = api_client.get(f"{API_BASE}/api/readyz")
+        assert resp.status_code in (200, 503)
+        data = resp.json()
+        assert data["status"] in ("ok", "error")
+        if resp.status_code == 503:
+            assert data.get("message")
 
     def test_git_hash_matches(self, server_ready, expected_git_hash):
         """Deployed git_hash matches expected commit."""
@@ -32,6 +51,7 @@ class TestServiceHealth:
         assert "http" in pool
         assert "https" in pool
         assert "socks5" in pool
+        assert "total" in pool
 
     def test_gateway_port_open(self):
         """Gateway port is accepting connections."""
