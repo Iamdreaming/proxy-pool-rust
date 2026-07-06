@@ -33,20 +33,41 @@
 
 ## Current Planning Decision
 
-当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp` 与 `validator-observability-v2` 的 single-target diagnostics MVP：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 也能返回目标、耗时、HTTP 状态和出口信息。下一批从 WARP/xray 运维增强中继续选择。
+当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp` 与 `validator-observability-v2` 的 single-target diagnostics MVP：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 也能返回目标、耗时、HTTP 状态和出口信息。
+
+用户最新要求先不推进 `warp-ops-enhancement`，因此下一批从 xray 节点生命周期、订阅源运维和验证矩阵中继续推进。WARP 保留为后续能力扩展，不作为当前 Ready/Next 主线。
 
 **工作区注意事项**：
 
 - 当前本地存在一组已隔离的 `update-failure-hardening` WIP：`stash@{0}: wip: paused update failure hardening`。按用户要求先不继续，不要默认恢复、删除或混入后续任务。
 - 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`stash@{1}: wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
 - 当前 Trellis 里 `gateway-route-debugging` 和 `fetcher-validator-quality` 已从 `in_progress` 改为 `paused`，当前会话任务指针已清空。
-- `validator-observability-v2` 曾创建 planning 任务目录但未进入实现；按用户最新要求暂不作为当前任务推进。
+- `warp-ops-enhancement` 曾创建 planning 任务目录；按用户最新要求先不继续，任务状态保留为 `paused`，不作为 current task。
 - `.codex/config.toml` 属于非本任务改动，不纳入任何 roadmap 提交或后续功能提交。
 - 按用户要求，不直接 SSH 到 dev 地址；dev 验证默认走 HTTP、MCP、GitHub Actions、容器已有自更新入口和公开状态接口。
 
 ## Now
 
-当前无 Now 任务；从 Next 中选择下一项细化后再进入实现。
+### P1 — `xray-node-lifecycle-mvp`
+
+**当前状态**：已创建 Trellis PRD / design / implement，处于规划准备阶段；下一步按任务文档进入实现。
+
+**目标**：把 xray 节点从“只知道活跃数量”推进到可解释的生命周期状态，便于判断订阅节点是否成功进入 xray 出站池。
+
+**范围**：
+
+- [ ] 定义 xray 节点生命周期：`pending`、`activating`、`active`、`failed`、`removed`。
+- [ ] 记录每个节点最近一次激活失败原因和更新时间。
+- [ ] API/MCP 查询 active/failed xray 节点摘要。
+- [ ] `/api/status` 或现有 xray status 能暴露 active/failed 计数。
+- [ ] 增加核心状态转换和 API/MCP 输出测试。
+
+**验收标准**：
+
+- [ ] API/MCP 能查询 xray 节点生命周期摘要和失败原因。
+- [ ] 已有 xray happy path 行为保持兼容。
+- [ ] `cargo test --workspace --all-targets` 通过。
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
 ## Paused Closeout
 
@@ -229,13 +250,65 @@
 
 ## Ready
 
-当前无额外 Ready 任务；先完成 Now，再从 Next 中选择一项细化 PRD。
+当前无额外 Ready 任务；完成 Now 后从 Next 中选择下一项细化 PRD。
 
 ## Next
 
+### P1 — `subscription-source-ops-mvp`
+
+**目标**：补齐订阅源运维 MVP，让订阅源抓取、解析、去重和失败原因可被 API/MCP 查询。
+
+**候选功能**：
+
+- [ ] 查询订阅源列表、启用状态、最近刷新时间和最近错误。
+- [ ] 手动刷新单个订阅源。
+- [ ] 返回解析结果预览、节点数量和去重统计。
+- [ ] 保持默认 dry-run/preview 语义，避免误把异常订阅写入活跃 xray 池。
+
+**验收标准**：
+
+- [ ] API/MCP 能查询订阅源状态和最近解析摘要。
+- [ ] 手动刷新返回结构化成功/失败结果。
+- [ ] `cargo test --workspace --all-targets` 通过。
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+
+### P2 — `xray-config-dry-run-and-remove`
+
+**目标**：让 xray 运维动作可预检、可回退，减少错误配置直接写入运行态的风险。
+
+**候选功能**：
+
+- [ ] xray 配置变更 dry-run 校验。
+- [ ] 手动移除单个 xray 节点。
+- [ ] 记录移除原因和操作结果。
+- [ ] MCP/API 返回结构化错误，便于 Web 和自动化工具展示。
+
+### P2 — `validator-observability-multitarget`
+
+**目标**：在 single-target diagnostics 稳定后，增加多目标验证矩阵，判断代理是否只对某些站点可用。
+
+**候选功能**：
+
+- [ ] 默认目标、Cloudflare trace、httpbin 和可选国内/国外目标的验证矩阵。
+- [ ] 每个目标返回 HTTP 状态、耗时和出口信息。
+- [ ] MCP `check_proxy` 保持单目标兼容，新增显式矩阵模式。
+
+### P2 — `dashboard-ops-polish-v2`
+
+**目标**：把新增的 xray、订阅源和验证矩阵能力接入 Web Dashboard，同时继续坚持只展示真实可用动作。
+
+**候选功能**：
+
+- [ ] xray 节点生命周期摘要和失败原因展示。
+- [ ] 订阅源状态、刷新结果和解析预览展示。
+- [ ] validator 多目标结果展示。
+- [ ] 移除或禁用所有没有后端支持的操作按钮。
+
+## Later
+
 ### P3 — `warp-ops-enhancement`
 
-**目标**：增强 WARP endpoint 优选、健康检查和手动运维能力。
+**目标**：增强 WARP endpoint 优选、健康检查和手动运维能力。当前按用户要求先不推进，保留 planning 草稿供后续恢复。
 
 **候选功能**：
 
@@ -245,15 +318,6 @@
 - [ ] 支持 endpoint pinning，允许临时禁用 optimizer 覆盖。
 - [ ] WARP 健康检查结果进入 Prometheus metrics。
 - [ ] 增加 WARP 链式代理端到端测试。
-
-**验收标准**：
-
-- [ ] API/MCP 至少能查询 WARP 当前实例、最近 optimizer 结果和失败原因。
-- [ ] Web WARP 页面只展示真实可用动作，不显示无后端支持的假按钮。
-- [ ] `cargo test --workspace --all-targets` 通过。
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
-
-## Later
 
 ### P1 — `fetcher-validator-quality`
 
@@ -278,19 +342,13 @@
 
 ### P3 — `xray-subscription-ops`
 
-**目标**：完善 xray 节点生命周期和订阅源运维能力。
+**目标**：原 umbrella 任务，已拆分为 `xray-node-lifecycle-mvp`、`subscription-source-ops-mvp` 和 `xray-config-dry-run-and-remove`。后续如需更大的 xray/订阅源管理面板，再恢复该 umbrella。
 
 **候选功能**：
 
-- [ ] xray 节点生命周期：pending、activating、active、failed、removed。
-- [ ] 记录每个节点激活失败原因。
-- [ ] API/MCP 查询 active xray 节点摘要。
-- [ ] 支持手动移除单个 xray 节点。
-- [ ] 支持重新同步订阅节点到 xray。
 - [ ] 增加 gRPC 重连状态指标。
-- [ ] xray 配置变更时增加 dry-run 校验。
-- [ ] 订阅源新增、删除、启用、禁用、手动刷新。
-- [ ] 订阅解析结果预览和节点去重策略。
+- [ ] 订阅源新增、删除、启用、禁用。
+- [ ] 更完整的 xray/订阅源 Web 管理体验。
 
 ## Parking Lot
 
@@ -309,11 +367,14 @@
 
 建议按以下顺序创建和推进任务：
 
-1. `warp-ops-enhancement` — WARP 运维增强。
-2. `xray-subscription-ops` — xray 和订阅源管理。
-3. `update-failure-hardening` — 用户确认后再恢复自更新失败路径结构化错误和 no-SSH 验证。
-4. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
-5. `validator-observability-multitarget` — 多目标验证矩阵和更细阶段耗时，等 single-target 合同稳定后再拆。
+1. `xray-node-lifecycle-mvp` — xray 节点生命周期和失败原因。
+2. `subscription-source-ops-mvp` — 订阅源状态、手动刷新和解析预览。
+3. `xray-config-dry-run-and-remove` — xray 配置 dry-run 和单节点移除。
+4. `validator-observability-multitarget` — 多目标验证矩阵和更细阶段耗时。
+5. `dashboard-ops-polish-v2` — 接入新增真实运维能力，移除假动作。
+6. `warp-ops-enhancement` — 用户重新确认后再恢复 WARP 运维增强。
+7. `update-failure-hardening` — 用户确认后再恢复自更新失败路径结构化错误和 no-SSH 验证。
+8. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
 
 ## 任务 PRD 模板
 
