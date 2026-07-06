@@ -1391,6 +1391,7 @@ dependencies = [
  "axum 0.8.9",
  "chrono",
  "proxy-core",
+ "proxy-sub",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1445,6 +1446,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "proxy-core",
+ "proxy-sub",
  "reqwest",
  "rmcp",
  "schemars",

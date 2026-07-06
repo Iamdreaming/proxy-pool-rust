@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 proxy-core = { workspace = true }
+proxy-sub = { workspace = true }
 tokio = { workspace = true }
 rmcp = { workspace = true }
 reqwest = { workspace = true }

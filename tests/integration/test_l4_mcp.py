@@ -34,7 +34,8 @@ class TestMcpConnection:
             "geoip_lookup", "remove_proxy", "refresh_pool",
             "fetcher_status", "refresh_fetcher", "route_test",
             "explain_proxy_scores", "cleanup_low_score_proxies",
-            "proxy_stats", "update_service",
+            "proxy_stats", "update_service", "xray_status",
+            "subscription_sources", "refresh_subscription_source",
         }
         missing = expected - tool_names
         assert not missing, f"Missing MCP tools: {missing}"
@@ -170,6 +171,31 @@ class TestMcpFetcherStatus:
             assert first["status"] in ("never_run", "success", "empty", "error")
             assert isinstance(first["fetched"], int)
             assert isinstance(first["parsed"], int)
+
+
+class TestMcpSubscriptions:
+    """Test subscription source ops tools."""
+
+    def test_subscription_sources_structure(self, mcp_client):
+        result = mcp_client.call_tool("subscription_sources")
+        text = _extract_text(result)
+        data = json.loads(text)
+        assert data["status"] in ("ok", "unavailable")
+        assert "subscriptions" in data
+        subscriptions = data["subscriptions"]
+        assert isinstance(subscriptions["enabled"], bool)
+        assert isinstance(subscriptions["source_count"], int)
+        assert isinstance(subscriptions["sources"], list)
+
+    def test_refresh_unknown_subscription_source_structure(self, mcp_client):
+        result = mcp_client.call_tool(
+            "refresh_subscription_source",
+            {"source": "missing-source", "apply": False},
+        )
+        text = _extract_text(result)
+        data = json.loads(text)
+        assert data["status"] in ("not_found", "unavailable")
+        assert data["source"] == "missing-source"
 
 
 class TestMcpRouteTest:

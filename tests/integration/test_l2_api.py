@@ -181,6 +181,33 @@ class TestApiFetchers:
             assert isinstance(first["parsed"], int)
 
 
+class TestApiSubscriptions:
+    """Test subscription source ops endpoints."""
+
+    def test_subscription_sources_structure(self, api_client):
+        resp = api_client.get(f"{API_BASE}/api/subscriptions/sources")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        subscriptions = data["subscriptions"]
+        assert isinstance(subscriptions["enabled"], bool)
+        assert isinstance(subscriptions["source_count"], int)
+        assert isinstance(subscriptions["sources"], list)
+        if subscriptions["sources"]:
+            first = subscriptions["sources"][0]
+            assert "source" in first
+            assert "latest_report" in first
+            assert "id" in first["source"]
+            assert first["source"]["kind"] in ("static_url", "github_search", "aggregator")
+
+    def test_refresh_unknown_subscription_source_returns_404(self, api_client):
+        resp = api_client.post(
+            f"{API_BASE}/api/subscriptions/sources/missing-source/refresh",
+            params={"apply": False},
+        )
+        assert resp.status_code == 404
+
+
 class TestApiRefresh:
     """Test pool refresh endpoint."""
 

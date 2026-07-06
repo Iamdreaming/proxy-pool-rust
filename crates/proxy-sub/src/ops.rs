@@ -1,0 +1,675 @@
+//! Operator-facing subscription source status and manual refresh support.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Instant;
+
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use proxy_core::config::SubscriptionConfig;
+use proxy_core::store::ProxyStore;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex, RwLock};
+
+use crate::convert::partition;
+use crate::discover::{
+    AggregatorConfig, AggregatorDiscover, Discover, GitHubSearchConfig, GitHubSearchDiscover,
+};
+use crate::models::SubscriptionProxy;
+use crate::parser::parse_subscription;
+use crate::pending::PendingStore;
+use crate::source::SubscriptionSource;
+
+/// Public source kind used by API/MCP status responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionSourceKind {
+    StaticUrl,
+    GithubSearch,
+    Aggregator,
+}
+
+/// Stable, safe-to-display description of a configured subscription source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionSourceDescriptor {
+    pub id: String,
+    pub kind: SubscriptionSourceKind,
+    pub label: String,
+    pub enabled: bool,
+}
+
+/// Manual refresh mode. Preview is the safe default and performs no writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionRefreshMode {
+    Preview,
+    Apply,
+}
+
+impl SubscriptionRefreshMode {
+    pub fn from_apply(apply: bool) -> Self {
+        if apply { Self::Apply } else { Self::Preview }
+    }
+
+    pub fn applies(self) -> bool {
+        matches!(self, Self::Apply)
+    }
+}
+
+/// High-level outcome for one source refresh report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionRefreshOutcome {
+    Ok,
+    Partial,
+    Empty,
+    Failed,
+}
+
+/// Sanitized per-stage error captured during a refresh attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionSourceError {
+    pub stage: String,
+    pub url: Option<String>,
+    pub message: String,
+}
+
+/// Structured report for one configured subscription source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionSourceReport {
+    pub source: SubscriptionSourceDescriptor,
+    pub mode: SubscriptionRefreshMode,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
+    pub elapsed_ms: u64,
+    pub outcome: SubscriptionRefreshOutcome,
+    pub last_error: Option<String>,
+    pub discovered_urls: usize,
+    pub unique_urls: usize,
+    pub duplicate_urls: usize,
+    pub fetched_urls: usize,
+    pub failed_urls: usize,
+    pub parsed_nodes: usize,
+    pub direct_nodes: usize,
+    pub encrypted_nodes: usize,
+    pub unknown_nodes: usize,
+    pub duplicate_nodes: usize,
+    pub stored_basic: usize,
+    pub stored_encrypted: usize,
+    pub protocol_counts: BTreeMap<String, usize>,
+    pub errors: Vec<SubscriptionSourceError>,
+}
+
+/// Status for a configured source plus its latest report, if any.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionSourceStatus {
+    pub source: SubscriptionSourceDescriptor,
+    pub latest_report: Option<SubscriptionSourceReport>,
+}
+
+/// Snapshot returned by API/MCP status surfaces.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionSourcesSnapshot {
+    pub enabled: bool,
+    pub source_count: usize,
+    pub sources: Vec<SubscriptionSourceStatus>,
+}
+
+#[derive(Clone)]
+pub struct SubscriptionOpsHandle {
+    state: SubscriptionOpsState,
+    source: Arc<Mutex<SubscriptionSource>>,
+    store: Arc<ProxyStore>,
+    pending: Arc<PendingStore>,
+}
+
+impl SubscriptionOpsHandle {
+    pub fn new(
+        config: SubscriptionConfig,
+        store: Arc<ProxyStore>,
+        pending: Arc<PendingStore>,
+    ) -> Self {
+        let state = SubscriptionOpsState::from_config(&config);
+        let source = Arc::new(Mutex::new(SubscriptionSource::new(
+            config.cache_ttl_sec,
+            config.fetch_timeout_sec,
+        )));
+        Self {
+            state,
+            source,
+            store,
+            pending,
+        }
+    }
+
+    pub async fn status(&self) -> SubscriptionSourcesSnapshot {
+        self.state.snapshot().await
+    }
+
+    pub async fn refresh_source(
+        &self,
+        source_id: &str,
+        mode: SubscriptionRefreshMode,
+    ) -> Result<Option<SubscriptionSourceReport>> {
+        let Some(entry) = self.state.entry(source_id).await else {
+            return Ok(None);
+        };
+        let report = {
+            let mut source = self.source.lock().await;
+            run_entry(&entry, &mut source, &self.store, &self.pending, mode).await
+        };
+        self.state.update_report(report.clone()).await;
+        Ok(Some(report))
+    }
+
+    pub async fn refresh_all(
+        &self,
+        mode: SubscriptionRefreshMode,
+    ) -> Vec<SubscriptionSourceReport> {
+        let entries = self.state.entries().await;
+        let mut reports = Vec::with_capacity(entries.len());
+        let mut source = self.source.lock().await;
+        for entry in entries {
+            let report = run_entry(&entry, &mut source, &self.store, &self.pending, mode).await;
+            self.state.update_report(report.clone()).await;
+            reports.push(report);
+        }
+        reports
+    }
+}
+
+#[derive(Clone)]
+struct SubscriptionOpsState {
+    inner: Arc<RwLock<SubscriptionOpsInner>>,
+}
+
+struct SubscriptionOpsInner {
+    entries: Vec<SubscriptionSourceEntry>,
+    reports: HashMap<String, SubscriptionSourceReport>,
+}
+
+impl SubscriptionOpsState {
+    fn from_config(config: &SubscriptionConfig) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(SubscriptionOpsInner {
+                entries: entries_from_config(config),
+                reports: HashMap::new(),
+            })),
+        }
+    }
+
+    async fn snapshot(&self) -> SubscriptionSourcesSnapshot {
+        let inner = self.inner.read().await;
+        let sources = inner
+            .entries
+            .iter()
+            .map(|entry| SubscriptionSourceStatus {
+                source: entry.descriptor.clone(),
+                latest_report: inner.reports.get(&entry.descriptor.id).cloned(),
+            })
+            .collect::<Vec<_>>();
+        SubscriptionSourcesSnapshot {
+            enabled: !inner.entries.is_empty(),
+            source_count: inner.entries.len(),
+            sources,
+        }
+    }
+
+    async fn entries(&self) -> Vec<SubscriptionSourceEntry> {
+        self.inner.read().await.entries.clone()
+    }
+
+    async fn entry(&self, source_id: &str) -> Option<SubscriptionSourceEntry> {
+        self.inner
+            .read()
+            .await
+            .entries
+            .iter()
+            .find(|entry| entry.descriptor.id == source_id)
+            .cloned()
+    }
+
+    async fn update_report(&self, report: SubscriptionSourceReport) {
+        self.inner
+            .write()
+            .await
+            .reports
+            .insert(report.source.id.clone(), report);
+    }
+}
+
+#[derive(Clone)]
+struct SubscriptionSourceEntry {
+    descriptor: SubscriptionSourceDescriptor,
+    target: SubscriptionSourceTarget,
+}
+
+#[derive(Clone)]
+enum SubscriptionSourceTarget {
+    StaticUrl { url: String },
+    Discoverer { discoverer: Arc<dyn Discover> },
+}
+
+impl SubscriptionSourceEntry {
+    async fn discover_urls(&self) -> Vec<String> {
+        match &self.target {
+            SubscriptionSourceTarget::StaticUrl { url } => vec![url.clone()],
+            SubscriptionSourceTarget::Discoverer { discoverer } => discoverer.discover().await,
+        }
+    }
+}
+
+pub async fn subscription_ops_loop(config: SubscriptionConfig, ops: SubscriptionOpsHandle) {
+    let interval = std::time::Duration::from_secs(config.refresh_interval_sec);
+
+    loop {
+        tracing::info!("subscription refresh cycle starting");
+        let reports = ops.refresh_all(SubscriptionRefreshMode::Apply).await;
+        let total_basic: usize = reports.iter().map(|report| report.stored_basic).sum();
+        let total_encrypted: usize = reports.iter().map(|report| report.stored_encrypted).sum();
+        let failed_urls: usize = reports.iter().map(|report| report.failed_urls).sum();
+        tracing::info!(
+            source_count = reports.len(),
+            total_basic,
+            total_encrypted,
+            failed_urls,
+            "subscription refresh cycle completed"
+        );
+        tracing::info!(
+            sleep_secs = interval.as_secs(),
+            "subscription refresh cycle sleeping"
+        );
+        tokio::time::sleep(interval).await;
+    }
+}
+
+async fn run_entry(
+    entry: &SubscriptionSourceEntry,
+    source: &mut SubscriptionSource,
+    store: &ProxyStore,
+    pending: &PendingStore,
+    mode: SubscriptionRefreshMode,
+) -> SubscriptionSourceReport {
+    let started_at = Utc::now();
+    let timer = Instant::now();
+    let mut report = empty_report(entry.descriptor.clone(), mode, started_at);
+
+    let discovered = entry.discover_urls().await;
+    report.discovered_urls = discovered.len();
+    if discovered.is_empty() && matches!(&entry.target, SubscriptionSourceTarget::Discoverer { .. })
+    {
+        report.errors.push(SubscriptionSourceError {
+            stage: "discover".into(),
+            url: None,
+            message: "no subscription URLs discovered".into(),
+        });
+    }
+
+    let mut seen_urls = HashSet::new();
+    let mut unique_urls = Vec::new();
+    for url in discovered {
+        if seen_urls.insert(url.clone()) {
+            unique_urls.push(url);
+        } else {
+            report.duplicate_urls += 1;
+        }
+    }
+    report.unique_urls = unique_urls.len();
+
+    source.evict_expired();
+    let mut seen_nodes = HashSet::new();
+
+    for url in unique_urls {
+        let display_url = redact_url(&url);
+        let content = match source.fetch(&url).await {
+            Ok(content) => {
+                report.fetched_urls += 1;
+                content
+            }
+            Err(e) => {
+                report.failed_urls += 1;
+                report.errors.push(SubscriptionSourceError {
+                    stage: "fetch".into(),
+                    url: Some(display_url),
+                    message: sanitize_error_message(&e.to_string(), &url),
+                });
+                continue;
+            }
+        };
+
+        let proxies: Vec<SubscriptionProxy> = parse_subscription(&content);
+        if proxies.is_empty() {
+            continue;
+        }
+
+        for proxy in &proxies {
+            *report
+                .protocol_counts
+                .entry(proxy.protocol_label().to_string())
+                .or_insert(0) += 1;
+            if !seen_nodes.insert(proxy.dedup_key()) {
+                report.duplicate_nodes += 1;
+            }
+            if matches!(proxy, SubscriptionProxy::Unknown { .. }) {
+                report.unknown_nodes += 1;
+            }
+        }
+
+        report.parsed_nodes += proxies.len();
+        let (basics, encrypted) = partition(&proxies, &url);
+        report.direct_nodes += basics.len();
+        report.encrypted_nodes += encrypted.len();
+
+        if mode.applies() {
+            for proxy in &basics {
+                match store.add(proxy).await {
+                    Ok(()) => report.stored_basic += 1,
+                    Err(e) => report.errors.push(SubscriptionSourceError {
+                        stage: "store_basic".into(),
+                        url: Some(display_url.clone()),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+
+            if !encrypted.is_empty() {
+                match pending.store_batch(&encrypted).await {
+                    Ok(()) => report.stored_encrypted += encrypted.len(),
+                    Err(e) => report.errors.push(SubscriptionSourceError {
+                        stage: "store_encrypted".into(),
+                        url: Some(display_url),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+        }
+    }
+
+    report.finished_at = Utc::now();
+    report.elapsed_ms = timer.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    report.outcome = report_outcome(&report);
+    report.last_error = report.errors.first().map(|error| error.message.clone());
+    report
+}
+
+fn empty_report(
+    source: SubscriptionSourceDescriptor,
+    mode: SubscriptionRefreshMode,
+    started_at: DateTime<Utc>,
+) -> SubscriptionSourceReport {
+    SubscriptionSourceReport {
+        source,
+        mode,
+        started_at,
+        finished_at: started_at,
+        elapsed_ms: 0,
+        outcome: SubscriptionRefreshOutcome::Empty,
+        last_error: None,
+        discovered_urls: 0,
+        unique_urls: 0,
+        duplicate_urls: 0,
+        fetched_urls: 0,
+        failed_urls: 0,
+        parsed_nodes: 0,
+        direct_nodes: 0,
+        encrypted_nodes: 0,
+        unknown_nodes: 0,
+        duplicate_nodes: 0,
+        stored_basic: 0,
+        stored_encrypted: 0,
+        protocol_counts: BTreeMap::new(),
+        errors: Vec::new(),
+    }
+}
+
+fn report_outcome(report: &SubscriptionSourceReport) -> SubscriptionRefreshOutcome {
+    if report.parsed_nodes == 0 && !report.errors.is_empty() {
+        SubscriptionRefreshOutcome::Failed
+    } else if !report.errors.is_empty() {
+        SubscriptionRefreshOutcome::Partial
+    } else if report.parsed_nodes == 0 {
+        SubscriptionRefreshOutcome::Empty
+    } else {
+        SubscriptionRefreshOutcome::Ok
+    }
+}
+
+fn entries_from_config(config: &SubscriptionConfig) -> Vec<SubscriptionSourceEntry> {
+    let mut entries = Vec::new();
+
+    for (idx, url) in config.urls.iter().enumerate() {
+        let id = format!("static-url-{}", idx + 1);
+        entries.push(SubscriptionSourceEntry {
+            descriptor: SubscriptionSourceDescriptor {
+                id,
+                kind: SubscriptionSourceKind::StaticUrl,
+                label: redact_url(url),
+                enabled: true,
+            },
+            target: SubscriptionSourceTarget::StaticUrl { url: url.clone() },
+        });
+    }
+
+    if config.github.enabled {
+        let discoverer = Arc::new(GitHubSearchDiscover::new(GitHubSearchConfig {
+            token: config.github.token.clone(),
+            max_results: config.github.max_results,
+            keywords: github_keywords(config),
+            timeout_sec: config.fetch_timeout_sec,
+        }));
+        entries.push(SubscriptionSourceEntry {
+            descriptor: SubscriptionSourceDescriptor {
+                id: "github-search".into(),
+                kind: SubscriptionSourceKind::GithubSearch,
+                label: "GitHub search".into(),
+                enabled: true,
+            },
+            target: SubscriptionSourceTarget::Discoverer { discoverer },
+        });
+    }
+
+    for (idx, aggregator) in config.aggregators.iter().enumerate() {
+        let id = format!("aggregator-{}", idx + 1);
+        let discoverer = Arc::new(AggregatorDiscover::new(AggregatorConfig {
+            url: aggregator.url.clone(),
+            format: aggregator.format.clone(),
+            timeout_sec: config.fetch_timeout_sec,
+        }));
+        entries.push(SubscriptionSourceEntry {
+            descriptor: SubscriptionSourceDescriptor {
+                id,
+                kind: SubscriptionSourceKind::Aggregator,
+                label: redact_url(&aggregator.url),
+                enabled: true,
+            },
+            target: SubscriptionSourceTarget::Discoverer { discoverer },
+        });
+    }
+
+    entries
+}
+
+fn github_keywords(config: &SubscriptionConfig) -> Vec<String> {
+    if config.github.keywords.is_empty() {
+        vec!["clash free sub".to_string(), "v2ray free nodes".to_string()]
+    } else {
+        config.github.keywords.clone()
+    }
+}
+
+fn sanitize_error_message(message: &str, raw_url: &str) -> String {
+    message.replace(raw_url, &redact_url(raw_url))
+}
+
+fn redact_url(raw_url: &str) -> String {
+    match url::Url::parse(raw_url) {
+        Ok(mut parsed) => {
+            let had_query = parsed.query().is_some();
+            let had_fragment = parsed.fragment().is_some();
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            let mut display = parsed.to_string();
+            if had_query {
+                display.push_str("?redacted");
+            }
+            if had_fragment {
+                display.push_str("#redacted");
+            }
+            display
+        }
+        Err(_) => raw_url
+            .split_once('?')
+            .map(|(prefix, _)| format!("{prefix}?redacted"))
+            .unwrap_or_else(|| raw_url.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proxy_core::config::{AggregatorEntryConfig, GitHubDiscoverConfig};
+    use proxy_core::models::Protocol;
+
+    fn config_with_sources() -> SubscriptionConfig {
+        SubscriptionConfig {
+            urls: vec![
+                "https://example.com/sub?token=secret".into(),
+                "https://example.org/plain".into(),
+            ],
+            github: GitHubDiscoverConfig {
+                enabled: true,
+                token: Some("github-token".into()),
+                max_results: 5,
+                search_interval_sec: 86400,
+                keywords: vec![],
+            },
+            aggregators: vec![AggregatorEntryConfig {
+                url: "https://agg.example.com/list.yaml#secret".into(),
+                format: "yaml".into(),
+                refresh_interval_sec: 43200,
+            }],
+            refresh_interval_sec: 3600,
+            fetch_timeout_sec: 10,
+            cache_ttl_sec: 300,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_empty_config() {
+        let state = SubscriptionOpsState::from_config(&SubscriptionConfig::default());
+        let snapshot = state.snapshot().await;
+        assert!(!snapshot.enabled);
+        assert_eq!(snapshot.source_count, 0);
+        assert!(snapshot.sources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_descriptors_from_config_are_stable_and_redacted() {
+        let state = SubscriptionOpsState::from_config(&config_with_sources());
+        let snapshot = state.snapshot().await;
+        assert!(snapshot.enabled);
+        assert_eq!(snapshot.source_count, 4);
+        assert_eq!(snapshot.sources[0].source.id, "static-url-1");
+        assert_eq!(
+            snapshot.sources[0].source.kind,
+            SubscriptionSourceKind::StaticUrl
+        );
+        assert_eq!(
+            snapshot.sources[0].source.label,
+            "https://example.com/sub?redacted"
+        );
+        assert_eq!(snapshot.sources[2].source.id, "github-search");
+        assert_eq!(snapshot.sources[3].source.id, "aggregator-1");
+        assert_eq!(
+            snapshot.sources[3].source.label,
+            "https://agg.example.com/list.yaml#redacted"
+        );
+    }
+
+    #[test]
+    fn test_refresh_mode_from_apply_defaults_preview() {
+        assert_eq!(
+            SubscriptionRefreshMode::from_apply(false),
+            SubscriptionRefreshMode::Preview
+        );
+        assert_eq!(
+            SubscriptionRefreshMode::from_apply(true),
+            SubscriptionRefreshMode::Apply
+        );
+        assert!(!SubscriptionRefreshMode::Preview.applies());
+        assert!(SubscriptionRefreshMode::Apply.applies());
+    }
+
+    #[test]
+    fn test_report_outcome_matrix() {
+        let descriptor = SubscriptionSourceDescriptor {
+            id: "static-url-1".into(),
+            kind: SubscriptionSourceKind::StaticUrl,
+            label: "https://example.com/sub".into(),
+            enabled: true,
+        };
+        let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
+        assert_eq!(report_outcome(&report), SubscriptionRefreshOutcome::Empty);
+
+        report.parsed_nodes = 2;
+        assert_eq!(report_outcome(&report), SubscriptionRefreshOutcome::Ok);
+
+        report.errors.push(SubscriptionSourceError {
+            stage: "fetch".into(),
+            url: Some("https://example.com/sub".into()),
+            message: "timeout".into(),
+        });
+        assert_eq!(report_outcome(&report), SubscriptionRefreshOutcome::Partial);
+
+        report.parsed_nodes = 0;
+        assert_eq!(report_outcome(&report), SubscriptionRefreshOutcome::Failed);
+    }
+
+    #[test]
+    fn test_report_serialization_uses_snake_case_modes() {
+        let descriptor = SubscriptionSourceDescriptor {
+            id: "static-url-1".into(),
+            kind: SubscriptionSourceKind::StaticUrl,
+            label: "https://example.com/sub".into(),
+            enabled: true,
+        };
+        let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
+        report.protocol_counts.insert("basic".into(), 1);
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"mode\":\"preview\""));
+        assert!(json.contains("\"outcome\":\"empty\""));
+        assert!(json.contains("\"protocol_counts\":{\"basic\":1}"));
+    }
+
+    #[test]
+    fn test_unknown_and_duplicate_node_counting_helpers() {
+        let proxies = vec![
+            SubscriptionProxy::Basic {
+                host: "1.1.1.1".into(),
+                port: 8080,
+                protocol: Protocol::Http,
+            },
+            SubscriptionProxy::Basic {
+                host: "1.1.1.1".into(),
+                port: 8080,
+                protocol: Protocol::Http,
+            },
+            SubscriptionProxy::Unknown {
+                raw_config: "vless://secret".into(),
+            },
+        ];
+        let mut seen = HashSet::new();
+        let mut duplicate_nodes = 0;
+        let mut unknown_nodes = 0;
+        for proxy in &proxies {
+            if !seen.insert(proxy.dedup_key()) {
+                duplicate_nodes += 1;
+            }
+            if matches!(proxy, SubscriptionProxy::Unknown { .. }) {
+                unknown_nodes += 1;
+            }
+        }
+        assert_eq!(duplicate_nodes, 1);
+        assert_eq!(unknown_nodes, 1);
+    }
+}

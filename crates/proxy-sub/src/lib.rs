@@ -7,6 +7,7 @@
 pub mod convert;
 pub mod discover;
 pub mod models;
+pub mod ops;
 pub mod parser;
 pub mod pending;
 pub mod refresh;

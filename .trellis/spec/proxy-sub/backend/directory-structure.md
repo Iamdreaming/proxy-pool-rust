@@ -20,6 +20,7 @@ crates/proxy-sub/
 │   ├── models.rs               # SubscriptionProxy enum, ParsedProxy struct
 │   ├── convert.rs              # to_proxy(), partition() — SubscriptionProxy -> Proxy
 │   ├── pending.rs              # PendingStore — Redis ZSets for encrypted nodes
+│   ├── ops.rs                  # SubscriptionOpsHandle, status snapshots, manual preview/apply reports
 │   ├── refresh.rs              # build_discoverers(), run_refresh_cycle(), subscription_refresh_loop()
 │   ├── discover/
 │   │   ├── mod.rs              # Discover trait (async_trait), NullDiscover test stub
@@ -69,6 +70,14 @@ Single file containing the `SubscriptionProxy` enum and `ParsedProxy` struct. Al
 
 Orchestration layer that ties discoverers, source, parser, and storage together. Contains the refresh loop but no business logic of its own.
 
+### Ops Module (`ops.rs`)
+
+Operator-facing orchestration and reporting layer. Owns `SubscriptionOpsHandle`,
+source descriptors, latest report snapshots, manual preview/apply execution, and
+safe API/MCP response models. It may call discoverers, `SubscriptionSource`,
+parsers, `partition()`, `ProxyStore`, and `PendingStore`, but it must not expose
+raw subscription content or full node credentials in serialized reports.
+
 ### Storage Module (`pending.rs`)
 
 Redis-backed store for encrypted nodes. Uses `anyhow::Result` for error propagation since Redis failures are meaningful to the caller.
@@ -102,6 +111,14 @@ refresh.rs
   ├── convert.rs   (partition logic)
   ├── pending.rs   (Redis store)
   └── proxy-core   (Proxy, Protocol, ProxyStore, SubscriptionConfig)
+
+ops.rs
+  ├── discover/    (trait + impls)
+  ├── source/      (HTTP fetch + cache)
+  ├── parser/      (parse_subscription)
+  ├── convert.rs   (partition logic)
+  ├── pending.rs   (Redis store)
+  └── proxy-core   (ProxyStore, SubscriptionConfig)
 
 models.rs ← parser/, convert/, pending/ (all depend on SubscriptionProxy)
 parser/   ← models.rs, proxy-core (Protocol)

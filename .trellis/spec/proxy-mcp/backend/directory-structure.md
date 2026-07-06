@@ -6,7 +6,7 @@
 
 ## Overview
 
-`proxy-mcp` is a single-file library crate. All tool definitions, parameter structs, and the `ServerHandler` implementation live in `src/lib.rs`. There are no sub-modules because the crate's responsibility is narrow: adapt `proxy-core` services to the MCP protocol.
+`proxy-mcp` is a single-file library crate. All tool definitions, parameter structs, and the `ServerHandler` implementation live in `src/lib.rs`. There are no sub-modules because the crate's responsibility is narrow: adapt `proxy-core` and `proxy-sub` services to the MCP protocol.
 
 ---
 

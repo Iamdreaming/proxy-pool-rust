@@ -17,6 +17,7 @@ use proxy_core::status::{XrayStatus, collect_service_status};
 use proxy_core::store::ProxyStore;
 use proxy_core::warp::balancer::WarpBalancer;
 use proxy_core::xray_status::{XrayStatusRegistry, XrayStatusSnapshot};
+use proxy_sub::ops::{SubscriptionOpsHandle, SubscriptionRefreshMode};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool_handler;
@@ -93,6 +94,14 @@ pub struct RemoveProxyParam {
 pub struct RefreshFetcherParam {
     /// Stable fetcher id, such as "proxyscrape:http" or "geonode".
     pub fetcher: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RefreshSubscriptionSourceParam {
+    /// Stable subscription source id, such as "static-url-1" or "aggregator-1".
+    pub source: String,
+    /// Apply writes to the pool and pending encrypted store. Defaults to false.
+    pub apply: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -202,6 +211,7 @@ pub struct ProxyPoolMcp {
     balancer: Option<Arc<WarpBalancer>>,
     geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     scheduler_handle: SchedulerHandle,
+    subscription_ops: Option<SubscriptionOpsHandle>,
     route_selector: Arc<UpstreamSelector>,
     xray_status: Option<XrayStatusRegistry>,
     git_hash: &'static str,
@@ -215,6 +225,7 @@ pub struct ProxyPoolMcpConfig {
     pub balancer: Option<Arc<WarpBalancer>>,
     pub geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     pub scheduler_handle: SchedulerHandle,
+    pub subscription_ops: Option<SubscriptionOpsHandle>,
     pub route_selector: Arc<UpstreamSelector>,
     pub xray_status: Option<XrayStatusRegistry>,
     pub git_hash: &'static str,
@@ -228,6 +239,7 @@ impl ProxyPoolMcp {
             balancer: config.balancer,
             geoip: config.geoip,
             scheduler_handle: config.scheduler_handle,
+            subscription_ops: config.subscription_ops,
             route_selector: config.route_selector,
             xray_status: config.xray_status,
             git_hash: config.git_hash,
@@ -489,6 +501,59 @@ impl ProxyPoolMcp {
         to_json(serde_json::json!({
             "fetchers": fetchers,
         }))
+    }
+
+    #[tool(description = "Get configured subscription source status and latest refresh reports")]
+    async fn subscription_sources(&self) -> String {
+        match &self.subscription_ops {
+            Some(ops) => to_json(serde_json::json!({
+                "status": "ok",
+                "subscriptions": ops.status().await,
+            })),
+            None => to_json(serde_json::json!({
+                "status": "unavailable",
+                "message": "subscription ops unavailable",
+                "subscriptions": {
+                    "enabled": false,
+                    "source_count": 0,
+                    "sources": [],
+                },
+            })),
+        }
+    }
+
+    #[tool(
+        description = "Preview or apply refresh for one configured subscription source by id. Defaults to preview with apply=false."
+    )]
+    async fn refresh_subscription_source(
+        &self,
+        params: Parameters<RefreshSubscriptionSourceParam>,
+    ) -> String {
+        let source = params.0.source;
+        let mode = SubscriptionRefreshMode::from_apply(params.0.apply.unwrap_or(false));
+        match &self.subscription_ops {
+            Some(ops) => match ops.refresh_source(&source, mode).await {
+                Ok(Some(report)) => to_json(serde_json::json!({
+                    "status": "ok",
+                    "report": report,
+                })),
+                Ok(None) => to_json(serde_json::json!({
+                    "status": "not_found",
+                    "message": "subscription source not found",
+                    "source": source,
+                })),
+                Err(e) => to_json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("{e}"),
+                    "source": source,
+                })),
+            },
+            None => to_json(serde_json::json!({
+                "status": "unavailable",
+                "message": "subscription ops unavailable",
+                "source": source,
+            })),
+        }
     }
 
     #[tool(
@@ -1155,6 +1220,19 @@ mod tests {
         let json = r#"{"fetcher":"proxyscrape:http"}"#;
         let param: RefreshFetcherParam = serde_json::from_str(json).unwrap();
         assert_eq!(param.fetcher, "proxyscrape:http");
+    }
+
+    #[test]
+    fn test_refresh_subscription_source_param_deserialize() {
+        let json = r#"{"source":"static-url-1","apply":true}"#;
+        let param: RefreshSubscriptionSourceParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.source, "static-url-1");
+        assert_eq!(param.apply, Some(true));
+
+        let preview_json = r#"{"source":"aggregator-1"}"#;
+        let preview: RefreshSubscriptionSourceParam = serde_json::from_str(preview_json).unwrap();
+        assert_eq!(preview.source, "aggregator-1");
+        assert_eq!(preview.apply, None);
     }
 
     #[test]

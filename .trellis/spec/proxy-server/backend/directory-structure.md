@@ -80,6 +80,7 @@ All components share the same `Arc<ProxyStore>`. Other shared state:
 | `SchedulerHandle` | `Clone` (wraps `mpsc::Sender`) | API, MCP |
 | `xray_active_count` | `Arc<AtomicUsize>` | Xray sync compatibility counter |
 | `xray_status` | `Option<XrayStatusRegistry>` | API, MCP, Xray sync lifecycle snapshots |
+| `subscription_ops` | `Option<SubscriptionOpsHandle>` | API, MCP, subscription refresh loop |
 
 ---
 

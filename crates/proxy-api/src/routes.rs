@@ -15,6 +15,9 @@ use proxy_core::status::{
 };
 use proxy_core::store::ScoredProxy;
 use proxy_core::xray_status::XrayStatusSnapshot;
+use proxy_sub::ops::{
+    SubscriptionRefreshMode, SubscriptionSourceReport, SubscriptionSourcesSnapshot,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -54,6 +57,11 @@ pub struct ProxyFilterQuery {
 pub struct RouteTestQuery {
     pub host: String,
     pub protocol: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubscriptionRefreshQuery {
+    pub apply: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +140,18 @@ pub struct FetchersResponse {
 }
 
 #[derive(Serialize)]
+pub struct SubscriptionSourcesResponse {
+    pub status: String,
+    pub subscriptions: SubscriptionSourcesSnapshot,
+}
+
+#[derive(Serialize)]
+pub struct SubscriptionRefreshResponse {
+    pub status: String,
+    pub report: Option<SubscriptionSourceReport>,
+}
+
+#[derive(Serialize)]
 pub struct RouteTestResponse {
     pub status: String,
     pub decision: Option<RouteDecision>,
@@ -149,6 +169,11 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/routes/test", get(route_test))
         .route("/api/fetchers", get(fetcher_status))
         .route("/api/fetchers/{id}/refresh", post(refresh_fetcher))
+        .route("/api/subscriptions/sources", get(subscription_sources))
+        .route(
+            "/api/subscriptions/sources/{id}/refresh",
+            post(refresh_subscription_source),
+        )
         .route("/api/proxies/scores", get(explain_proxy_scores))
         .route("/api/proxies", get(list_proxies))
         .route("/api/proxy/random", get(get_random_proxy))
@@ -404,6 +429,75 @@ async fn refresh_fetcher(
     }
 }
 
+async fn subscription_sources(State(state): State<AppState>) -> impl IntoResponse {
+    match &state.subscription_ops {
+        Some(ops) => (
+            StatusCode::OK,
+            Json(SubscriptionSourcesResponse {
+                status: "ok".into(),
+                subscriptions: ops.status().await,
+            }),
+        )
+            .into_response(),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(SimpleResponse {
+                status: "subscription ops unavailable".into(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn refresh_subscription_source(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<SubscriptionRefreshQuery>,
+) -> impl IntoResponse {
+    let mode = SubscriptionRefreshMode::from_apply(params.apply.unwrap_or(false));
+    match &state.subscription_ops {
+        Some(ops) => match ops.refresh_source(&id, mode).await {
+            Ok(Some(report)) => (
+                StatusCode::OK,
+                Json(SubscriptionRefreshResponse {
+                    status: "ok".into(),
+                    report: Some(report),
+                }),
+            )
+                .into_response(),
+            Ok(None) => (
+                StatusCode::NOT_FOUND,
+                Json(SimpleResponse {
+                    status: "subscription source not found".into(),
+                }),
+            )
+                .into_response(),
+            Err(e) => {
+                tracing::error!(
+                    handler = "refresh_subscription_source",
+                    source_id = %id,
+                    error = %e,
+                    "subscription source refresh failed"
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(SimpleResponse {
+                        status: "subscription source refresh failed".into(),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(SimpleResponse {
+                status: "subscription ops unavailable".into(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn delete_proxy(State(state): State<AppState>, Path(key): Path<String>) -> impl IntoResponse {
     let parts: Vec<&str> = key.splitn(3, ':').collect();
     if parts.len() != 3 {
@@ -509,6 +603,33 @@ mod tests {
         let resp = FetchersResponse { fetchers: vec![] };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, "{\"fetchers\":[]}");
+    }
+
+    #[test]
+    fn test_subscription_sources_response_serialization() {
+        let resp = SubscriptionSourcesResponse {
+            status: "ok".into(),
+            subscriptions: SubscriptionSourcesSnapshot {
+                enabled: false,
+                source_count: 0,
+                sources: vec![],
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"enabled\":false"));
+        assert!(json.contains("\"source_count\":0"));
+    }
+
+    #[test]
+    fn test_subscription_refresh_query_deserialize() {
+        let query: SubscriptionRefreshQuery =
+            serde_json::from_value(serde_json::json!({"apply":true})).unwrap();
+        assert_eq!(query.apply, Some(true));
+
+        let default_query: SubscriptionRefreshQuery =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(default_query.apply, None);
     }
 
     #[test]

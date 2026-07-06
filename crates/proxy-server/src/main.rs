@@ -31,9 +31,8 @@ use proxy_core::xray_status::XrayStatusRegistry;
 use proxy_gateway::ProxyGateway;
 use proxy_gateway::UpstreamSelector;
 use proxy_mcp::{ProxyPoolMcp, ProxyPoolMcpConfig};
+use proxy_sub::ops::{SubscriptionOpsHandle, subscription_ops_loop};
 use proxy_sub::pending::PendingStore;
-use proxy_sub::refresh::{build_discoverers, subscription_refresh_loop};
-use proxy_sub::source::SubscriptionSource;
 use proxy_xray::config_gen::ConfigGenerator;
 use proxy_xray::outbound_sync::OutboundSync;
 use proxy_xray::port_manager::PortManager;
@@ -137,6 +136,23 @@ async fn main() -> anyhow::Result<()> {
     let scheduler_handle =
         SchedulerHandle::with_fetcher_statuses(cmd_tx, scheduler.fetcher_statuses());
 
+    let subscription_ops = {
+        let sub_config = settings.subscription.clone();
+        match redis_client.get_multiplexed_async_connection().await {
+            Ok(conn) => Some(SubscriptionOpsHandle::new(
+                sub_config,
+                store.clone(),
+                Arc::new(PendingStore::new(conn)),
+            )),
+            Err(e) => {
+                tracing::error!(
+                    "Redis connection for subscription failed: {e}; subscription refresh disabled"
+                );
+                None
+            }
+        }
+    };
+
     // Build UpstreamSelector with optional Router and GeoIP
     let router = if let Some(ref path) = settings.routes_path {
         match Router::from_yaml(path) {
@@ -170,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
         xray_active_count: xray_active_count.clone(),
         xray_status: xray_status.clone(),
         scheduler_handle: scheduler_handle.clone(),
+        subscription_ops: subscription_ops.clone(),
         git_hash: GIT_HASH,
         started_at,
         balancer: Some(balancer.clone()),
@@ -189,6 +206,7 @@ async fn main() -> anyhow::Result<()> {
         balancer: Some(balancer.clone()),
         geoip: mcp_geoip,
         scheduler_handle,
+        subscription_ops: subscription_ops.clone(),
         route_selector: selector.clone(),
         xray_status: xray_status.clone(),
         git_hash: GIT_HASH,
@@ -314,27 +332,13 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let sub_handle = {
-        let sub_config = settings.subscription.clone();
-        let discoverers = build_discoverers(&sub_config);
-        let sub_source =
-            SubscriptionSource::new(sub_config.cache_ttl_sec, sub_config.fetch_timeout_sec);
-        match redis_client.get_multiplexed_async_connection().await {
-            Ok(conn) => {
-                let pending = Arc::new(PendingStore::new(conn));
-                Some(tokio::spawn(subscription_refresh_loop(
-                    sub_config,
-                    discoverers,
-                    sub_source,
-                    store.clone(),
-                    pending,
-                )))
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Redis connection for subscription failed: {e}; subscription refresh disabled"
-                );
-                None
-            }
+        if let Some(ops) = subscription_ops.clone() {
+            Some(tokio::spawn(subscription_ops_loop(
+                settings.subscription.clone(),
+                ops,
+            )))
+        } else {
+            None
         }
     };
 

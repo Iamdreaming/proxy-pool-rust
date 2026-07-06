@@ -6,7 +6,7 @@
 
 ## Overview
 
-`proxy-mcp` is a thin adapter with strict constraints from the rmcp macro system. Quality here means: correct macro usage, consistent error patterns, proper parameter struct design, and adequate test coverage for deserialization.
+`proxy-mcp` is a thin adapter with strict constraints from the rmcp macro system. Quality here means: correct macro usage, consistent error patterns, proper parameter struct design, and adequate test coverage for deserialization. Domain work should stay in `proxy-core` or `proxy-sub`.
 
 ---
 
@@ -38,7 +38,7 @@ async fn get_best_proxy(&self, params: Parameters<ProtocolParam>) -> Result<Stri
 }
 ```
 
-**Why**: `proxy-mcp` is an adapter, not a service layer. Domain logic in tool methods duplicates `proxy-core` and diverges over time.
+**Why**: `proxy-mcp` is an adapter, not a service layer. Domain logic in tool methods duplicates `proxy-core` / `proxy-sub` and diverges over time.
 
 ### 2. `.unwrap()` on Fallible Operations in Tool Methods
 
@@ -180,7 +180,7 @@ fn test_my_param_deserialize() {
 
 ## Code Review Checklist
 
-- [ ] New tool method delegates to `proxy-core`, not implements logic locally
+- [ ] New tool method delegates to `proxy-core` / `proxy-sub`, not implements logic locally
 - [ ] Parameter struct has `Debug + Deserialize + JsonSchema`
 - [ ] Tool description is an imperative sentence with protocol options listed (if applicable)
 - [ ] Error pattern matches the return type (`Result<String, String>` vs `String`)

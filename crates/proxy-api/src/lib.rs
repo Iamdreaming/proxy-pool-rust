@@ -7,6 +7,7 @@ use proxy_core::scheduler::SchedulerHandle;
 use proxy_core::store::ProxyStore;
 use proxy_core::warp::WarpBalancer;
 use proxy_core::xray_status::XrayStatusRegistry;
+use proxy_sub::ops::SubscriptionOpsHandle;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
@@ -21,6 +22,8 @@ pub struct AppState {
     pub xray_status: Option<XrayStatusRegistry>,
     /// Handle for sending commands to the background scheduler.
     pub scheduler_handle: SchedulerHandle,
+    /// Optional subscription source operations handle.
+    pub subscription_ops: Option<SubscriptionOpsHandle>,
     /// Git hash of the running binary (injected at build time).
     pub git_hash: &'static str,
     /// Process start time for uptime reporting.

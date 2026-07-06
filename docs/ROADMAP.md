@@ -35,7 +35,7 @@
 
 当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp` 与 `validator-observability-v2` 的 single-target diagnostics MVP：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 也能返回目标、耗时、HTTP 状态和出口信息。
 
-用户最新要求先不推进 `warp-ops-enhancement`，因此下一批从 xray 节点生命周期、订阅源运维和验证矩阵中继续推进。WARP 保留为后续能力扩展，不作为当前 Ready/Next 主线。`xray-node-lifecycle-mvp` 已完成，下一项推荐推进 `subscription-source-ops-mvp`。
+用户最新要求先不推进 `warp-ops-enhancement`，因此下一批从 xray 节点生命周期、订阅源运维和验证矩阵中继续推进。WARP 保留为后续能力扩展，不作为当前 Ready/Next 主线。`xray-node-lifecycle-mvp` 和 `subscription-source-ops-mvp` 已完成，下一项推荐推进 `xray-config-dry-run-and-remove`。
 
 **工作区注意事项**：
 
@@ -48,7 +48,7 @@
 
 ## Now
 
-当前无 Now 任务；完成 `xray-node-lifecycle-mvp` 后，下一步从 Ready 选择 `subscription-source-ops-mvp`。
+当前无 Now 任务；完成 `subscription-source-ops-mvp` 后，下一步从 Ready 选择 `xray-config-dry-run-and-remove`。
 
 ## Paused Closeout
 
@@ -109,6 +109,28 @@
 - [x] `cargo test --workspace --all-targets` 通过。
 - [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 - [x] `npm run build` 通过。
+
+### P1 — `subscription-source-ops-mvp`
+
+**目标**：补齐订阅源运维 MVP，让订阅源抓取、解析、去重和失败原因可被 API/MCP 查询，并支持安全的手动 preview/apply。
+
+**当前状态**：已完成 MVP。`proxy-sub` 新增 `SubscriptionOpsHandle` 和结构化报告模型，后台刷新、REST API 与 MCP 共享同一状态；手动刷新默认 preview，不写入 `ProxyStore` 或 `PendingStore`，只有显式 `apply=true` 才会写入。
+
+**主要完成项**：
+
+- [x] 定义订阅源描述、刷新模式、刷新结果、错误列表和状态快照。
+- [x] `/api/subscriptions/sources` 返回订阅源状态、最近报告和空配置状态。
+- [x] `/api/subscriptions/sources/{id}/refresh` 支持单源手动 preview/apply，未知 source 返回 404。
+- [x] MCP 新增 `subscription_sources` 和 `refresh_subscription_source`。
+- [x] 刷新报告返回 discovered/unique/duplicate URL、parsed/direct/encrypted/unknown/duplicate node、stored count、protocol counts、elapsed 和 per-source errors。
+- [x] API/MCP 响应不暴露原始订阅内容或完整节点凭据。
+- [x] 后台订阅刷新继续运行，并复用同一个 ops 状态。
+- [x] 同步 README、integration smoke 断言和 Trellis spec。
+- [x] `cargo fmt --all --check` 通过。
+- [x] `cargo test -p proxy-sub` 通过。
+- [x] `cargo check -p proxy-api -p proxy-mcp -p proxy-server` 通过。
+- [x] `cargo test --workspace --all-targets` 通过。
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
 ### P1 — `validator-observability-v2`
 
@@ -251,26 +273,6 @@
 
 ## Ready
 
-### P1 — `subscription-source-ops-mvp`
-
-**目标**：补齐订阅源运维 MVP，让订阅源抓取、解析、去重和失败原因可被 API/MCP 查询。
-
-**候选功能**：
-
-- [ ] 查询订阅源列表、启用状态、最近刷新时间和最近错误。
-- [ ] 手动刷新单个订阅源。
-- [ ] 返回解析结果预览、节点数量和去重统计。
-- [ ] 保持默认 dry-run/preview 语义，避免误把异常订阅写入活跃 xray 池。
-
-**验收标准**：
-
-- [ ] API/MCP 能查询订阅源状态和最近解析摘要。
-- [ ] 手动刷新返回结构化成功/失败结果。
-- [ ] `cargo test --workspace --all-targets` 通过。
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
-
-## Next
-
 ### P2 — `xray-config-dry-run-and-remove`
 
 **目标**：让 xray 运维动作可预检、可回退，减少错误配置直接写入运行态的风险。
@@ -281,6 +283,8 @@
 - [ ] 手动移除单个 xray 节点。
 - [ ] 记录移除原因和操作结果。
 - [ ] MCP/API 返回结构化错误，便于 Web 和自动化工具展示。
+
+## Next
 
 ### P2 — `validator-observability-multitarget`
 

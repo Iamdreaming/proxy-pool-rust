@@ -95,6 +95,8 @@ docker compose logs -f proxy-pool
 | GET | `/api/routes/test` | 路由 dry-run 诊断 |
 | GET | `/api/fetchers` | 抓取源状态和源级熔断状态 |
 | POST | `/api/fetchers/{id}/refresh` | 手动刷新/探测单个抓取源 |
+| GET | `/api/subscriptions/sources` | 订阅源状态、最近刷新报告和解析统计 |
+| POST | `/api/subscriptions/sources/{id}/refresh` | 手动 preview/apply 单个订阅源刷新，默认 preview |
 | GET | `/api/proxies` | 代理列表（支持 protocol/limit 参数） |
 | GET | `/api/proxies/scores` | 代理评分解释 |
 | GET | `/api/proxy/random` | 随机代理 |
@@ -124,6 +126,8 @@ docker compose logs -f proxy-pool
 | `refresh_pool` | 触发抓取+验证（返回实际结果） |
 | `fetcher_status` | 查看抓取源状态和源级熔断状态 |
 | `refresh_fetcher` | 手动刷新/探测单个抓取源 |
+| `subscription_sources` | 查看订阅源状态、最近刷新报告和解析统计 |
+| `refresh_subscription_source` | 手动 preview/apply 单个订阅源刷新，默认 preview |
 | `route_test` | 路由 dry-run 诊断 |
 | `remove_proxy` | 移除代理 |
 | `proxy_stats` | 代理池统计（协议分布） |
