@@ -32,62 +32,45 @@
 
 ## Now
 
+暂无进行中的代码任务。当前建议下一步创建并启动 `fetcher-validator-quality`，因为部署闭环和基础观测入口已经具备，下一瓶颈是代理输入质量、验证解释性和错误诊断能力。
+
+## Done
+
 ### P0 — `ci-mcp-auto-update`
 
 **目标**：打通“本地改代码 → git push → GitHub Actions 构建镜像 → MCP 触发服务器拉取新镜像并重启 → 线上验证 git hash”的完整闭环。
 
-**当前状态**：Trellis 任务已存在：`.trellis/tasks/07-03-ci-mcp-auto-update/`。
+**当前状态**：主链路已完成并在 dev 验证。失败注入验证按用户要求暂缓，后续单独拆为 `update-failure-hardening`。
 
-**主要 TODO**：
+**主要完成项**：
 
-- [x] GitHub Actions 已成功构建并推送 GHCR 镜像（最近验证：run `28807329192`）。
+- [x] GitHub Actions 已成功构建并推送 GHCR 镜像。
 - [x] `docker-compose.yml` 改用 GHCR 镜像，并保留本地 build 参考。
 - [x] MCP 增加 `update_service` 工具，并通过显式环境变量安全开关启用。
 - [x] `/api/status` 增加 `version` 和 `git_hash`。
 - [x] 更新前后返回镜像 ID / digest 对比。
-- [ ] 更新失败时旧容器继续运行。
-- [x] 本地通过 `cargo test` 和 `cargo clippy -- -D warnings`。
+- [x] 本地通过 `cargo test`、`cargo clippy -- -D warnings` 和 `npm run build`。
 - [x] 推送后监控 `docker-build.yml` GitHub Actions。
-- [x] 通过 MCP 更新 dev 服务，并验证 `/api/status.git_hash=665e200`。
+- [x] 通过 MCP 更新 dev 服务，并验证 `/api/status.git_hash=0b6f919`。
 - [x] dev 容器已同步 `PROXY_POOL_UPDATE_*` 和 Watchtower token，MCP `update_service` 返回 `already_current`。
-
-**验收标准**：
-
-1. `git push origin main` 后 GitHub Actions 成功构建并推送镜像到 GHCR。
-2. MCP `update_service` 能拉取新镜像并重启容器。
-3. 更新后 `/api/status` 显示新 git hash。
-4. 更新失败时旧服务不中断。
-
-## Ready
+- [ ] （暂缓）更新失败时旧容器继续运行的失败注入验证。
 
 ### P0 — `status-health-observability`
 
 **目标**：让服务状态、版本、依赖和基础后台任务可观测，为后续代理池优化提供可靠诊断入口。
 
-**建议范围**：
+**当前状态**：基础观测能力已落地；后续只保留增量增强，不再作为下一轮主任务重复实现。
 
-- [ ] 完善 `/api/status`：返回 app version、git hash、pool 摘要、Redis 状态、WARP/xray 摘要。
-- [ ] 新增 `/api/healthz`：只检查进程存活，适合容器健康检查。
-- [ ] 新增 `/api/readyz`：检查 Redis、核心配置和必要后台任务状态。
-- [ ] MCP 增加 `service_status`：返回与 API 状态一致的结构化信息。
-- [ ] 扩展基础 Prometheus metrics：pool size、验证计数、网关请求数、WARP/xray 状态。
-- [ ] 为关键后台任务增加 tracing span。
+**主要完成项**：
 
-**非目标**：
+- [x] `/api/status` 返回 app version、git hash、uptime、pool 摘要、Redis 状态、WARP/xray 摘要。
+- [x] `/api/healthz` 只检查进程存活，适合容器健康检查。
+- [x] `/api/readyz` 返回结构化依赖 readiness，并能用 HTTP 503 表示 Redis 不可用。
+- [x] MCP `service_status` 返回与 API 状态一致的结构化信息。
+- [x] `/api/metrics` 暴露基础 Prometheus metrics：pool size、Redis readiness、WARP/xray 状态、uptime。
+- [x] 单元测试和集成测试覆盖状态结构、healthz、readyz、service_status。
 
-- 不实现完整 Web Dashboard。
-- 不重构代理评分算法。
-- 不改变网关路由策略。
-
-**建议验收标准**：
-
-1. `/api/healthz` 在服务进程存活时返回成功。
-2. `/api/readyz` 能区分 Redis 不可用和服务自身不可用。
-3. `/api/status` 能显示当前版本和核心组件摘要。
-4. MCP `service_status` 与 API 状态信息一致。
-5. `cargo test` 和 `cargo clippy -- -D warnings` 通过。
-
-## Next
+## Ready
 
 ### P1 — `fetcher-validator-quality`
 
@@ -102,6 +85,24 @@
 - [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
 - [ ] 验证错误分类：timeout、connection refused、proxy auth error、invalid response、DNS error。
 - [ ] MCP `check_proxy` 返回结构化错误类型。
+
+**非目标**：
+
+- 不重写抓取器框架。
+- 不引入完整 Dashboard。
+- 不改变网关路由策略。
+- 不做大规模 Redis schema 破坏性迁移。
+
+**建议验收标准**：
+
+1. fetcher 状态能说明最近一次抓取是否成功、抓到多少、解析多少、失败原因是什么。
+2. 可以只刷新指定 fetcher，不必全量刷新所有来源。
+3. 连续失败的来源会进入暂停/半开探测状态，避免无意义重试。
+4. 验证结果包含延迟、出口 IP、匿名度、地区和结构化错误类型。
+5. MCP `check_proxy` 的失败结果可被程序稳定解析。
+6. `cargo test` 和 `cargo clippy -- -D warnings` 通过。
+
+## Next
 
 ### P1 — `gateway-route-debugging`
 
@@ -131,6 +132,18 @@
 - [ ] MCP 增加 `cleanup_low_score_proxies` 工具，并加安全开关。
 
 ## Later
+
+### P0 — `update-failure-hardening`
+
+**目标**：在不影响正常发布节奏的前提下，补齐自更新失败路径的故障注入验证。
+
+**候选功能**：
+
+- [ ] 错误镜像 tag / digest 时，`update_service` 返回结构化错误，旧容器继续运行。
+- [ ] 错误 Watchtower token 时，`update_service` 返回结构化错误，旧容器继续运行。
+- [ ] Watchtower HTTP endpoint 不可达时，`update_service` 返回结构化错误，旧容器继续运行。
+- [ ] 形成一份可重复执行的 dev-only 验证步骤，避免误操作生产配置。
+- [ ] 必要时增加自动化集成测试或最小脚本化检查。
 
 ### P2 — `mcp-ops-tooling`
 
@@ -202,15 +215,14 @@
 
 建议按以下顺序创建和推进任务：
 
-1. `ci-mcp-auto-update` — 当前进行中。
-2. `status-health-observability` — 下一个 Ready 任务。
-3. `fetcher-validator-quality` — 代理输入质量。
-4. `gateway-route-debugging` — 路由和 fallback 可诊断性。
-5. `score-retention-policy` — 评分、降权和清理。
-6. `mcp-ops-tooling` — 运维工具补全。
-7. `warp-ops-enhancement` — WARP 运维增强。
-8. `xray-subscription-ops` — xray 和订阅源管理。
-9. `web-dashboard-mvp` — 管理面板 MVP。
+1. `fetcher-validator-quality` — 推荐下一步，先提高代理输入质量。
+2. `gateway-route-debugging` — 路由和 fallback 可诊断性。
+3. `score-retention-policy` — 基于更完整的验证结果做评分、降权和清理。
+4. `mcp-ops-tooling` — 运维工具补全。
+5. `update-failure-hardening` — 仅在允许故障注入 dev 配置时执行。
+6. `warp-ops-enhancement` — WARP 运维增强。
+7. `xray-subscription-ops` — xray 和订阅源管理。
+8. `web-dashboard-mvp` — 管理面板 MVP。
 
 ## 任务 PRD 模板
 

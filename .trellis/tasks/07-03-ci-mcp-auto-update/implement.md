@@ -43,7 +43,12 @@
 - [x] Verify dev `/api/status.git_hash` updated from `a2436f1` to `665e200`.
 - [x] Sync `PROXY_POOL_UPDATE_*` runtime env through the approved compose path.
 - [x] Verify MCP `update_service` returns `already_current` after env sync.
-- [ ] Fault-injection check: invalid image/token/Watchtower path should leave the old container running.
+- [ ] Deferred by user: invalid image/token/Watchtower path should leave the old container running.
+
+## Phase 7: Backlog Planning
+
+- [x] Defer the update failure-injection check into the roadmap as `update-failure-hardening`.
+- [x] Re-plan the next TODO list around proxy input quality after confirming status/health observability is already implemented.
 
 ## Risk Points
 
