@@ -33,7 +33,7 @@
 
 ## Current Planning Decision
 
-当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp` 与 `validator-observability-v2` 的 single-target diagnostics MVP：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 也能返回目标、耗时、HTTP 状态和出口信息。
+当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp`、`validator-observability-v2` 与 `validator-observability-multitarget`：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 能返回目标、耗时、HTTP 状态和出口信息，`check_proxy_matrix` / `/api/proxy/check-matrix` 也能按多个目标返回验证矩阵。
 
 用户最新要求先不推进 `xray-config-dry-run-and-remove`，因此该任务只保留暂停草稿，不作为当前 Ready/Next 主线。新的 TODO 队列优先选择三类不依赖直接 SSH、且能复用已落地能力的工作：验证矩阵、Dashboard 运维整合、发布状态可观测性。
 
@@ -49,7 +49,7 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议从 Ready 选择 `validator-observability-multitarget`。如需要先提升 Web 运维体验，也可以从 `dashboard-ops-polish-v2` 开始。
+当前无 Now 任务；下一步建议从 Ready 选择 `dashboard-ops-polish-v2`。如需要先补强发布验证闭环，也可以从 `release-observability-no-ssh-v2` 开始。
 
 ## Paused Closeout
 
@@ -152,8 +152,26 @@
 
 **后续可选增强**：
 
-- [ ] 多目标验证矩阵：默认目标、国内目标、国外目标、Cloudflare trace。
 - [ ] 如需要精确 TCP/TLS 阶段耗时，单独评估是否引入更底层的连接探针。
+
+### P2 — `validator-observability-multitarget`
+
+**目标**：在 single-target diagnostics 稳定后，增加多目标验证矩阵，判断代理是否只对某些站点可用。
+
+**当前状态**：已完成 MVP。`proxy-core` 现在提供 `ProxyCheckMatrixRequest` / `ProxyCheckMatrixResult` 和 `check_proxy_matrix()`，默认检查 Cloudflare trace 与 httpbin IP；REST 和 MCP 入口都直接序列化核心结果，不在 adapter 层重新拼字段。
+
+**主要完成项**：
+
+- [x] 默认目标矩阵：`https://www.cloudflare.com/cdn-cgi/trace` 和 `https://httpbin.org/ip`。
+- [x] 每个目标复用 `Validator::check_one()`，返回 HTTP 状态、耗时、出口 IP/国家和稳定错误类型。
+- [x] 新增 REST `POST /api/proxy/check-matrix`。
+- [x] 新增 MCP `check_proxy_matrix`，并保持 `check_proxy` 单目标行为兼容。
+- [x] 输入校验在网络调用前完成：空 host、0 端口、无效协议、无效 target URL、非法 timeout 返回结构化错误。
+- [x] README、integration smoke 断言和 Trellis spec 已同步。
+- [x] `cargo fmt --all --check` 通过。
+- [x] `cargo test -p proxy-core` 通过。
+- [x] `cargo test -p proxy-api` 通过。
+- [x] `cargo test -p proxy-mcp` 通过。
 
 ### P1 — `fetcher-source-circuit-breaker-mvp`
 
@@ -273,18 +291,6 @@
 - [x] 单元测试和集成测试覆盖状态结构、healthz、readyz、service_status。
 
 ## Ready
-
-### P2 — `validator-observability-multitarget`
-
-**目标**：在 single-target diagnostics 稳定后，增加多目标验证矩阵，判断代理是否只对某些站点可用。
-
-**候选功能**：
-
-- [ ] 默认目标、Cloudflare trace、httpbin 和可选国内/国外目标的验证矩阵。
-- [ ] 每个目标返回 HTTP 状态、耗时和出口信息。
-- [ ] MCP `check_proxy` 保持单目标兼容，新增显式矩阵模式。
-- [ ] REST/MCP 响应继续复用核心 validator 结果，避免重复解析和字段漂移。
-- [ ] 增加单元测试、MCP/API smoke 断言和 README 说明。
 
 ### P2 — `dashboard-ops-polish-v2`
 
@@ -409,8 +415,8 @@
 
 1. `xray-node-lifecycle-mvp` — xray 节点生命周期和失败原因。
 2. `subscription-source-ops-mvp` — 订阅源状态、手动刷新和解析预览。
-3. `validator-observability-multitarget` — 多目标验证矩阵和更细阶段耗时。
-4. `dashboard-ops-polish-v2` — 接入新增真实运维能力，移除假动作。
+3. `validator-observability-multitarget` — 已完成，多目标验证矩阵和更细阶段耗时。
+4. `dashboard-ops-polish-v2` — 下一项建议，接入新增真实运维能力，移除假动作。
 5. `release-observability-no-ssh-v2` — 发布状态、镜像元数据和最近更新结果的 no-SSH 可观测性。
 6. `mcp-api-contract-smoke-v2` — REST/MCP 运维入口契约 smoke。
 7. `proxy-quality-history-lite` — 代理质量轻量趋势和 dry-run 清理建议。

@@ -14,6 +14,7 @@ use proxy_core::status::{
     XrayStatus, collect_readiness, collect_service_status, render_prometheus_metrics,
 };
 use proxy_core::store::ScoredProxy;
+use proxy_core::validator::{ProxyCheckMatrixRequest, check_proxy_matrix};
 use proxy_core::xray_status::XrayStatusSnapshot;
 use proxy_sub::ops::{
     SubscriptionRefreshMode, SubscriptionSourceReport, SubscriptionSourcesSnapshot,
@@ -176,6 +177,7 @@ pub fn create_router() -> Router<AppState> {
         )
         .route("/api/proxies/scores", get(explain_proxy_scores))
         .route("/api/proxies", get(list_proxies))
+        .route("/api/proxy/check-matrix", post(proxy_check_matrix))
         .route("/api/proxy/random", get(get_random_proxy))
         .route("/api/proxy/best", get(get_best_proxy))
         .route("/api/proxies/refresh", post(refresh_pool))
@@ -326,6 +328,22 @@ async fn explain_proxy_scores(
             )
                 .into_response()
         }
+    }
+}
+
+async fn proxy_check_matrix(
+    State(_state): State<AppState>,
+    Json(request): Json<ProxyCheckMatrixRequest>,
+) -> impl IntoResponse {
+    match check_proxy_matrix(request).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(SimpleResponse {
+                status: e.to_string(),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -658,6 +676,23 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"decision\":null"));
+    }
+
+    #[test]
+    fn test_proxy_check_matrix_result_serialization() {
+        let resp = proxy_core::validator::ProxyCheckMatrixResult {
+            host: "127.0.0.1".into(),
+            port: 8080,
+            protocol: Protocol::Http,
+            target_count: 0,
+            alive_count: 0,
+            failed_count: 0,
+            checks: vec![],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"host\":\"127.0.0.1\""));
+        assert!(json.contains("\"target_count\":0"));
+        assert!(json.contains("\"checks\":[]"));
     }
 
     #[test]

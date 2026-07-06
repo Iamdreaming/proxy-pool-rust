@@ -70,6 +70,38 @@ class TestApiProxies:
             assert "success" in first["score"]
             assert "anonymity" in first["score"]
 
+    def test_proxy_check_matrix_structure(self, api_client):
+        """Proxy check matrix returns per-target diagnostics."""
+        resp = api_client.post(
+            f"{API_BASE}/api/proxy/check-matrix",
+            json={
+                "host": "127.0.0.1",
+                "port": 1,
+                "protocol": "http",
+                "targets": ["http://127.0.0.1:1"],
+                "timeout_secs": 1,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["host"] == "127.0.0.1"
+        assert data["port"] == 1
+        assert data["protocol"] == "http"
+        assert data["target_count"] == 1
+        assert data["alive_count"] + data["failed_count"] == 1
+        assert isinstance(data["checks"], list)
+        assert data["checks"][0]["target_url"] == "http://127.0.0.1:1/"
+        assert "alive" in data["checks"][0]
+
+    def test_proxy_check_matrix_invalid_request_returns_400(self, api_client):
+        """Proxy check matrix validates input before network calls."""
+        resp = api_client.post(
+            f"{API_BASE}/api/proxy/check-matrix",
+            json={"host": "", "port": 1, "protocol": "http"},
+        )
+        assert resp.status_code == 400
+        assert "host is required" in resp.json()["status"]
+
     def test_proxy_has_geoip_fields(self, api_client):
         """Proxies should have country and is_overseas fields populated."""
         resp = api_client.get(f"{API_BASE}/api/proxies", params={"protocol": "http", "limit": 10})

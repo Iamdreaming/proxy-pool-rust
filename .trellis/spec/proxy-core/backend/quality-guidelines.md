@@ -218,6 +218,7 @@ Current test coverage:
 - Single refresh: `SchedulerHandle::refresh_fetcher(&self, fetcher_id) -> anyhow::Result<SchedulerResult>`.
 - Structured validation: `Validator::check_one(&self, proxy: &Proxy) -> ProxyCheckResult`.
 - Compatibility validation: `Validator::validate_one(&self, proxy: &Proxy) -> Option<Proxy>` delegates to `check_one()`.
+- Multi-target validation: `check_proxy_matrix(request: ProxyCheckMatrixRequest) -> Result<ProxyCheckMatrixResult, ProxyCheckMatrixError>`.
 
 ### 3. Contracts
 
@@ -261,6 +262,16 @@ Fetcher ids are stable machine ids used by API/MCP clients. Protocol-specific fe
 | `error_type` | optional enum | Present on failure |
 | `error` | optional string | Human-readable failure detail |
 
+`ProxyCheckMatrixResult` fields:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `host` / `port` / `protocol` | proxy identity | Echoed from the checked proxy after validation |
+| `target_count` | integer | Number of validation targets checked |
+| `alive_count` | integer | Number of target checks that succeeded |
+| `failed_count` | integer | Number of target checks that failed |
+| `checks` | array | One `ProxyCheckResult` per target, preserving target URL diagnostics |
+
 ### 4. Validation & Error Matrix
 
 | Condition | Contract |
@@ -284,16 +295,20 @@ Fetcher ids are stable machine ids used by API/MCP clients. Protocol-specific fe
 | Response body read fails | `error_type=body_read_failed`, `http_status` and phase timings present |
 | Cloudflare trace body exposes `ip=` / `loc=` | `observed_ip` / `observed_country` populated |
 | httpbin JSON body exposes `origin` | `observed_ip` populated from the first origin value |
+| Matrix request omits targets | Defaults to Cloudflare trace and httpbin IP |
+| Matrix request has blank host, zero port, invalid protocol, invalid target URL, or invalid timeout | Return deterministic request error before network calls |
+| Matrix target network failure | Return a failed `ProxyCheckResult` entry, not a request-level error |
 
 ### 5. Good/Base/Bad Cases
 
 - Good: `GET /api/fetchers` and MCP `fetcher_status` return the same `FetcherRunReport` shape from `SchedulerHandle`, including source circuit fields.
+- Good: REST `/api/proxy/check-matrix` and MCP `check_proxy_matrix` serialize `ProxyCheckMatrixResult` directly from `proxy-core`.
 - Base: a new legacy fetcher only implements `fetch()`; the default `fetch_with_report()` still returns a valid report with fetched/parsed counts equal to the returned proxy count.
 - Bad: an API/MCP adapter parses logs or recomputes fetcher status locally. That duplicates business logic and will drift from scheduler state.
 
 ### 6. Tests Required
 
-- `proxy-core` unit tests for report status constructors, source circuit transitions, validation result serialization, and observed exit metadata parsing.
+- `proxy-core` unit tests for report status constructors, source circuit transitions, validation result serialization, validation matrix request validation, and observed exit metadata parsing.
 - `proxy-core` scheduler tests for refresh command compatibility and automatic-vs-manual source skip decisions.
 - `proxy-api` serialization tests for refresh and fetcher status response structs.
 - `proxy-mcp` deserialization tests for new tool params.

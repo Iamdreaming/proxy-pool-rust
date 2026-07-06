@@ -99,6 +99,7 @@ docker compose logs -f proxy-pool
 | POST | `/api/subscriptions/sources/{id}/refresh` | 手动 preview/apply 单个订阅源刷新，默认 preview |
 | GET | `/api/proxies` | 代理列表（支持 protocol/limit 参数） |
 | GET | `/api/proxies/scores` | 代理评分解释 |
+| POST | `/api/proxy/check-matrix` | 对单个代理执行多目标验证矩阵，返回每个目标的状态、耗时和出口信息 |
 | GET | `/api/proxy/random` | 随机代理 |
 | GET | `/api/proxy/best` | 最佳代理 |
 | POST | `/api/proxies/refresh` | 触发刷新（返回抓取/验证/存储计数） |
@@ -120,6 +121,7 @@ docker compose logs -f proxy-pool
 | `explain_proxy_scores` | 查看代理评分组成和保留决策 |
 | `cleanup_low_score_proxies` | dry-run 或显式 apply 清理低分代理 |
 | `check_proxy` | 验证指定代理可用性，并返回目标、耗时、HTTP 状态和出口信息 |
+| `check_proxy_matrix` | 对单个代理执行多目标验证矩阵，默认检查 Cloudflare trace 和 httpbin IP |
 | `pool_status` | 查看池状态概览 |
 | `warp_status` | WARP 实例状态 |
 | `xray_status` | xray 节点生命周期、活跃/失败计数和最近状态 |

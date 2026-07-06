@@ -15,6 +15,7 @@ use proxy_core::route_debug::UpstreamSelector;
 use proxy_core::scheduler::SchedulerHandle;
 use proxy_core::status::{XrayStatus, collect_service_status};
 use proxy_core::store::ProxyStore;
+use proxy_core::validator::{ProxyCheckMatrixRequest, check_proxy_matrix};
 use proxy_core::warp::balancer::WarpBalancer;
 use proxy_core::xray_status::{XrayStatusRegistry, XrayStatusSnapshot};
 use proxy_sub::ops::{SubscriptionOpsHandle, SubscriptionRefreshMode};
@@ -76,6 +77,18 @@ pub struct CheckProxyParam {
     pub host: String,
     pub port: u16,
     pub protocol: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CheckProxyMatrixParam {
+    pub host: String,
+    pub port: u16,
+    /// Proxy protocol: http, https, socks4, socks5.
+    pub protocol: String,
+    /// Optional validation target URLs. Defaults to Cloudflare trace and httpbin IP.
+    pub targets: Option<Vec<String>>,
+    /// Optional per-target timeout in seconds. Defaults to 10.
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -381,6 +394,27 @@ impl ProxyPoolMcp {
             proxy_core::validator::Validator::new("https://www.cloudflare.com/cdn-cgi/trace", 10);
 
         to_json(serde_json::to_value(validator.check_one(&proxy).await).unwrap_or_default())
+    }
+
+    #[tool(
+        description = "Check if a specific proxy works against multiple validation targets. Protocol must be http, https, socks4, or socks5. Optional targets default to Cloudflare trace and httpbin IP."
+    )]
+    async fn check_proxy_matrix(&self, params: Parameters<CheckProxyMatrixParam>) -> String {
+        let request = ProxyCheckMatrixRequest {
+            host: params.0.host,
+            port: params.0.port,
+            protocol: params.0.protocol,
+            targets: params.0.targets,
+            timeout_secs: params.0.timeout_secs,
+        };
+
+        match check_proxy_matrix(request).await {
+            Ok(result) => to_json(serde_json::to_value(result).unwrap_or_default()),
+            Err(e) => to_json(serde_json::json!({
+                "status": "error",
+                "message": e.to_string(),
+            })),
+        }
     }
 
     #[tool(
@@ -1197,6 +1231,20 @@ mod tests {
         assert_eq!(param.host, "1.2.3.4");
         assert_eq!(param.port, 8080);
         assert_eq!(param.protocol, "http");
+    }
+
+    #[test]
+    fn test_check_proxy_matrix_param_deserialize() {
+        let json = r#"{"host":"1.2.3.4","port":8080,"protocol":"socks5","targets":["https://example.com"],"timeout_secs":3}"#;
+        let param: CheckProxyMatrixParam = serde_json::from_str(json).unwrap();
+        assert_eq!(param.host, "1.2.3.4");
+        assert_eq!(param.port, 8080);
+        assert_eq!(param.protocol, "socks5");
+        assert_eq!(
+            param.targets.as_deref(),
+            Some(["https://example.com".to_string()].as_slice())
+        );
+        assert_eq!(param.timeout_secs, Some(3));
     }
 
     #[test]

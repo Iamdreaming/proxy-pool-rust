@@ -2,9 +2,19 @@
 
 use crate::models::{Anonymity, Proxy};
 use crate::pacing::ConnectionPacer;
-use serde::Serialize;
+use futures::future::join_all;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Default targets used by the multi-target validation matrix.
+pub const DEFAULT_MATRIX_TARGETS: &[&str] = &[
+    "https://www.cloudflare.com/cdn-cgi/trace",
+    "https://httpbin.org/ip",
+];
+
+const DEFAULT_MATRIX_TIMEOUT_SECS: u64 = 10;
+const MAX_MATRIX_TARGETS: usize = 8;
 
 /// Stable validation failure category for API/MCP clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -59,6 +69,53 @@ pub struct ProxyCheckResult {
     proxy: Option<Proxy>,
 }
 
+/// Request body for checking one proxy against several validation targets.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyCheckMatrixRequest {
+    pub host: String,
+    pub port: u16,
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+/// Structured result for a multi-target proxy validation matrix.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProxyCheckMatrixResult {
+    pub host: String,
+    pub port: u16,
+    pub protocol: crate::models::Protocol,
+    pub target_count: usize,
+    pub alive_count: usize,
+    pub failed_count: usize,
+    pub checks: Vec<ProxyCheckResult>,
+}
+
+impl ProxyCheckMatrixResult {
+    fn from_checks(proxy: &Proxy, checks: Vec<ProxyCheckResult>) -> Self {
+        let alive_count = checks.iter().filter(|check| check.alive).count();
+        let target_count = checks.len();
+        Self {
+            host: proxy.host.clone(),
+            port: proxy.port,
+            protocol: proxy.protocol,
+            target_count,
+            alive_count,
+            failed_count: target_count.saturating_sub(alive_count),
+            checks,
+        }
+    }
+}
+
+/// Validation errors for a multi-target proxy matrix request.
+#[derive(Debug, thiserror::Error)]
+pub enum ProxyCheckMatrixError {
+    #[error("{0}")]
+    InvalidRequest(String),
+}
+
 impl ProxyCheckResult {
     fn success(proxy: Proxy, diagnostics: ProxyCheckDiagnostics) -> Self {
         Self {
@@ -109,6 +166,98 @@ impl ProxyCheckResult {
     pub fn into_proxy(self) -> Option<Proxy> {
         self.proxy
     }
+}
+
+/// Check one proxy against a set of validation targets.
+pub async fn check_proxy_matrix(
+    request: ProxyCheckMatrixRequest,
+) -> Result<ProxyCheckMatrixResult, ProxyCheckMatrixError> {
+    let proxy = matrix_request_proxy(&request)?;
+    let targets = matrix_targets(request.targets.as_deref())?;
+    let timeout_secs = matrix_timeout_secs(request.timeout_secs)?;
+
+    let checks = join_all(targets.into_iter().map(|target| {
+        let proxy = proxy.clone();
+        async move {
+            Validator::new(&target, timeout_secs)
+                .check_one(&proxy)
+                .await
+        }
+    }))
+    .await;
+
+    Ok(ProxyCheckMatrixResult::from_checks(&proxy, checks))
+}
+
+fn matrix_request_proxy(request: &ProxyCheckMatrixRequest) -> Result<Proxy, ProxyCheckMatrixError> {
+    let host = request.host.trim();
+    if host.is_empty() {
+        return Err(ProxyCheckMatrixError::InvalidRequest(
+            "host is required".into(),
+        ));
+    }
+    if request.port == 0 {
+        return Err(ProxyCheckMatrixError::InvalidRequest(
+            "port must be greater than zero".into(),
+        ));
+    }
+    let protocol =
+        crate::models::Protocol::from_str_loose(request.protocol.trim()).ok_or_else(|| {
+            ProxyCheckMatrixError::InvalidRequest(
+                "protocol must be one of: http, https, socks4, socks5".into(),
+            )
+        })?;
+    Ok(Proxy::new(host, request.port, protocol))
+}
+
+fn matrix_targets(targets: Option<&[String]>) -> Result<Vec<String>, ProxyCheckMatrixError> {
+    let raw_targets: Vec<String> = match targets {
+        Some(targets) if !targets.is_empty() => targets.to_vec(),
+        _ => DEFAULT_MATRIX_TARGETS
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect(),
+    };
+
+    if raw_targets.len() > MAX_MATRIX_TARGETS {
+        return Err(ProxyCheckMatrixError::InvalidRequest(format!(
+            "targets must contain at most {MAX_MATRIX_TARGETS} entries"
+        )));
+    }
+
+    raw_targets
+        .into_iter()
+        .map(|target| normalize_matrix_target(&target))
+        .collect()
+}
+
+fn normalize_matrix_target(target: &str) -> Result<String, ProxyCheckMatrixError> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Err(ProxyCheckMatrixError::InvalidRequest(
+            "target URL must not be empty".into(),
+        ));
+    }
+
+    let url = reqwest::Url::parse(trimmed).map_err(|_| {
+        ProxyCheckMatrixError::InvalidRequest(format!("invalid target URL: {trimmed}"))
+    })?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(ProxyCheckMatrixError::InvalidRequest(format!(
+            "target URL must be http(s) with a host: {trimmed}"
+        )));
+    }
+    Ok(url.to_string())
+}
+
+fn matrix_timeout_secs(timeout_secs: Option<u64>) -> Result<u64, ProxyCheckMatrixError> {
+    let timeout_secs = timeout_secs.unwrap_or(DEFAULT_MATRIX_TIMEOUT_SECS);
+    if timeout_secs == 0 || timeout_secs > 60 {
+        return Err(ProxyCheckMatrixError::InvalidRequest(
+            "timeout_secs must be between 1 and 60".into(),
+        ));
+    }
+    Ok(timeout_secs)
 }
 
 #[derive(Debug, Clone)]
@@ -488,6 +637,97 @@ mod tests {
             Some("example.com")
         );
         assert_eq!(target_host("not a url"), None);
+    }
+
+    #[test]
+    fn matrix_targets_default_when_not_supplied() {
+        let targets = matrix_targets(None).unwrap();
+        assert_eq!(
+            targets,
+            DEFAULT_MATRIX_TARGETS
+                .iter()
+                .map(|target| (*target).to_string())
+                .collect::<Vec<_>>()
+        );
+
+        let empty: Vec<String> = vec![];
+        let targets = matrix_targets(Some(&empty)).unwrap();
+        assert_eq!(
+            targets,
+            DEFAULT_MATRIX_TARGETS
+                .iter()
+                .map(|target| (*target).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn matrix_targets_reject_invalid_entries() {
+        let targets = vec!["".to_string()];
+        let error = matrix_targets(Some(&targets)).unwrap_err();
+        assert_eq!(error.to_string(), "target URL must not be empty");
+
+        let targets = vec!["ftp://example.com/file".to_string()];
+        let error = matrix_targets(Some(&targets)).unwrap_err();
+        assert!(error.to_string().contains("target URL must be http(s)"));
+    }
+
+    #[test]
+    fn matrix_request_proxy_validates_identity() {
+        let request = ProxyCheckMatrixRequest {
+            host: " 1.2.3.4 ".into(),
+            port: 8080,
+            protocol: "SOCKS5".into(),
+            targets: None,
+            timeout_secs: None,
+        };
+        let proxy = matrix_request_proxy(&request).unwrap();
+        assert_eq!(proxy.host, "1.2.3.4");
+        assert_eq!(proxy.port, 8080);
+        assert_eq!(proxy.protocol, Protocol::Socks5);
+
+        let bad = ProxyCheckMatrixRequest {
+            protocol: "ssh".into(),
+            ..request
+        };
+        let error = matrix_request_proxy(&bad).unwrap_err();
+        assert!(error.to_string().contains("protocol must be one of"));
+    }
+
+    #[test]
+    fn proxy_check_matrix_result_summarizes_checks() {
+        let proxy = Proxy::new("1.2.3.4", 8080, Protocol::Http);
+        let success = ProxyCheckResult::success(
+            proxy.clone(),
+            ProxyCheckDiagnostics::new("https://www.cloudflare.com/cdn-cgi/trace").with_response(
+                200,
+                Duration::from_millis(20),
+                Some(Duration::from_millis(1)),
+                Duration::from_millis(21),
+                ObservedProxyMetadata {
+                    ip: Some("1.2.3.4".into()),
+                    country: Some("US".into()),
+                },
+            ),
+        );
+        let failure = ProxyCheckResult::failure(
+            &proxy,
+            ProxyCheckDiagnostics::new("https://httpbin.org/ip")
+                .with_request(Duration::from_millis(3), Duration::from_millis(3)),
+            ProxyCheckErrorType::RequestFailed,
+            "connection refused",
+        );
+
+        let matrix = ProxyCheckMatrixResult::from_checks(&proxy, vec![success, failure]);
+        assert_eq!(matrix.target_count, 2);
+        assert_eq!(matrix.alive_count, 1);
+        assert_eq!(matrix.failed_count, 1);
+
+        let json = serde_json::to_string(&matrix).unwrap();
+        assert!(json.contains("\"target_count\":2"));
+        assert!(json.contains("\"alive_count\":1"));
+        assert!(json.contains("\"checks\""));
+        assert!(json.contains("\"target_url\":\"https://httpbin.org/ip\""));
     }
 
     #[test]

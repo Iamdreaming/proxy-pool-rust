@@ -30,7 +30,7 @@ class TestMcpConnection:
 
         expected = {
             "get_proxy", "get_best_proxy", "list_proxies",
-            "check_proxy", "service_status", "pool_status", "warp_status",
+            "check_proxy", "check_proxy_matrix", "service_status", "pool_status", "warp_status",
             "geoip_lookup", "remove_proxy", "refresh_pool",
             "fetcher_status", "refresh_fetcher", "route_test",
             "explain_proxy_scores", "cleanup_low_score_proxies",
@@ -153,6 +153,38 @@ class TestMcpCheckProxy:
             assert check_data.get("error_type")
         # alive may be true or false depending on proxy health at test time
         # We just verify the structure is correct
+
+    def test_check_proxy_matrix_structure(self, mcp_client):
+        """check_proxy_matrix returns per-target diagnostics."""
+        result = mcp_client.call_tool("check_proxy_matrix", {
+            "host": "127.0.0.1",
+            "port": 1,
+            "protocol": "http",
+            "targets": ["http://127.0.0.1:1"],
+            "timeout_secs": 1,
+        })
+        text = _extract_text(result)
+        data = json.loads(text)
+        assert data["host"] == "127.0.0.1"
+        assert data["port"] == 1
+        assert data["protocol"] == "http"
+        assert data["target_count"] == 1
+        assert data["alive_count"] + data["failed_count"] == 1
+        assert isinstance(data["checks"], list)
+        assert data["checks"][0]["target_url"] == "http://127.0.0.1:1/"
+        assert "alive" in data["checks"][0]
+
+    def test_check_proxy_matrix_invalid_request(self, mcp_client):
+        """check_proxy_matrix reports deterministic input errors."""
+        result = mcp_client.call_tool("check_proxy_matrix", {
+            "host": "",
+            "port": 1,
+            "protocol": "http",
+        })
+        text = _extract_text(result)
+        data = json.loads(text)
+        assert data["status"] == "error"
+        assert "host is required" in data["message"]
 
 
 class TestMcpFetcherStatus:
