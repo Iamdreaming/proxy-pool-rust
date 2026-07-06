@@ -3,7 +3,7 @@
   "name": "fetcher-validator-quality",
   "title": "Fetcher validator quality",
   "description": "",
-  "status": "in_progress",
+  "status": "paused",
   "dev_type": null,
   "scope": null,
   "package": "proxy-core",
@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Paused after first verified slice. Remaining circuit-breaker work is isolated in stash@{0} and must not be restored or mixed into later tasks without explicit confirmation.",
   "meta": {}
 }

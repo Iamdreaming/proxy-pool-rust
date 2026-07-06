@@ -3,7 +3,7 @@
   "name": "gateway-route-debugging",
   "title": "Gateway route debugging",
   "description": "Make gateway routing decisions and fallback behavior explainable, observable, and testable.",
-  "status": "in_progress",
+  "status": "paused",
   "dev_type": null,
   "scope": "proxy-gateway, proxy-core router, proxy-api, proxy-mcp, metrics, integration tests",
   "package": "proxy-gateway",
@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Planned after pausing fetcher-validator-quality WIP. Do not use direct SSH for dev validation.",
+  "notes": "Paused per user request after core implementation was committed as 2842043. Do not continue closeout, archive, or direct dev SSH validation until explicitly resumed.",
   "meta": {}
 }
