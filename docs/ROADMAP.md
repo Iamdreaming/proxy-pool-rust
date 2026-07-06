@@ -35,7 +35,7 @@
 
 当前已按用户要求暂不推进 `update-failure-hardening` 和 `xray-config-dry-run-and-remove`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp`、`validator-observability-v2` 与 `validator-observability-multitarget`：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 能返回目标、耗时、HTTP 状态和出口信息，`check_proxy_matrix` / `/api/proxy/check-matrix` 也能按多个目标返回验证矩阵。
 
-用户最新要求先不做 `dashboard-ops-polish-v2`，因此该前端增强只保留隔离草稿，不作为当前 Ready/Next 主线。新的 TODO 队列优先选择不依赖直接 SSH、且能增强发布/契约可信度的工作：发布状态可观测性、REST/MCP 契约 smoke、代理质量趋势。
+用户最新要求先不做 `dashboard-ops-polish-v2`，因此该前端增强只保留隔离草稿，不作为当前 Ready/Next 主线。`release-observability-no-ssh-v2` 已完成，当前队列继续优先选择不依赖直接 SSH、且能增强契约可信度的工作：REST/MCP 契约 smoke、代理质量趋势。
 
 **工作区注意事项**：
 
@@ -50,7 +50,7 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议从 Ready 选择 `release-observability-no-ssh-v2`。`dashboard-ops-polish-v2` 按用户最新要求暂停，不作为当前主线。
+当前无 Now 任务；下一步建议从 Ready 选择 `mcp-api-contract-smoke-v2`。`dashboard-ops-polish-v2` 按用户最新要求暂停，不作为当前主线。
 
 ## Paused Closeout
 
@@ -105,6 +105,27 @@
 - [ ] 移除或禁用所有没有后端支持的操作按钮。
 
 ## Done
+
+### P2 — `release-observability-no-ssh-v2`
+
+**目标**：继续强化不直接 SSH 的发布验证闭环，让 dev 是否已运行目标镜像、最近更新状态和失败原因更容易通过公开入口判断。
+
+**当前状态**：已完成 MVP。`/api/status` 和 MCP `service_status` 现在共享 `release` metadata，包含版本、git hash、配置镜像、镜像 repo/tag、更新容器、Watchtower URL 和更新开关；MCP 新增只读 `update_status`，可查询最近一次 `update_service` 结果，不触发 Docker/Watchtower 操作。
+
+**主要完成项**：
+
+- [x] `/api/status.release` 暴露 release metadata，且不依赖 Docker socket。
+- [x] MCP `service_status.release` 复用同一共享状态模型。
+- [x] MCP 新增 `update_status`，返回 `never_triggered`、`disabled`、`already_current`、`updated` 或 `failed`。
+- [x] `update_service` 在 disabled、token/config error、Docker inspect/pull error、already current、Watchtower success 和 Watchtower failure 路径记录最近结果。
+- [x] README、`docs/dev-validation.md` 和 Trellis MCP spec 已同步 no-SSH post-push 验证说明。
+- [x] `cargo fmt --all --check` 通过。
+- [x] `cargo test -p proxy-core` 通过。
+- [x] `cargo test -p proxy-mcp` 通过。
+- [x] `cargo test -p proxy-api` 通过。
+- [x] `cargo check -p proxy-server` 通过。
+- [x] `cargo test --workspace --all-targets` 通过。
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
 ### P1 — `xray-node-lifecycle-mvp`
 
@@ -307,17 +328,6 @@
 
 ## Ready
 
-### P2 — `release-observability-no-ssh-v2`
-
-**目标**：继续强化不直接 SSH 的发布验证闭环，让 dev 是否已运行目标镜像、最近更新状态和失败原因更容易通过公开入口判断。
-
-**候选功能**：
-
-- [ ] `/api/status` 或 MCP `service_status` 返回更完整的 image/tag/digest/build metadata。
-- [ ] MCP `update_service` 的最近一次结果可查询，便于区分 `already_current`、更新成功、更新失败和未触发。
-- [ ] README / `docs/dev-validation.md` 补充 post-push 检查顺序和故障分流。
-- [ ] 不做破坏性故障注入，不修改 dev compose，不直接 SSH。
-
 ### P2 — `mcp-api-contract-smoke-v2`
 
 **目标**：为最近新增的 REST/MCP 运维入口补齐契约级 smoke，减少 API 与 MCP 字段漂移。
@@ -419,8 +429,8 @@
 1. `xray-node-lifecycle-mvp` — xray 节点生命周期和失败原因。
 2. `subscription-source-ops-mvp` — 订阅源状态、手动刷新和解析预览。
 3. `validator-observability-multitarget` — 已完成，多目标验证矩阵和更细阶段耗时。
-4. `release-observability-no-ssh-v2` — 下一项建议，发布状态、镜像元数据和最近更新结果的 no-SSH 可观测性。
-5. `mcp-api-contract-smoke-v2` — REST/MCP 运维入口契约 smoke。
+4. `release-observability-no-ssh-v2` — 已完成，发布状态、镜像元数据和最近更新结果的 no-SSH 可观测性。
+5. `mcp-api-contract-smoke-v2` — 下一项建议，REST/MCP 运维入口契约 smoke。
 6. `proxy-quality-history-lite` — 代理质量轻量趋势和 dry-run 清理建议。
 7. `dashboard-ops-polish-v2` — 用户重新确认后再恢复 Dashboard 运维整合草稿。
 8. `xray-config-dry-run-and-remove` — 用户重新确认后再恢复 xray 配置 dry-run 和单节点移除。

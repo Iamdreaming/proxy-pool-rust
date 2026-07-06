@@ -149,13 +149,15 @@ All tools use `serde_json::to_string_pretty(&...).unwrap_or_default()` for outpu
 
 ### 1. Scope / Trigger
 
-- Trigger: `update_service` can touch `/var/run/docker.sock` and trigger Watchtower to recreate the running service.
+- Trigger: `update_service` can touch `/var/run/docker.sock` and trigger Watchtower to recreate the running service; `update_status` reports the latest attempt without mutating anything.
 - This is an infra integration and must be explicit, auditable, and disabled by default outside managed deployment wiring.
 
 ### 2. Signatures
 
 - MCP tool: `async fn update_service(&self) -> String`
+- MCP tool: `async fn update_status(&self) -> String`
 - Config helper: `UpdateServiceConfig::from_env() -> UpdateServiceConfig`
+- State payload: `UpdateStatusSnapshot`
 - Docker helpers: `docker_api_get(socket_path, path)`, `docker_api_post(socket_path, path)`
 
 ### 3. Contracts
@@ -178,6 +180,17 @@ Response contract:
 - Already current: `{"status":"already_current","previous_image_id":...,"new_image_id":...,"digest_changed":false,...}`
 - Triggered: `{"status":"update_triggered","previous_image_id":...,"new_image_id":...,"new_digest":...,"digest_changed":true,...}`
 
+`update_status` is read-only and returns the latest in-process
+`UpdateStatusSnapshot`:
+
+- Never called: `{"status":"never_triggered"}`
+- Disabled: `{"status":"disabled","update_enabled":false,...}`
+- Already current: `{"status":"already_current","previous_image_id":...,"new_image_id":...,"digest_changed":false,...}`
+- Updated: `{"status":"updated","previous_image_id":...,"new_image_id":...,"digest_changed":true,...}`
+- Failed: `{"status":"failed","message":...,"previous_image_id":...}`
+
+The snapshot may be lost on process restart; persistent history is out of scope.
+
 ### 4. Validation & Error Matrix
 
 | Condition | Response |
@@ -189,6 +202,8 @@ Response contract:
 | Pulled image inspect fails | `status=error`, message starts `failed to inspect pulled image` |
 | Image ID unchanged | `status=already_current`; do not call Watchtower |
 | Watchtower non-2xx or unreachable | `status=error` with old/new image identity fields |
+| `update_status` called before any update attempt | `status=never_triggered`; do not touch Docker socket |
+| Any `update_service` return path | Record the corresponding latest `update_status` snapshot before returning |
 
 ### 5. Good/Base/Bad Cases
 
@@ -202,6 +217,7 @@ Response contract:
 - Unit test truthy bool parsing.
 - Unit test image ref splitting handles registry ports.
 - Unit test image ID / identity comparison.
+- Unit test `UpdateStatusSnapshot` serializes `never_triggered`, `disabled`, `already_current`, `updated`, and `failed`.
 - Integration verification, when a deployed target is available: call MCP `update_service`, then poll `/api/status.git_hash`.
 
 ### 7. Wrong vs Correct

@@ -13,7 +13,7 @@ use proxy_core::geoip::GeoIPLookup;
 use proxy_core::models::ProxyFilter;
 use proxy_core::route_debug::UpstreamSelector;
 use proxy_core::scheduler::SchedulerHandle;
-use proxy_core::status::{XrayStatus, collect_service_status};
+use proxy_core::status::{XrayStatus, collect_service_status, parse_bool_env, split_image_ref};
 use proxy_core::store::ProxyStore;
 use proxy_core::validator::{ProxyCheckMatrixRequest, check_proxy_matrix};
 use proxy_core::warp::balancer::WarpBalancer;
@@ -24,10 +24,10 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool_handler;
 use rmcp::{ServerHandler, tool, tool_router};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::Mutex;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::{Mutex, RwLock};
 
 // ---------------------------------------------------------------------------
 // Tool parameter structs
@@ -193,25 +193,135 @@ impl UpdateServiceConfig {
     }
 }
 
-fn parse_bool_env(value: Option<&str>) -> bool {
-    matches!(
-        value.map(|v| v.trim().to_ascii_lowercase()),
-        Some(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on")
-    )
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UpdateStatusKind {
+    NeverTriggered,
+    Disabled,
+    AlreadyCurrent,
+    Updated,
+    Failed,
 }
 
-fn split_image_ref(image: &str) -> (String, String) {
-    let last_colon = image.rfind(':');
-    let last_slash = image.rfind('/');
-    if let Some(colon_idx) = last_colon
-        && last_slash.is_none_or(|slash_idx| colon_idx > slash_idx)
-    {
-        return (
-            image[..colon_idx].to_string(),
-            image[colon_idx + 1..].to_string(),
-        );
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct UpdateStatusSnapshot {
+    #[serde(rename = "status")]
+    status: UpdateStatusKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recorded_at_unix_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    update_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    container_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    watchtower_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_image_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_image_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    digest_changed: Option<bool>,
+}
+
+impl UpdateStatusSnapshot {
+    fn never_triggered() -> Self {
+        Self {
+            status: UpdateStatusKind::NeverTriggered,
+            message: None,
+            recorded_at_unix_secs: None,
+            update_enabled: None,
+            container_name: None,
+            image: None,
+            image_repo: None,
+            image_tag: None,
+            watchtower_url: None,
+            previous_image_id: None,
+            new_image_id: None,
+            new_digest: None,
+            digest_changed: None,
+        }
     }
-    (image.to_string(), "latest".into())
+
+    fn disabled(config: &UpdateServiceConfig) -> Self {
+        Self::from_config(
+            UpdateStatusKind::Disabled,
+            config,
+            Some(
+                "update_service is disabled; set PROXY_POOL_UPDATE_ENABLED=true to allow updates"
+                    .into(),
+            ),
+        )
+    }
+
+    fn failed(config: &UpdateServiceConfig, message: impl Into<String>) -> Self {
+        Self::from_config(UpdateStatusKind::Failed, config, Some(message.into()))
+    }
+
+    fn already_current(config: &UpdateServiceConfig) -> Self {
+        Self::from_config(UpdateStatusKind::AlreadyCurrent, config, None)
+    }
+
+    fn updated(config: &UpdateServiceConfig) -> Self {
+        Self::from_config(UpdateStatusKind::Updated, config, None)
+    }
+
+    fn from_config(
+        status: UpdateStatusKind,
+        config: &UpdateServiceConfig,
+        message: Option<String>,
+    ) -> Self {
+        Self {
+            status,
+            message,
+            recorded_at_unix_secs: now_unix_secs(),
+            update_enabled: Some(config.enabled),
+            container_name: Some(config.container_name.clone()),
+            image: Some(config.image.clone()),
+            image_repo: Some(config.image_repo.clone()),
+            image_tag: Some(config.image_tag.clone()),
+            watchtower_url: Some(config.watchtower_url.clone()),
+            previous_image_id: None,
+            new_image_id: None,
+            new_digest: None,
+            digest_changed: None,
+        }
+    }
+
+    fn with_previous_image_id(mut self, previous_image_id: impl Into<String>) -> Self {
+        self.previous_image_id = Some(previous_image_id.into());
+        self
+    }
+
+    fn with_image_result(
+        mut self,
+        previous_image_id: impl Into<String>,
+        new_image_id: impl Into<String>,
+        new_digest: impl Into<String>,
+        digest_changed: bool,
+    ) -> Self {
+        self.previous_image_id = Some(previous_image_id.into());
+        self.new_image_id = Some(new_image_id.into());
+        self.new_digest = Some(new_digest.into());
+        self.digest_changed = Some(digest_changed);
+        self
+    }
+}
+
+fn now_unix_secs() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +337,7 @@ pub struct ProxyPoolMcp {
     subscription_ops: Option<SubscriptionOpsHandle>,
     route_selector: Arc<UpstreamSelector>,
     xray_status: Option<XrayStatusRegistry>,
+    update_status: Arc<RwLock<UpdateStatusSnapshot>>,
     git_hash: &'static str,
     started_at: Instant,
     tool_router: ToolRouter<Self>,
@@ -255,6 +366,7 @@ impl ProxyPoolMcp {
             subscription_ops: config.subscription_ops,
             route_selector: config.route_selector,
             xray_status: config.xray_status,
+            update_status: Arc::new(RwLock::new(UpdateStatusSnapshot::never_triggered())),
             git_hash: config.git_hash,
             started_at: config.started_at,
             tool_router: Self::tool_router(),
@@ -296,6 +408,10 @@ impl ProxyPoolMcp {
             Some(registry) => registry.snapshot(true, 20).await,
             None => XrayStatusSnapshot::disabled(),
         }
+    }
+
+    async fn record_update_status(&self, status: UpdateStatusSnapshot) {
+        *self.update_status.write().await = status;
     }
 }
 
@@ -640,20 +756,35 @@ impl ProxyPoolMcp {
         }))
     }
 
+    #[tool(description = "Get the latest update_service result without triggering an update")]
+    async fn update_status(&self) -> String {
+        let status = self.update_status.read().await.clone();
+        to_json(serde_json::to_value(status).unwrap_or_default())
+    }
+
     #[tool(
         description = "Update the proxy-pool service by pulling the configured Docker image and triggering Watchtower. Requires PROXY_POOL_UPDATE_ENABLED=true."
     )]
     async fn update_service(&self) -> String {
         let config = UpdateServiceConfig::from_env();
         if !config.enabled {
+            self.record_update_status(UpdateStatusSnapshot::disabled(&config))
+                .await;
             return to_json(serde_json::json!({
                 "status": "disabled",
                 "message": "update_service is disabled; set PROXY_POOL_UPDATE_ENABLED=true to allow Docker/Watchtower updates",
                 "required_env": "PROXY_POOL_UPDATE_ENABLED=true",
+                "image": config.image,
+                "container_name": config.container_name,
             }));
         }
 
         let Some(watchtower_token) = config.watchtower_token.as_deref() else {
+            self.record_update_status(UpdateStatusSnapshot::failed(
+                &config,
+                "PROXY_POOL_UPDATE_TOKEN must be set when update_service is enabled",
+            ))
+            .await;
             return to_json(serde_json::json!({
                 "status": "error",
                 "message": "PROXY_POOL_UPDATE_TOKEN must be set when update_service is enabled",
@@ -673,9 +804,14 @@ impl ProxyPoolMcp {
         {
             Ok(body) => body,
             Err(e) => {
+                let message = format!("failed to inspect container: {e}");
+                self.record_update_status(UpdateStatusSnapshot::failed(&config, message.clone()))
+                    .await;
                 return to_json(serde_json::json!({
                     "status": "error",
-                    "message": format!("failed to inspect container: {e}"),
+                    "message": message,
+                    "image": config.image,
+                    "container_name": config.container_name,
                 }));
             }
         };
@@ -698,10 +834,17 @@ impl ProxyPoolMcp {
         )
         .await
         {
+            let message = format!("docker pull failed: {e}");
+            self.record_update_status(
+                UpdateStatusSnapshot::failed(&config, message.clone())
+                    .with_previous_image_id(previous_image_id.clone()),
+            )
+            .await;
             return to_json(serde_json::json!({
                 "status": "error",
-                "message": format!("docker pull failed: {e}"),
+                "message": message,
                 "previous_image_id": previous_image_id,
+                "image": config.image,
             }));
         }
 
@@ -713,9 +856,15 @@ impl ProxyPoolMcp {
         {
             Ok(body) => body,
             Err(e) => {
+                let message = format!("failed to inspect pulled image: {e}");
+                self.record_update_status(
+                    UpdateStatusSnapshot::failed(&config, message.clone())
+                        .with_previous_image_id(previous_image_id.clone()),
+                )
+                .await;
                 return to_json(serde_json::json!({
                     "status": "error",
-                    "message": format!("failed to inspect pulled image: {e}"),
+                    "message": message,
                     "previous_image_id": previous_image_id,
                     "image": config.image,
                 }));
@@ -726,6 +875,15 @@ impl ProxyPoolMcp {
         let digest_changed = image_identity_changed(&previous_image_id, &new_image_id);
 
         if !digest_changed {
+            self.record_update_status(
+                UpdateStatusSnapshot::already_current(&config).with_image_result(
+                    previous_image_id.clone(),
+                    new_image_id.clone(),
+                    new_digest.clone(),
+                    false,
+                ),
+            )
+            .await;
             return to_json(serde_json::json!({
                 "status": "already_current",
                 "previous_image_id": previous_image_id,
@@ -752,6 +910,15 @@ impl ProxyPoolMcp {
         match resp {
             Ok(r) if r.status().is_success() => {
                 tracing::info!("update_service: Watchtower update triggered successfully");
+                self.record_update_status(
+                    UpdateStatusSnapshot::updated(&config).with_image_result(
+                        previous_image_id.clone(),
+                        new_image_id.clone(),
+                        new_digest.clone(),
+                        digest_changed,
+                    ),
+                )
+                .await;
                 // Note: the current container will be stopped and recreated by Watchtower.
                 // This process will be killed, so the response may not reach the caller.
                 // The success signal is the new container's git_hash changing (verified externally).
@@ -768,23 +935,45 @@ impl ProxyPoolMcp {
             Ok(r) => {
                 let status = r.status();
                 let body = r.text().await.unwrap_or_default();
+                let message = format!("Watchtower returned {status}: {body}");
+                self.record_update_status(
+                    UpdateStatusSnapshot::failed(&config, message.clone()).with_image_result(
+                        previous_image_id.clone(),
+                        new_image_id.clone(),
+                        new_digest.clone(),
+                        digest_changed,
+                    ),
+                )
+                .await;
                 to_json(serde_json::json!({
                     "status": "error",
-                    "message": format!("Watchtower returned {status}: {body}"),
+                    "message": message,
                     "previous_image_id": previous_image_id,
                     "new_image_id": new_image_id,
                     "new_digest": new_digest,
                     "digest_changed": digest_changed,
                 }))
             }
-            Err(e) => to_json(serde_json::json!({
-                "status": "error",
-                "message": format!("failed to reach Watchtower: {e}"),
-                "previous_image_id": previous_image_id,
-                "new_image_id": new_image_id,
-                "new_digest": new_digest,
-                "digest_changed": digest_changed,
-            })),
+            Err(e) => {
+                let message = format!("failed to reach Watchtower: {e}");
+                self.record_update_status(
+                    UpdateStatusSnapshot::failed(&config, message.clone()).with_image_result(
+                        previous_image_id.clone(),
+                        new_image_id.clone(),
+                        new_digest.clone(),
+                        digest_changed,
+                    ),
+                )
+                .await;
+                to_json(serde_json::json!({
+                    "status": "error",
+                    "message": message,
+                    "previous_image_id": previous_image_id,
+                    "new_image_id": new_image_id,
+                    "new_digest": new_digest,
+                    "digest_changed": digest_changed,
+                }))
+            }
         }
     }
 }
@@ -1379,6 +1568,67 @@ mod tests {
         assert_eq!(config.image_tag, "test");
         assert_eq!(config.watchtower_url, "http://watchtower/v1/update");
         assert_eq!(config.watchtower_token.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn test_update_status_default_serializes_never_triggered() {
+        let status = UpdateStatusSnapshot::never_triggered();
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, "{\"status\":\"never_triggered\"}");
+    }
+
+    #[test]
+    fn test_update_status_disabled_carries_config() {
+        let config = UpdateServiceConfig::from_lookup(|_| None);
+        let status = UpdateStatusSnapshot::disabled(&config);
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("\"status\":\"disabled\""));
+        assert!(json.contains("\"update_enabled\":false"));
+        assert!(json.contains("\"container_name\":\"proxy-pool\""));
+        assert!(json.contains("\"image\":\"ghcr.io/iamdreaming/proxy-pool-rust:latest\""));
+        assert!(json.contains("\"recorded_at_unix_secs\""));
+    }
+
+    #[test]
+    fn test_update_status_records_failures_and_image_result() {
+        let config = UpdateServiceConfig::from_lookup(|key| match key {
+            "PROXY_POOL_UPDATE_ENABLED" => Some("true".into()),
+            "PROXY_POOL_UPDATE_IMAGE" => Some("localhost:5000/proxy-pool:test".into()),
+            _ => None,
+        });
+
+        let failed = UpdateStatusSnapshot::failed(&config, "watchtower unavailable")
+            .with_image_result("sha256:old", "sha256:new", "repo@sha256:digest", true);
+        let json = serde_json::to_string(&failed).unwrap();
+        assert!(json.contains("\"status\":\"failed\""));
+        assert!(json.contains("watchtower unavailable"));
+        assert!(json.contains("\"previous_image_id\":\"sha256:old\""));
+        assert!(json.contains("\"new_image_id\":\"sha256:new\""));
+        assert!(json.contains("\"digest_changed\":true"));
+    }
+
+    #[test]
+    fn test_update_status_distinguishes_current_and_updated() {
+        let config = UpdateServiceConfig::from_lookup(|_| None);
+        let already_current = UpdateStatusSnapshot::already_current(&config).with_image_result(
+            "sha256:same",
+            "sha256:same",
+            "repo@sha256:same",
+            false,
+        );
+        let updated = UpdateStatusSnapshot::updated(&config).with_image_result(
+            "sha256:old",
+            "sha256:new",
+            "repo@sha256:new",
+            true,
+        );
+
+        let current_json = serde_json::to_string(&already_current).unwrap();
+        let updated_json = serde_json::to_string(&updated).unwrap();
+        assert!(current_json.contains("\"status\":\"already_current\""));
+        assert!(current_json.contains("\"digest_changed\":false"));
+        assert!(updated_json.contains("\"status\":\"updated\""));
+        assert!(updated_json.contains("\"digest_changed\":true"));
     }
 
     #[test]

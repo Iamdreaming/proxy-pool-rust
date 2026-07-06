@@ -6,8 +6,9 @@ GitHub Actions. Do not SSH to the dev address for this workflow.
 ## Allowed Surfaces
 
 - GitHub Actions for image build and push status.
-- MCP over HTTP for `update_service`, `service_status`, `pool_status`, and
-  feature-specific smoke tools such as `route_test` or `fetcher_status`.
+- MCP over HTTP for `service_status`, `update_status`, `update_service`,
+  `pool_status`, and feature-specific smoke tools such as `route_test` or
+  `fetcher_status`.
 - REST API over HTTP for `/api/status`, `/api/healthz`, `/api/readyz`, and
   `/api/metrics`.
 - Integration tests configured through `PROXY_POOL_HOST`,
@@ -46,10 +47,24 @@ dev validation workflow.
 
 3. Trigger the service update through MCP `update_service`.
 
+   Before triggering, MCP `service_status` should expose
+   `release.git_hash`, `release.configured_image`, `release.update_enabled`,
+   and the configured update container. MCP `update_status` should show either
+   `never_triggered` or the latest previous attempt.
+
    Use the configured MCP client/tooling for the dev instance. The expected
    success condition is that the service restarts onto the image built from the
    pushed commit. A dropped MCP response during container restart is acceptable
    only if the follow-up HTTP/MCP smoke checks prove the new service is healthy.
+
+   After triggering, MCP `update_status` should distinguish:
+
+   - `already_current`: the pulled image matches the running container image.
+   - `updated`: Watchtower accepted the update request; verify the new git hash
+     through HTTP after the restart.
+   - `failed`: inspect the returned message and image identity fields, then fix
+     configuration or retry through the public MCP surface.
+   - `disabled`: update env wiring is not enabled for that environment.
 
 4. Verify the deployed commit through HTTP.
 
@@ -58,6 +73,11 @@ dev validation workflow.
    $env:PROXY_POOL_GIT_HASH = (git rev-parse --short HEAD)
    python -m pytest tests/integration/test_l1_health.py -q
    ```
+
+   `/api/status` should include both the top-level `git_hash` and
+   `release.git_hash`. The `release` object also reports the configured update
+   image and container without requiring Docker socket access from the test
+   runner.
 
 5. Verify MCP and feature smoke paths.
 
