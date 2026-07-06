@@ -17,6 +17,7 @@
 | Now | 当前正在做，最多 1 个 |
 | Ready | PRD 清楚、验收标准明确，可以排队开工 |
 | Next | 优先级较高，但还需要细化 PRD |
+| Paused Closeout | 已有较大进展或代码已落地，但当前按用户要求暂不继续收尾 |
 | Later | 后续增强，不阻塞近期迭代 |
 | Parking Lot | 想法池，暂不承诺实现 |
 | Done | 已完成并验证 |
@@ -32,38 +33,60 @@
 
 ## Current Planning Decision
 
-当前暂停继续实现 `fetcher-validator-quality` 的剩余内部增强，先把后续队列重排为更贴近日常排障和运维闭环的方向。
+当前按用户要求暂停继续推进 `gateway-route-debugging` 的发布后收尾，先重新规划 TODO list，并把后续队列重排为更贴近日常排障、无 SSH 验证和代理质量闭环的方向。
 
 **工作区注意事项**：
 
-- 当前本地存在一组未完成的 `fetcher-validator-quality` WIP 改动，下一项正式开发前应先隔离：保留到 draft 分支、stash，或在用户确认后清理。
+- 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`stash@{0}: wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
+- 当前 Trellis 里仍可看到 `gateway-route-debugging` 和 `fetcher-validator-quality` 两个 `in_progress` 历史状态；下一步先做任务状态与路线图清理，避免后续编码串线。
 - `.codex/config.toml` 属于非本任务改动，不纳入任何 roadmap 提交或后续功能提交。
 - 按用户要求，不直接 SSH 到 dev 地址；dev 验证默认走 HTTP、MCP、GitHub Actions、容器已有自更新入口和公开状态接口。
 
 ## Now
 
+### P0 — `todo-queue-and-task-state-cleanup`
+
+**目标**：让 Roadmap 和 Trellis 任务状态重新成为可信的执行入口，后续每次只推进一个明确任务。
+
+**为什么先做**：当前代码层面已经推进过多个任务，但 Trellis 任务状态和 Roadmap 队列出现重叠。先清理队列，可以避免后续 `score-retention-policy`、无 SSH 验证和 Dashboard 任务混入旧上下文。
+
+**建议范围**：
+
+- [ ] 将 Roadmap 更新为新的 TODO list：Now 只保留本清理任务。
+- [ ] 明确 `gateway-route-debugging` 的状态：代码已实现并已推送，发布后文档/归档收尾按用户要求暂缓。
+- [ ] 明确 `fetcher-validator-quality` 的状态：第一批能力已完成，源级熔断等剩余项继续暂缓，WIP 保持 stash 隔离。
+- [ ] 选择下一项正式开发任务：优先 `no-ssh-dev-validation`，再进入 `score-retention-policy`。
+- [ ] 保证后续提交不包含 `.codex/config.toml`。
+
+**验收标准**：
+
+- [ ] `docs/ROADMAP.md` 的 Now / Ready / Next / Later / Paused Closeout 不互相冲突。
+- [ ] `task.py list` 中仍存在的历史 `in_progress` 状态不会被 Roadmap 误认为当前编码目标。
+- [ ] 下一项任务有清晰验收标准和验证方式。
+- [ ] 本次只产生规划文档改动，不触碰代码、stash 或 dev 服务。
+
+## Paused Closeout
+
 ### P1 — `gateway-route-debugging`
 
 **目标**：让网关路由决策和 fallback 链路可解释、可观测、可测试。
 
-**为什么先做**：当前服务已经能发布、更新和暴露基础状态；下一步最影响真实可用性的是“请求为什么这样走、失败时 fallback 到了哪里、最后为什么 502”。这也是后续评分、清理和 Dashboard 的共同数据基础。
+**当前状态**：核心实现已落地并推送到 `2842043 feat: add gateway route diagnostics`，包括 route dry-run、MCP `route_test`、gateway fallback 尝试指标和本地测试验证。用户已要求“先不做这个”，因此暂不继续发布后文档/归档收尾。
 
-**建议范围**：
+**已完成并验证**：
 
-- [ ] 为网关请求记录 route rule、GeoIP 结果、出口选择、fallback 次数和最终状态。
-- [ ] 新增 route dry-run 能力：输入 host/url，返回预计命中规则、GeoIP、出口和 fallback 顺序。
-- [ ] MCP 增加 `route_test` 工具。
-- [ ] 对 `free_pool → WARP → xray → 502` 回退链增加 Prometheus 指标。
+- [x] 为网关请求记录 route rule、GeoIP 结果、出口选择、fallback 候选和最终选择。
+- [x] 新增 route dry-run 能力：输入 host/protocol，返回命中规则、GeoIP、出口和 fallback 顺序。
+- [x] MCP 增加 `route_test` 工具。
+- [x] 对 gateway route attempts 增加 Prometheus 指标。
+- [x] 增加 gateway / API / MCP / core 相关自动化测试。
+- [x] `cargo test --workspace --all-targets` 通过。
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+
+**暂缓 TODO**：
+
+- [ ] 按用户确认后再做 Trellis 任务归档和最终文档收尾。
 - [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
-- [ ] 增加 gateway 集成测试：direct 成功、free_pool fallback、全部失败返回 502。
-
-**验收标准**：
-
-- [ ] REST 或 MCP 可以对单个目标返回可解释的路由决策链。
-- [ ] 网关真实请求路径有指标能区分 direct、free_pool、WARP、xray 和 502。
-- [ ] 测试覆盖 direct、fallback 和全失败路径。
-- [ ] `cargo test --workspace --all-targets` 通过。
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
 ## Done
 
@@ -103,6 +126,24 @@
 
 ## Ready
 
+### P0 — `no-ssh-dev-validation`
+
+**目标**：形成不依赖直接 SSH 的 dev 验证闭环，避免部署和故障验证依赖人工登录服务器。
+
+**建议范围**：
+
+- [ ] 明确 dev 验证只使用 HTTP、MCP、GitHub Actions、容器内已有 update_service 和公开状态接口。
+- [ ] 清理或隔离测试 helper 中“需要 SSH / 直接 Docker API”的假设。
+- [ ] 补充一份可重复的 dev-only 验证步骤：构建、推送、等待 Actions、触发更新、验证 `/api/status.git_hash`、验证 MCP。
+- [ ] 把不能自动化的故障注入项标记为手工/延后，并说明风险。
+
+**验收标准**：
+
+- [ ] 不使用 SSH 即可完成一次发布后冒烟验证。
+- [ ] 相关测试 helper 不再把 SSH 作为默认路径。
+- [ ] 文档说明 dev 验证步骤和禁止事项。
+- [ ] `python -m py_compile tests/integration/**/*.py` 或等价 Python 检查通过。
+
 ### P1 — `score-retention-policy`
 
 **目标**：让代理评分、降权和清理策略更稳定、可解释。
@@ -124,24 +165,6 @@
 - [ ] 失败、过期和低分代理的保留/降权/清理行为有自动化测试覆盖。
 - [ ] `cargo test --workspace --all-targets` 通过。
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
-
-### P0 — `no-ssh-dev-validation`
-
-**目标**：形成不依赖直接 SSH 的 dev 验证闭环，避免部署和故障验证依赖人工登录服务器。
-
-**建议范围**：
-
-- [ ] 明确 dev 验证只使用 HTTP、MCP、GitHub Actions、容器内已有 update_service 和公开状态接口。
-- [ ] 清理或隔离测试 helper 中“需要 SSH / 直接 Docker API”的假设。
-- [ ] 补充一份可重复的 dev-only 验证步骤：构建、推送、等待 Actions、触发更新、验证 `/api/status.git_hash`、验证 MCP。
-- [ ] 把不能自动化的故障注入项标记为手工/延后，并说明风险。
-
-**验收标准**：
-
-- [ ] 不使用 SSH 即可完成一次发布后冒烟验证。
-- [ ] 相关测试 helper 不再把 SSH 作为默认路径。
-- [ ] 文档说明 dev 验证步骤和禁止事项。
-- [ ] `python -m py_compile tests/integration/**/*.py` 或等价 Python 检查通过。
 
 ## Next
 
@@ -250,15 +273,16 @@
 
 建议按以下顺序创建和推进任务：
 
-1. `gateway-route-debugging` — 路由和 fallback 可诊断性，建议作为下一项正式开发任务。
-2. `score-retention-policy` — 基于现有验证结果做评分、降权和清理。
-3. `no-ssh-dev-validation` — 固化无 SSH 的 dev 验证闭环。
-4. `web-dashboard-real-ops-mvp` — 管理面板接入真实运维数据。
-5. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
-6. `fetcher-validator-quality` — 恢复暂缓的源级熔断等内部增强。
-7. `update-failure-hardening` — 仅在允许故障注入 dev 配置且不需要 SSH 时执行。
-8. `warp-ops-enhancement` — WARP 运维增强。
-9. `xray-subscription-ops` — xray 和订阅源管理。
+1. `todo-queue-and-task-state-cleanup` — 先同步 Roadmap 与 Trellis 状态，避免多个历史 `in_progress` 任务继续污染主线。
+2. `no-ssh-dev-validation` — 固化无 SSH 的 dev 验证闭环。
+3. `score-retention-policy` — 基于现有验证结果做评分、降权和清理。
+4. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
+5. `web-dashboard-real-ops-mvp` — 管理面板接入真实运维数据。
+6. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
+7. `fetcher-validator-quality` — 用户确认后恢复暂缓的源级熔断等内部增强。
+8. `update-failure-hardening` — 仅在允许故障注入 dev 配置且不需要 SSH 时执行。
+9. `warp-ops-enhancement` — WARP 运维增强。
+10. `xray-subscription-ops` — xray 和订阅源管理。
 
 ## 任务 PRD 模板
 
