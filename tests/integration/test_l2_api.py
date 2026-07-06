@@ -21,6 +21,7 @@ class TestApiStatus:
         assert isinstance(data["warp"]["configured"], int)
         assert isinstance(data["warp"]["healthy"], int)
         assert isinstance(data["xray"]["active_nodes"], int)
+        assert isinstance(data["xray"]["failed_nodes"], int)
 
 
 class TestApiProxies:
@@ -119,7 +120,11 @@ class TestApiXray:
         assert resp.status_code == 200
         data = resp.json()
         assert "active_nodes" in data
+        assert "failed_nodes" in data
+        assert "recent_nodes" in data
         assert isinstance(data["active_nodes"], int)
+        assert isinstance(data["failed_nodes"], int)
+        assert isinstance(data["recent_nodes"], list)
 
 
 class TestApiMetrics:
@@ -135,6 +140,7 @@ class TestApiMetrics:
         assert "proxy_warp_instances_configured" in text
         assert "proxy_warp_instances_healthy" in text
         assert "proxy_xray_active_nodes" in text
+        assert "proxy_xray_failed_nodes" in text
         assert "proxy_gateway_route_attempts_total" in text
 
 

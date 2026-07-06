@@ -13,9 +13,10 @@ use proxy_core::geoip::GeoIPLookup;
 use proxy_core::models::ProxyFilter;
 use proxy_core::route_debug::UpstreamSelector;
 use proxy_core::scheduler::SchedulerHandle;
-use proxy_core::status::collect_service_status;
+use proxy_core::status::{XrayStatus, collect_service_status};
 use proxy_core::store::ProxyStore;
 use proxy_core::warp::balancer::WarpBalancer;
+use proxy_core::xray_status::{XrayStatusRegistry, XrayStatusSnapshot};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool_handler;
@@ -23,7 +24,6 @@ use rmcp::{ServerHandler, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::sync::Mutex;
 
@@ -203,7 +203,7 @@ pub struct ProxyPoolMcp {
     geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     scheduler_handle: SchedulerHandle,
     route_selector: Arc<UpstreamSelector>,
-    xray_active_count: Arc<AtomicUsize>,
+    xray_status: Option<XrayStatusRegistry>,
     git_hash: &'static str,
     started_at: Instant,
     tool_router: ToolRouter<Self>,
@@ -216,7 +216,7 @@ pub struct ProxyPoolMcpConfig {
     pub geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     pub scheduler_handle: SchedulerHandle,
     pub route_selector: Arc<UpstreamSelector>,
-    pub xray_active_count: Arc<AtomicUsize>,
+    pub xray_status: Option<XrayStatusRegistry>,
     pub git_hash: &'static str,
     pub started_at: Instant,
 }
@@ -229,7 +229,7 @@ impl ProxyPoolMcp {
             geoip: config.geoip,
             scheduler_handle: config.scheduler_handle,
             route_selector: config.route_selector,
-            xray_active_count: config.xray_active_count,
+            xray_status: config.xray_status,
             git_hash: config.git_hash,
             started_at: config.started_at,
             tool_router: Self::tool_router(),
@@ -263,6 +263,13 @@ impl ProxyPoolMcp {
             min_score: param.min_score,
             source: param.source.clone(),
             alive: param.alive,
+        }
+    }
+
+    async fn xray_snapshot(&self) -> XrayStatusSnapshot {
+        match &self.xray_status {
+            Some(registry) => registry.snapshot(true, 20).await,
+            None => XrayStatusSnapshot::disabled(),
         }
     }
 }
@@ -368,17 +375,22 @@ impl ProxyPoolMcp {
         description = "Get structured service status, including version, uptime, Redis, pool, WARP, and xray summaries"
     )]
     async fn service_status(&self) -> String {
-        let xray_active = self.xray_active_count.load(Ordering::Relaxed);
+        let snapshot = self.xray_snapshot().await;
         let status = collect_service_status(
             &self.store,
             self.balancer.as_deref(),
             env!("CARGO_PKG_VERSION"),
             self.git_hash,
             self.started_at.elapsed().as_secs(),
-            xray_active,
+            XrayStatus::from_snapshot(&snapshot),
         )
         .await;
         serde_json::to_string_pretty(&status).unwrap_or_default()
+    }
+
+    #[tool(description = "Get xray node lifecycle status and recent activation failures")]
+    async fn xray_status(&self) -> String {
+        to_json(serde_json::to_value(self.xray_snapshot().await).unwrap_or_default())
     }
 
     #[tool(description = "Get the current status of the proxy pool")]
@@ -1159,6 +1171,23 @@ mod tests {
         let param: RouteTestParam = serde_json::from_str(json).unwrap();
         assert_eq!(param.host, "github.com");
         assert!(param.protocol.is_none());
+    }
+
+    #[test]
+    fn test_xray_status_snapshot_serializes_tool_contract() {
+        let snapshot = XrayStatusSnapshot {
+            enabled: true,
+            active_nodes: 3,
+            activating_nodes: 0,
+            failed_nodes: 1,
+            removed_nodes: 0,
+            total_nodes: 4,
+            recent_nodes: vec![],
+        };
+        let json = to_json(serde_json::to_value(snapshot).unwrap_or_default());
+        assert!(json.contains("\"active_nodes\": 3"));
+        assert!(json.contains("\"failed_nodes\": 1"));
+        assert!(json.contains("\"recent_nodes\": []"));
     }
 
     #[test]

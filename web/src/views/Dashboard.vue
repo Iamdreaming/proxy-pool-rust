@@ -24,7 +24,10 @@
       </n-gi>
       <n-gi>
         <n-card>
-          <n-statistic label="xray 活跃节点" :value="status?.xray.active_nodes ?? 0" />
+          <n-statistic
+            label="xray 活跃/失败"
+            :value="`${status?.xray.active_nodes ?? 0}/${status?.xray.failed_nodes ?? 0}`"
+          />
         </n-card>
       </n-gi>
     </n-grid>

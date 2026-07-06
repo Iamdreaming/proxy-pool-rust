@@ -18,3 +18,4 @@ pub mod status;
 pub mod store;
 pub mod validator;
 pub mod warp;
+pub mod xray_status;

@@ -6,6 +6,7 @@ use proxy_core::route_debug::UpstreamSelector;
 use proxy_core::scheduler::SchedulerHandle;
 use proxy_core::store::ProxyStore;
 use proxy_core::warp::WarpBalancer;
+use proxy_core::xray_status::XrayStatusRegistry;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
@@ -16,6 +17,8 @@ pub struct AppState {
     pub store: Arc<ProxyStore>,
     /// Number of active xray encrypted nodes (updated by OutboundSync).
     pub xray_active_count: Arc<AtomicUsize>,
+    /// Optional lifecycle registry for xray encrypted nodes.
+    pub xray_status: Option<XrayStatusRegistry>,
     /// Handle for sending commands to the background scheduler.
     pub scheduler_handle: SchedulerHandle,
     /// Git hash of the running binary (injected at build time).

@@ -147,7 +147,7 @@ match client.remove_inbound(req).await {
 OutboundSync
   ├── PendingStore errors → log + skip label batch
   ├── ConfigGenerator errors → release port + count as failed
-  ├── XrayClient add errors → log + continue (node still recorded as active)
+  ├── XrayClient add errors → release allocated port, mark lifecycle failed, skip active registration
   ├── XrayClient remove errors → log + continue (stale node still removed from active set)
   └── ProxyStore errors → release port + count as failed
 

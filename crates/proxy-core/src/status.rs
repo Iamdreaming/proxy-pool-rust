@@ -1,6 +1,7 @@
 use crate::models::Protocol;
 use crate::store::ProxyStore;
 use crate::warp::balancer::WarpBalancer;
+use crate::xray_status::XrayStatusSnapshot;
 use serde::Serialize;
 use std::fmt::Write;
 
@@ -63,7 +64,24 @@ pub struct WarpStatus {
 /// xray integration summary.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct XrayStatus {
+    pub enabled: bool,
     pub active_nodes: usize,
+    pub failed_nodes: usize,
+    pub removed_nodes: usize,
+    pub total_nodes: usize,
+}
+
+impl XrayStatus {
+    /// Build a compact service-status summary from the operator snapshot.
+    pub fn from_snapshot(snapshot: &XrayStatusSnapshot) -> Self {
+        Self {
+            enabled: snapshot.enabled,
+            active_nodes: snapshot.active_nodes,
+            failed_nodes: snapshot.failed_nodes,
+            removed_nodes: snapshot.removed_nodes,
+            total_nodes: snapshot.total_nodes,
+        }
+    }
 }
 
 /// Collect a service status snapshot without external network calls.
@@ -73,7 +91,7 @@ pub async fn collect_service_status(
     version: &'static str,
     git_hash: &'static str,
     uptime_sec: u64,
-    xray_active_nodes: usize,
+    xray: XrayStatus,
 ) -> ServiceStatus {
     let (pool, redis) = match collect_pool_status(store).await {
         Ok(pool) => (pool, DependencyStatus::ok()),
@@ -87,9 +105,7 @@ pub async fn collect_service_status(
         pool,
         redis,
         warp: collect_warp_status(balancer).await,
-        xray: XrayStatus {
-            active_nodes: xray_active_nodes,
-        },
+        xray,
     }
 }
 
@@ -192,6 +208,9 @@ pub fn render_prometheus_metrics(status: &ServiceStatus) -> String {
     writeln!(out, "# HELP proxy_xray_active_nodes Active xray nodes").ok();
     writeln!(out, "# TYPE proxy_xray_active_nodes gauge").ok();
     writeln!(out, "proxy_xray_active_nodes {}", status.xray.active_nodes).ok();
+    writeln!(out, "# HELP proxy_xray_failed_nodes Failed xray nodes").ok();
+    writeln!(out, "# TYPE proxy_xray_failed_nodes gauge").ok();
+    writeln!(out, "proxy_xray_failed_nodes {}", status.xray.failed_nodes).ok();
 
     writeln!(out, "# HELP proxy_uptime_seconds Process uptime in seconds").ok();
     writeln!(out, "# TYPE proxy_uptime_seconds gauge").ok();
@@ -221,7 +240,13 @@ mod tests {
                 configured: 3,
                 healthy: 2,
             },
-            xray: XrayStatus { active_nodes: 5 },
+            xray: XrayStatus {
+                enabled: true,
+                active_nodes: 5,
+                failed_nodes: 1,
+                removed_nodes: 2,
+                total_nodes: 8,
+            },
         };
 
         let json = serde_json::to_string(&status).unwrap();
@@ -259,7 +284,13 @@ mod tests {
                 configured: 3,
                 healthy: 2,
             },
-            xray: XrayStatus { active_nodes: 5 },
+            xray: XrayStatus {
+                enabled: true,
+                active_nodes: 5,
+                failed_nodes: 1,
+                removed_nodes: 2,
+                total_nodes: 8,
+            },
         };
 
         let metrics = render_prometheus_metrics(&status);
@@ -268,5 +299,6 @@ mod tests {
         assert!(metrics.contains("proxy_redis_ready 1"));
         assert!(metrics.contains("proxy_warp_instances_configured 3"));
         assert!(metrics.contains("proxy_xray_active_nodes 5"));
+        assert!(metrics.contains("proxy_xray_failed_nodes 1"));
     }
 }

@@ -102,7 +102,7 @@ docker compose logs -f proxy-pool
 | POST | `/api/proxies/refresh` | 触发刷新（返回抓取/验证/存储计数） |
 | DELETE | `/api/proxy/{key}` | 删除代理（key 格式：protocol:host:port） |
 | GET | `/api/metrics` | Prometheus 指标 |
-| GET | `/api/xray/status` | xray 活跃节点数 |
+| GET | `/api/xray/status` | xray 节点生命周期、活跃/失败计数和最近状态 |
 
 ## MCP Server
 
@@ -120,6 +120,7 @@ docker compose logs -f proxy-pool
 | `check_proxy` | 验证指定代理可用性，并返回目标、耗时、HTTP 状态和出口信息 |
 | `pool_status` | 查看池状态概览 |
 | `warp_status` | WARP 实例状态 |
+| `xray_status` | xray 节点生命周期、活跃/失败计数和最近状态 |
 | `refresh_pool` | 触发抓取+验证（返回实际结果） |
 | `fetcher_status` | 查看抓取源状态和源级熔断状态 |
 | `refresh_fetcher` | 手动刷新/探测单个抓取源 |

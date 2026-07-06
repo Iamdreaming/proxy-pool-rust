@@ -27,6 +27,7 @@ use proxy_core::store::ProxyStore;
 use proxy_core::validator::Validator;
 use proxy_core::warp::balancer::WarpBalancer;
 use proxy_core::warp::health::WarpHealthChecker;
+use proxy_core::xray_status::XrayStatusRegistry;
 use proxy_gateway::ProxyGateway;
 use proxy_gateway::UpstreamSelector;
 use proxy_mcp::{ProxyPoolMcp, ProxyPoolMcpConfig};
@@ -162,10 +163,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Build API
     let xray_active_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let xray_status = settings.xray.enabled.then(XrayStatusRegistry::new);
 
     let api_state = AppState {
         store: store.clone(),
         xray_active_count: xray_active_count.clone(),
+        xray_status: xray_status.clone(),
         scheduler_handle: scheduler_handle.clone(),
         git_hash: GIT_HASH,
         started_at,
@@ -187,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
         geoip: mcp_geoip,
         scheduler_handle,
         route_selector: selector.clone(),
-        xray_active_count: xray_active_count.clone(),
+        xray_status: xray_status.clone(),
         git_hash: GIT_HASH,
         started_at,
     });
@@ -274,6 +277,7 @@ async fn main() -> anyhow::Result<()> {
             port_manager,
             settings.xray.clone(),
             connected_rx,
+            xray_status.clone().unwrap_or_else(XrayStatusRegistry::new),
         ));
 
         // 7. Spawn reconnect loop

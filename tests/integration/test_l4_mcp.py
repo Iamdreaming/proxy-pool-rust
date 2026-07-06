@@ -87,6 +87,17 @@ class TestMcpServiceStatus:
         assert isinstance(data["warp"]["configured"], int)
         assert isinstance(data["warp"]["healthy"], int)
         assert isinstance(data["xray"]["active_nodes"], int)
+        assert isinstance(data["xray"]["failed_nodes"], int)
+
+    def test_xray_status_structure(self, mcp_client):
+        """xray_status returns lifecycle counts and recent node records."""
+        result = mcp_client.call_tool("xray_status")
+        text = _extract_text(result)
+        data = json.loads(text)
+
+        assert isinstance(data["active_nodes"], int)
+        assert isinstance(data["failed_nodes"], int)
+        assert isinstance(data["recent_nodes"], list)
 
 
 class TestMcpGetProxy:

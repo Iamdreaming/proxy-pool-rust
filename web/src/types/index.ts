@@ -64,7 +64,12 @@ export interface WarpInstancesResponse {
 }
 
 export interface XrayStatus {
+  enabled: boolean
   active_nodes: number
+  activating_nodes?: number
+  failed_nodes: number
+  removed_nodes: number
+  total_nodes: number
 }
 
 export interface StatusResponse {

@@ -22,6 +22,7 @@ crates/proxy-core/
     ├── dedup.rs            # dedup() — HashSet by (protocol, host, port)
     ├── ewma.rs             # update_ewma() — exponentially weighted moving average
     ├── pacing.rs           # ConnectionPacer — rate-limits outbound connection attempts
+    ├── xray_status.rs      # Shared xray lifecycle status registry and snapshots
     ├── fetcher.rs          # Fetcher trait re-export + build_fetchers() factory
     │   └── fetcher/
     │       ├── base.rs         # Fetcher trait (async_trait)
@@ -53,6 +54,7 @@ crates/proxy-core/
 | `dedup` | Proxy list deduplication | `dedup()` |
 | `ewma` | Latency smoothing | `update_ewma()`, `DEFAULT_ALPHA` |
 | `pacing` | Connection rate limiting | `ConnectionPacer` |
+| `xray_status` | Shared lifecycle status for xray encrypted nodes | `XrayStatusRegistry`, `XrayStatusSnapshot`, `XrayNodeStatus` |
 | `fetcher` | Source fetcher trait + impls | `Fetcher` trait, `build_fetchers()` |
 | `warp` | WARP instance management | `WarpBalancer`, `WarpHealthChecker` |
 

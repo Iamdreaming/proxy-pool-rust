@@ -10,10 +10,12 @@ use axum::{
 use proxy_core::fetcher::base::FetcherRunReport;
 use proxy_core::models::{Protocol, Proxy, ProxyFilter, WarpInstance};
 use proxy_core::route_debug::RouteDecision;
-use proxy_core::status::{collect_readiness, collect_service_status, render_prometheus_metrics};
+use proxy_core::status::{
+    XrayStatus, collect_readiness, collect_service_status, render_prometheus_metrics,
+};
 use proxy_core::store::ScoredProxy;
+use proxy_core::xray_status::XrayStatusSnapshot;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::Ordering;
 
 use crate::AppState;
 
@@ -110,11 +112,6 @@ pub struct SimpleResponse {
 }
 
 #[derive(Serialize)]
-pub struct XrayStatusResponse {
-    pub active_nodes: usize,
-}
-
-#[derive(Serialize)]
 pub struct WarpStatusResponse {
     pub instances: Vec<WarpInstance>,
 }
@@ -177,16 +174,23 @@ fn uptime_sec(state: &AppState) -> u64 {
 }
 
 async fn service_status(state: &AppState) -> proxy_core::status::ServiceStatus {
-    let xray_active = state.xray_active_count.load(Ordering::Relaxed);
+    let snapshot = xray_snapshot(state).await;
     collect_service_status(
         &state.store,
         state.balancer.as_deref(),
         env!("CARGO_PKG_VERSION"),
         state.git_hash,
         uptime_sec(state),
-        xray_active,
+        XrayStatus::from_snapshot(&snapshot),
     )
     .await
+}
+
+async fn xray_snapshot(state: &AppState) -> XrayStatusSnapshot {
+    match &state.xray_status {
+        Some(registry) => registry.snapshot(true, 20).await,
+        None => XrayStatusSnapshot::disabled(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -433,10 +437,7 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn xray_status(State(state): State<AppState>) -> impl IntoResponse {
-    let active = state.xray_active_count.load(Ordering::Relaxed);
-    Json(XrayStatusResponse {
-        active_nodes: active,
-    })
+    Json(xray_snapshot(&state).await)
 }
 
 async fn warp_status(State(state): State<AppState>) -> impl IntoResponse {
@@ -508,6 +509,23 @@ mod tests {
         let resp = FetchersResponse { fetchers: vec![] };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, "{\"fetchers\":[]}");
+    }
+
+    #[test]
+    fn test_xray_status_snapshot_serialization() {
+        let resp = XrayStatusSnapshot {
+            enabled: true,
+            active_nodes: 2,
+            activating_nodes: 1,
+            failed_nodes: 1,
+            removed_nodes: 0,
+            total_nodes: 4,
+            recent_nodes: vec![],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"active_nodes\":2"));
+        assert!(json.contains("\"failed_nodes\":1"));
+        assert!(json.contains("\"recent_nodes\":[]"));
     }
 
     #[test]

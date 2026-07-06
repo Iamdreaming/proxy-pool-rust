@@ -35,7 +35,7 @@ crates/proxy-api/
 Contains, in order:
 
 1. **Query param structs** — `ProxyQuery`, `ProxyProtocolQuery`, `DeleteProxyPath`
-2. **Response structs** — `StatusResponse`, `PoolStatus`, `ProxiesResponse`, `SimpleResponse`, `XrayStatusResponse`, `RefreshResponse`
+2. **Response structs** — `StatusResponse`, `PoolStatus`, `ProxiesResponse`, `SimpleResponse`, `RefreshResponse`; xray lifecycle status serializes shared `proxy_core::xray_status::XrayStatusSnapshot`
 3. **Route builder** — `create_router() -> Router<AppState>`
 4. **Handlers** — one `async fn` per route
 5. **Tests** — `#[cfg(test)] mod tests` at the bottom

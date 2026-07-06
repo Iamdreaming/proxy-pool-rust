@@ -78,7 +78,8 @@ All components share the same `Arc<ProxyStore>`. Other shared state:
 | `WarpBalancer` | `Arc<WarpBalancer>` | Gateway selector, MCP, Health checker |
 | `GeoIPLookup` | `Arc<Mutex<GeoIPLookup>>` | Gateway selector, MCP |
 | `SchedulerHandle` | `Clone` (wraps `mpsc::Sender`) | API, MCP |
-| `xray_active_count` | `Arc<AtomicUsize>` | API, Xray sync |
+| `xray_active_count` | `Arc<AtomicUsize>` | Xray sync compatibility counter |
+| `xray_status` | `Option<XrayStatusRegistry>` | API, MCP, Xray sync lifecycle snapshots |
 
 ---
 

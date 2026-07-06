@@ -35,7 +35,7 @@
 
 当前已按用户要求暂不推进 `update-failure-hardening`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp` 与 `validator-observability-v2` 的 single-target diagnostics MVP：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 也能返回目标、耗时、HTTP 状态和出口信息。
 
-用户最新要求先不推进 `warp-ops-enhancement`，因此下一批从 xray 节点生命周期、订阅源运维和验证矩阵中继续推进。WARP 保留为后续能力扩展，不作为当前 Ready/Next 主线。
+用户最新要求先不推进 `warp-ops-enhancement`，因此下一批从 xray 节点生命周期、订阅源运维和验证矩阵中继续推进。WARP 保留为后续能力扩展，不作为当前 Ready/Next 主线。`xray-node-lifecycle-mvp` 已完成，下一项推荐推进 `subscription-source-ops-mvp`。
 
 **工作区注意事项**：
 
@@ -48,26 +48,7 @@
 
 ## Now
 
-### P1 — `xray-node-lifecycle-mvp`
-
-**当前状态**：已创建 Trellis PRD / design / implement，处于规划准备阶段；下一步按任务文档进入实现。
-
-**目标**：把 xray 节点从“只知道活跃数量”推进到可解释的生命周期状态，便于判断订阅节点是否成功进入 xray 出站池。
-
-**范围**：
-
-- [ ] 定义 xray 节点生命周期：`pending`、`activating`、`active`、`failed`、`removed`。
-- [ ] 记录每个节点最近一次激活失败原因和更新时间。
-- [ ] API/MCP 查询 active/failed xray 节点摘要。
-- [ ] `/api/status` 或现有 xray status 能暴露 active/failed 计数。
-- [ ] 增加核心状态转换和 API/MCP 输出测试。
-
-**验收标准**：
-
-- [ ] API/MCP 能查询 xray 节点生命周期摘要和失败原因。
-- [ ] 已有 xray happy path 行为保持兼容。
-- [ ] `cargo test --workspace --all-targets` 通过。
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+当前无 Now 任务；完成 `xray-node-lifecycle-mvp` 后，下一步从 Ready 选择 `subscription-source-ops-mvp`。
 
 ## Paused Closeout
 
@@ -108,6 +89,26 @@
 - [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
 
 ## Done
+
+### P1 — `xray-node-lifecycle-mvp`
+
+**目标**：把 xray 节点从“只知道活跃数量”推进到可解释的生命周期状态，便于判断订阅节点是否成功进入 xray 出站池。
+
+**当前状态**：已完成 MVP。`proxy-core` 现在提供共享 `XrayStatusRegistry` / `XrayStatusSnapshot`，`OutboundSync` 会记录 `pending`、`activating`、`active`、`failed`、`removed` 状态；xray inbound/outbound 或 ProxyStore 任一步失败时不再把节点伪装为 active，而是释放端口并把失败原因暴露给 API/MCP。
+
+**主要完成项**：
+
+- [x] 定义 xray 节点生命周期：`pending`、`activating`、`active`、`failed`、`removed`。
+- [x] 记录节点 tag、协议、远端 host/port、本地 SOCKS5 port、状态、失败原因和更新时间。
+- [x] `/api/xray/status` 返回 active/failed/removed 计数和最近节点状态。
+- [x] MCP 新增 `xray_status`，`service_status` 也返回 active/failed/removed 摘要。
+- [x] `/api/status` 和 Prometheus metrics 增加 xray failed 节点信息。
+- [x] Dashboard 首页展示 xray 活跃/失败计数。
+- [x] 同步 README、integration smoke 断言和 Trellis spec。
+- [x] `cargo fmt --all --check` 通过。
+- [x] `cargo test --workspace --all-targets` 通过。
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+- [x] `npm run build` 通过。
 
 ### P1 — `validator-observability-v2`
 
@@ -250,10 +251,6 @@
 
 ## Ready
 
-当前无额外 Ready 任务；完成 Now 后从 Next 中选择下一项细化 PRD。
-
-## Next
-
 ### P1 — `subscription-source-ops-mvp`
 
 **目标**：补齐订阅源运维 MVP，让订阅源抓取、解析、去重和失败原因可被 API/MCP 查询。
@@ -271,6 +268,8 @@
 - [ ] 手动刷新返回结构化成功/失败结果。
 - [ ] `cargo test --workspace --all-targets` 通过。
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+
+## Next
 
 ### P2 — `xray-config-dry-run-and-remove`
 
