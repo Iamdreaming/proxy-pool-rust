@@ -1,6 +1,10 @@
 // Proxy protocol types matching Rust backend
 export type Protocol = 'http' | 'https' | 'socks4' | 'socks5'
 export type Anonymity = 'transparent' | 'anonymous' | 'elite'
+export type DependencyState = 'ok' | 'error'
+export type FetcherRunStatus = 'never_run' | 'success' | 'empty' | 'error'
+export type RetentionDecision = 'keep' | 'below_min_score' | 'hard_failure_evict'
+export type RouteExit = 'direct' | 'free_pool' | 'warp' | 'xray' | 'no_proxy'
 
 export interface Proxy {
   host: string
@@ -44,13 +48,17 @@ export interface PoolStatus {
 }
 
 export interface DependencyStatus {
-  status: 'ok' | 'error'
+  status: DependencyState
   message?: string
 }
 
 export interface WarpStatus {
   configured: number
   healthy: number
+}
+
+export interface WarpInstancesResponse {
+  instances: WarpInstance[]
 }
 
 export interface XrayStatus {
@@ -73,8 +81,110 @@ export interface ProxiesResponse {
   proxies: Proxy[]
 }
 
+export interface ScoreComponent {
+  normalized: number
+  weight: number
+  contribution: number
+}
+
+export interface LatencyScoreComponent extends ScoreComponent {
+  latency_ms: number | null
+}
+
+export interface SuccessScoreComponent extends ScoreComponent {
+  success_count: number
+  fail_count: number
+  success_rate: number
+}
+
+export interface AnonymityScoreComponent extends ScoreComponent {
+  anonymity: Anonymity | null
+}
+
+export interface ScoreExplanation {
+  score: number
+  min_score: number
+  latency: LatencyScoreComponent
+  success: SuccessScoreComponent
+  anonymity: AnonymityScoreComponent
+  retention: RetentionDecision
+}
+
+export interface ScoredProxy {
+  proxy: Proxy
+  score: ScoreExplanation
+}
+
+export interface ScoredProxiesResponse {
+  protocol: string
+  count: number
+  proxies: ScoredProxy[]
+}
+
 export interface RouteGroup {
   [group: string]: string[]
+}
+
+export interface RouteCandidate {
+  exit: RouteExit
+  priority: number
+  source: string
+  available: boolean
+  reason?: string
+  detail?: string
+}
+
+export interface RouteUnavailable {
+  exit: RouteExit
+  reason: string
+}
+
+export interface RouteGeoIpDecision {
+  country: string
+  country_name: string
+  overseas: boolean
+}
+
+export interface RouteDecision {
+  host: string
+  protocol: string
+  matched_group?: string
+  matched_rule?: string
+  matched_reason: string
+  geoip?: RouteGeoIpDecision
+  candidates: RouteCandidate[]
+  selected: RouteExit
+  unavailable: RouteUnavailable[]
+}
+
+export interface RouteTestResponse {
+  status: string
+  decision: RouteDecision | null
+}
+
+export interface FetcherRunReport {
+  id: string
+  name: string
+  status: FetcherRunStatus
+  fetched: number
+  parsed: number
+  error?: string
+  started_at?: string
+  finished_at?: string
+  duration_ms?: number
+}
+
+export interface FetchersResponse {
+  fetchers: FetcherRunReport[]
+}
+
+export interface RefreshResponse {
+  status: string
+  fetched: number
+  validated: number
+  stored: number
+  errors: number
+  fetchers: FetcherRunReport[]
 }
 
 export interface McpTool {

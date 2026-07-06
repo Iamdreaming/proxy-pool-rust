@@ -1,83 +1,110 @@
 <template>
-  <n-space vertical :size="24">
-    <!-- Top stats cards -->
-    <n-grid :cols="4" :x-gap="16" :y-gap="16">
+  <n-space vertical :size="16">
+    <n-grid :cols="4" :x-gap="16" :y-gap="16" responsive="screen">
       <n-gi>
         <n-card>
-          <n-statistic label="HTTP 代理" :value="pool.status.http">
-            <template #prefix>🌐</template>
+          <n-statistic label="代理总数" :value="status?.pool.total ?? pool.totalProxies()" />
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card>
+          <n-statistic label="Redis" :value="status?.redis.status ?? 'unknown'">
+            <template #suffix>
+              <n-tag :type="dependencyTag(status?.redis.status)" size="small">
+                {{ status?.redis.status === 'ok' ? 'ready' : 'check' }}
+              </n-tag>
+            </template>
           </n-statistic>
         </n-card>
       </n-gi>
       <n-gi>
         <n-card>
-          <n-statistic label="HTTPS 代理" :value="pool.status.https">
-            <template #prefix>🔒</template>
-          </n-statistic>
+          <n-statistic label="WARP 健康" :value="`${status?.warp.healthy ?? 0}/${status?.warp.configured ?? 0}`" />
         </n-card>
       </n-gi>
       <n-gi>
         <n-card>
-          <n-statistic label="SOCKS5 代理" :value="pool.status.socks5">
-            <template #prefix>🧦</template>
-          </n-statistic>
-        </n-card>
-      </n-gi>
-      <n-gi>
-        <n-card>
-          <n-statistic label="代理总数" :value="total">
-            <template #prefix>📊</template>
-          </n-statistic>
+          <n-statistic label="xray 活跃节点" :value="status?.xray.active_nodes ?? 0" />
         </n-card>
       </n-gi>
     </n-grid>
 
-    <!-- Protocol distribution + Quick actions -->
-    <n-grid :cols="2" :x-gap="16">
+    <n-grid :cols="2" :x-gap="16" :y-gap="16" responsive="screen">
+      <n-gi>
+        <n-card title="服务状态">
+          <template #header-extra>
+            <n-button size="small" @click="loadOverview" :loading="loading">刷新</n-button>
+          </template>
+          <n-descriptions :column="1" bordered size="small">
+            <n-descriptions-item label="版本">{{ status?.version ?? '-' }}</n-descriptions-item>
+            <n-descriptions-item label="Git Hash">{{ shortHash(status?.git_hash) }}</n-descriptions-item>
+            <n-descriptions-item label="运行时间">{{ formatUptime(status?.uptime_sec) }}</n-descriptions-item>
+            <n-descriptions-item label="Readyz">
+              <n-tag :type="dependencyTag(readiness?.status)" size="small">
+                {{ readiness?.status ?? 'unknown' }}
+              </n-tag>
+              <span v-if="readiness?.message" class="muted">{{ readiness.message }}</span>
+            </n-descriptions-item>
+          </n-descriptions>
+          <n-alert v-if="overviewError" type="error" :bordered="false" class="section-gap">
+            {{ overviewError }}
+          </n-alert>
+        </n-card>
+      </n-gi>
+
       <n-gi>
         <n-card title="协议分布">
           <n-space vertical>
-            <div v-for="item in protocolData" :key="item.label" style="display: flex; align-items: center; gap: 12px">
-              <span style="width: 80px; text-align: right; color: #aaa">{{ item.label }}</span>
+            <div v-for="item in protocolData" :key="item.label" class="distribution-row">
+              <span class="distribution-label">{{ item.label }}</span>
               <n-progress
                 type="line"
                 :percentage="item.pct"
                 :color="item.color"
-                :height="18"
-                style="flex: 1"
+                :height="16"
+                class="distribution-bar"
               />
-              <span style="width: 60px; color: #ccc">{{ item.value }}</span>
+              <span class="distribution-value">{{ item.value }}</span>
             </div>
-          </n-space>
-        </n-card>
-      </n-gi>
-      <n-gi>
-        <n-card title="快捷操作">
-          <n-space vertical :size="12">
-            <n-button type="primary" block @click="handleRefresh" :loading="refreshing">
-              🔄 刷新代理池
-            </n-button>
-            <n-button block @click="$router.push('/proxies')">
-              🌐 查看代理列表
-            </n-button>
-            <n-button block @click="$router.push('/mcp')">
-              🤖 MCP 调试面板
-            </n-button>
-            <n-button block @click="$router.push('/warp')">
-              ☁️ WARP 管理
-            </n-button>
           </n-space>
         </n-card>
       </n-gi>
     </n-grid>
 
-    <!-- Recent proxies table -->
-    <n-card title="最近验证的代理">
+    <n-grid :cols="2" :x-gap="16" :y-gap="16" responsive="screen">
+      <n-gi>
+        <n-card title="快捷操作">
+          <n-space>
+            <n-button type="primary" @click="handleRefresh" :loading="refreshing">刷新代理池</n-button>
+            <n-button @click="$router.push('/fetchers')">抓取源状态</n-button>
+            <n-button @click="$router.push('/routes')">路由 Dry-run</n-button>
+            <n-button @click="$router.push('/proxies')">代理列表</n-button>
+          </n-space>
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card title="依赖说明">
+          <n-space vertical :size="8">
+            <div>
+              <n-tag :type="dependencyTag(status?.redis.status)" size="small">redis</n-tag>
+              <span class="muted">{{ status?.redis.message || '代理池存储依赖' }}</span>
+            </div>
+            <div>
+              <n-tag type="info" size="small">readyz</n-tag>
+              <span class="muted">用于判断服务依赖是否可用，区别于进程存活。</span>
+            </div>
+          </n-space>
+        </n-card>
+      </n-gi>
+    </n-grid>
+
+    <n-card title="最近 HTTP 代理">
       <n-data-table
         :columns="recentColumns"
         :data="recentProxies"
         :bordered="false"
         size="small"
+        :loading="pool.loading"
         :pagination="{ pageSize: 10 }"
       />
     </n-card>
@@ -86,24 +113,28 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
-import { NTag, NButton, useMessage } from 'naive-ui'
+import { NTag, useMessage } from 'naive-ui'
+import { fetchReadiness, fetchStatus, refreshPool } from '@/api'
 import { usePoolStore } from '@/stores/pool'
-import { refreshPool } from '@/api'
-import type { Proxy } from '@/types'
+import type { DependencyState, DependencyStatus, Proxy, StatusResponse } from '@/types'
 
 const pool = usePoolStore()
 const message = useMessage()
+const loading = ref(false)
 const refreshing = ref(false)
-const recentProxies = ref<Proxy[]>([])
+const status = ref<StatusResponse | null>(null)
+const readiness = ref<DependencyStatus | null>(null)
+const overviewError = ref('')
 
-const total = computed(() => pool.totalProxies())
+const recentProxies = computed(() => pool.proxies.slice(0, 20))
 
 const protocolData = computed(() => {
-  const t = total.value || 1
+  const counts = status.value?.pool ?? pool.status
+  const total = counts.total || counts.http + counts.https + counts.socks5 || 1
   return [
-    { label: 'HTTP', value: pool.status.http, pct: Math.round((pool.status.http / t) * 100), color: '#63e2b7' },
-    { label: 'HTTPS', value: pool.status.https, pct: Math.round((pool.status.https / t) * 100), color: '#f2c97d' },
-    { label: 'SOCKS5', value: pool.status.socks5, pct: Math.round((pool.status.socks5 / t) * 100), color: '#70c0e0' },
+    { label: 'HTTP', value: counts.http, pct: Math.round((counts.http / total) * 100), color: '#63e2b7' },
+    { label: 'HTTPS', value: counts.https, pct: Math.round((counts.https / total) * 100), color: '#f2c97d' },
+    { label: 'SOCKS5', value: counts.socks5, pct: Math.round((counts.socks5 / total) * 100), color: '#70c0e0' },
   ]
 })
 
@@ -111,41 +142,93 @@ const recentColumns = [
   { title: '地址', key: 'host', width: 150 },
   { title: '端口', key: 'port', width: 80 },
   {
-    title: '协议', key: 'protocol', width: 80,
+    title: '协议',
+    key: 'protocol',
+    width: 80,
     render: (row: Proxy) => h(NTag, { size: 'small', type: row.protocol === 'socks5' ? 'info' : 'success' }, { default: () => row.protocol }),
   },
   {
-    title: '延迟', key: 'latency_ms', width: 100,
+    title: '延迟',
+    key: 'latency_ms',
+    width: 100,
     render: (row: Proxy) => row.latency_ms ? `${row.latency_ms}ms` : '-',
   },
   {
-    title: '匿名度', key: 'anonymity', width: 100,
+    title: '匿名度',
+    key: 'anonymity',
+    width: 100,
     render: (row: Proxy) => {
-      const typeMap: Record<string, any> = { elite: 'success', anonymous: 'warning', transparent: 'error' }
+      const typeMap: Record<string, 'success' | 'warning' | 'error'> = {
+        elite: 'success',
+        anonymous: 'warning',
+        transparent: 'error',
+      }
       return row.anonymity
         ? h(NTag, { size: 'small', type: typeMap[row.anonymity] || 'default' }, { default: () => row.anonymity })
         : '-'
     },
   },
   {
-    title: '国家', key: 'country', width: 80,
+    title: '国家',
+    key: 'country',
+    width: 100,
     render: (row: Proxy) => row.country_name || row.country || '-',
   },
   {
-    title: '成功率', key: 'success_rate', width: 100,
-    render: (row: Proxy) => {
-      const total = row.success_count + row.fail_count
-      return total > 0 ? `${Math.round((row.success_count / total) * 100)}%` : '-'
-    },
+    title: '成功/失败',
+    key: 'success_rate',
+    width: 100,
+    render: (row: Proxy) => `${row.success_count}/${row.fail_count}`,
   },
 ]
+
+function dependencyTag(state?: DependencyState): 'success' | 'error' | 'warning' {
+  if (state === 'ok') return 'success'
+  if (state === 'error') return 'error'
+  return 'warning'
+}
+
+function shortHash(hash?: string): string {
+  if (!hash) return '-'
+  return hash.length > 12 ? hash.slice(0, 12) : hash
+}
+
+function formatUptime(seconds?: number): string {
+  if (seconds === undefined) return '-'
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  return `${minutes}m`
+}
+
+async function loadOverview() {
+  loading.value = true
+  overviewError.value = ''
+  try {
+    const [statusResp, readyResp] = await Promise.all([
+      fetchStatus(),
+      fetchReadiness(),
+      pool.loadStatus(),
+      pool.loadProxies('http', 20),
+    ])
+    status.value = statusResp
+    readiness.value = readyResp
+  } catch (e: any) {
+    overviewError.value = e?.message || '加载服务状态失败'
+    message.error('加载服务状态失败')
+  } finally {
+    loading.value = false
+  }
+}
 
 async function handleRefresh() {
   refreshing.value = true
   try {
     await refreshPool()
     message.success('代理池刷新已触发')
-    setTimeout(() => pool.loadStatus(), 2000)
+    await loadOverview()
   } catch {
     message.error('刷新失败')
   } finally {
@@ -153,9 +236,39 @@ async function handleRefresh() {
   }
 }
 
-onMounted(async () => {
-  await pool.loadStatus()
-  await pool.loadProxies('http', 20)
-  recentProxies.value = pool.proxies.slice(0, 20)
+onMounted(() => {
+  loadOverview()
 })
 </script>
+
+<style scoped>
+.distribution-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.distribution-label {
+  width: 72px;
+  text-align: right;
+  color: #8f8f9d;
+}
+
+.distribution-bar {
+  flex: 1;
+}
+
+.distribution-value {
+  width: 52px;
+  color: #c7c7d4;
+}
+
+.muted {
+  margin-left: 8px;
+  color: #8f8f9d;
+}
+
+.section-gap {
+  margin-top: 12px;
+}
+</style>

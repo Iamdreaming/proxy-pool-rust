@@ -36,7 +36,7 @@
     <n-card title="操作">
       <n-space>
         <n-button type="primary" @click="fetchWarpStatus">🔄 刷新状态</n-button>
-        <n-button @click="message.info('WARP 优选功能开发中')">⚡ 触发优选</n-button>
+        <n-button disabled>优选暂无 Web API</n-button>
       </n-space>
     </n-card>
   </n-space>
@@ -45,6 +45,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
 import { NTag, NButton, useMessage } from 'naive-ui'
+import { fetchWarpInstances } from '@/api'
 import type { WarpInstance } from '@/types'
 
 const message = useMessage()
@@ -81,9 +82,8 @@ const columns = [
 
 async function fetchWarpStatus() {
   try {
-    const resp = await fetch('/api/warp')
-    const data = await resp.json()
-    instances.value = data.instances || []
+    const data = await fetchWarpInstances()
+    instances.value = data.instances
   } catch (e) {
     message.error('获取 WARP 状态失败')
   }

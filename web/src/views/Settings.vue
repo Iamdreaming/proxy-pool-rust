@@ -1,74 +1,27 @@
 <template>
   <n-space vertical :size="16">
     <n-card title="系统设置">
-      <n-alert type="info" :bordered="false" style="margin-bottom: 16px">
-        修改配置后需要重启服务才能生效。配置文件路径：config/settings.yaml
-      </n-alert>
+      <n-empty description="Web 配置查看与编辑 API 暂未接入">
+        <template #extra>
+          <n-alert type="info" :bordered="false">
+            当前服务配置仍以 config/settings.yaml 为准。需要变更监听端口、验证目标、抓取间隔或外部依赖时，请通过部署配置更新并重启服务。
+          </n-alert>
+        </template>
+      </n-empty>
+    </n-card>
 
-      <n-form label-placement="left" label-width="160" disabled>
-        <n-h4>网关</n-h4>
-        <n-form-item label="监听地址">
-          <n-input :value="settings.gateway?.listen_host || '0.0.0.0'" />
-        </n-form-item>
-        <n-form-item label="监听端口">
-          <n-input :value="String(settings.gateway?.listen_port || 9080)" />
-        </n-form-item>
-
-        <n-h4>API</n-h4>
-        <n-form-item label="监听地址">
-          <n-input :value="settings.api?.listen_host || '0.0.0.0'" />
-        </n-form-item>
-        <n-form-item label="监听端口">
-          <n-input :value="String(settings.api?.listen_port || 8000)" />
-        </n-form-item>
-
-        <n-h4>MCP</n-h4>
-        <n-form-item label="传输方式">
-          <n-input :value="settings.mcp?.transport || 'both'" />
-        </n-form-item>
-        <n-form-item label="HTTP 端口">
-          <n-input :value="String(settings.mcp?.http_port || 9000)" />
-        </n-form-item>
-
-        <n-h4>代理池</n-h4>
-        <n-form-item label="抓取间隔(秒)">
-          <n-input :value="String(settings.pool?.fetch_interval_sec || 300)" />
-        </n-form-item>
-        <n-form-item label="验证间隔(秒)">
-          <n-input :value="String(settings.pool?.validate_interval_sec || 60)" />
-        </n-form-item>
-        <n-form-item label="验证并发数">
-          <n-input :value="String(settings.pool?.validate_concurrency || 100)" />
-        </n-form-item>
-        <n-form-item label="验证超时(秒)">
-          <n-input :value="String(settings.pool?.validate_timeout_sec || 10)" />
-        </n-form-item>
-        <n-form-item label="验证目标 URL">
-          <n-input :value="settings.pool?.validate_target_url || 'https://httpbin.org/ip'" />
-        </n-form-item>
-
-        <n-h4>Redis</n-h4>
-        <n-form-item label="连接 URL">
-          <n-input :value="settings.redis?.url || 'redis://localhost:6379/0'" />
-        </n-form-item>
-      </n-form>
+    <n-card title="当前可通过 Web 查看">
+      <n-list>
+        <n-list-item>
+          <n-thing title="服务状态">概览页展示版本、git hash、运行时间、Redis、WARP、xray 和代理池摘要。</n-thing>
+        </n-list-item>
+        <n-list-item>
+          <n-thing title="抓取源">抓取源页面展示 fetcher 状态，并支持单源刷新。</n-thing>
+        </n-list-item>
+        <n-list-item>
+          <n-thing title="路由诊断">路由页面支持针对 host/protocol 的 dry-run。</n-thing>
+        </n-list-item>
+      </n-list>
     </n-card>
   </n-space>
 </template>
-
-<script setup lang="ts">
-import { ref, onMounted } from 'vue'
-
-const settings = ref<Record<string, any>>({})
-
-onMounted(async () => {
-  try {
-    const resp = await fetch('/api/settings')
-    if (resp.ok) {
-      settings.value = await resp.json()
-    }
-  } catch {
-    // Settings endpoint not yet implemented — show defaults
-  }
-})
-</script>

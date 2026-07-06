@@ -49,6 +49,23 @@ For each boundary:
 - What is the exact output format?
 - What errors can occur?
 
+### Step 4: Verify Operator UI Claims
+
+Operator-facing UI is a cross-layer contract too. Before showing a control as
+actionable, verify that the backend route, command, or MCP transport actually
+exists.
+
+- If a REST endpoint exists, put its typed helper in the frontend API layer and
+  call that helper from views.
+- If a capability only exists through MCP transport, label it as
+  transport-required instead of pretending a REST call succeeded.
+- If no backend capability exists yet, render a truthful unavailable state and
+  point operators to the nearest real status or diagnostic surface.
+
+Do not display simulated logs, fake config defaults, or save/delete buttons for
+routes that are not implemented. These look harmless in a dashboard, but they
+teach operators to trust data that has no source of truth.
+
 ---
 
 ## Common Cross-Layer Mistakes

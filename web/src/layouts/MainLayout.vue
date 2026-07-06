@@ -66,9 +66,10 @@ const currentPageTitle = computed(() => {
   const titles: Record<string, string> = {
     dashboard: '概览',
     proxies: '代理列表',
+    fetchers: '抓取源',
     warp: 'WARP 管理',
-    routes: '路由规则',
-    logs: '实时日志',
+    routes: '路由诊断',
+    logs: '日志入口',
     mcp: 'MCP 调试',
     settings: '系统设置',
   }
@@ -82,9 +83,10 @@ function renderIcon(emoji: string) {
 const menuOptions = [
   { label: '概览', key: 'dashboard', icon: renderIcon('📊') },
   { label: '代理列表', key: 'proxies', icon: renderIcon('🌐') },
+  { label: '抓取源', key: 'fetchers', icon: renderIcon('🧭') },
   { label: 'WARP 管理', key: 'warp', icon: renderIcon('☁️') },
-  { label: '路由规则', key: 'routes', icon: renderIcon('🔀') },
-  { label: '实时日志', key: 'logs', icon: renderIcon('📋') },
+  { label: '路由诊断', key: 'routes', icon: renderIcon('🔀') },
+  { label: '日志入口', key: 'logs', icon: renderIcon('📋') },
   { label: 'MCP 调试', key: 'mcp', icon: renderIcon('🤖') },
   { label: '系统设置', key: 'settings', icon: renderIcon('⚙️') },
 ]

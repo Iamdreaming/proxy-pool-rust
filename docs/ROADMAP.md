@@ -33,35 +33,39 @@
 
 ## Current Planning Decision
 
-当前已按用户要求暂停继续推进 `gateway-route-debugging` 的发布后收尾，并完成 Roadmap / Trellis 状态清理、无 SSH dev 验证规范和代理评分保留策略。下一项正式推进 `validator-observability-v2`，继续提升单个代理验证结果的出口、耗时和多目标诊断能力。
+当前已按用户要求暂不推进 `validator-observability-v2`，并已完成 `web-dashboard-real-ops-mvp`：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态。下一项 Now 改为 `update-failure-hardening`，补齐自更新失败路径的结构化错误和 no-SSH 验证。
 
 **工作区注意事项**：
 
 - 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`stash@{0}: wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
 - 当前 Trellis 里 `gateway-route-debugging` 和 `fetcher-validator-quality` 已从 `in_progress` 改为 `paused`，当前会话任务指针已清空。
+- `validator-observability-v2` 曾创建 planning 任务目录但未进入实现；按用户最新要求暂不作为当前任务推进。
 - `.codex/config.toml` 属于非本任务改动，不纳入任何 roadmap 提交或后续功能提交。
 - 按用户要求，不直接 SSH 到 dev 地址；dev 验证默认走 HTTP、MCP、GitHub Actions、容器已有自更新入口和公开状态接口。
 
 ## Now
 
-### P1 — `validator-observability-v2`
+### P0 — `update-failure-hardening`
 
-**目标**：进一步提升 `check_proxy` 和批量验证结果的解释能力，说明代理“能连哪里、慢在哪里、出口是谁”。
+**目标**：在不影响正常发布节奏的前提下，补齐自更新失败路径的故障注入验证。
 
-**为什么先做**：评分解释已经能说明“为什么保留或清理”；下一步需要把验证本身拆得更细，让评分来源更可信，也为后续 Dashboard 展示质量历史打基础。
+**为什么先做**：发布主链路已经打通，正常更新可用；现在需要证明失败时不会把旧服务带崩，并让 MCP 返回可诊断的结构化错误。
 
 **候选功能**：
 
-- [ ] 验证结果记录 TCP 连接时间和请求耗时。
-- [ ] 验证结果记录出口 IP、国家/地区。
-- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
-- [ ] MCP `check_proxy` 返回多目标检查结果和稳定错误分类。
+- [ ] 错误镜像 tag / digest 时，`update_service` 返回结构化错误，旧容器继续运行。
+- [ ] 错误 Watchtower token 时，`update_service` 返回结构化错误，旧容器继续运行。
+- [ ] Watchtower HTTP endpoint 不可达时，`update_service` 返回结构化错误，旧容器继续运行。
+- [ ] 形成一份可重复执行的 dev-only 验证步骤，避免误操作生产配置。
+- [ ] 必要时增加自动化集成测试或最小脚本化检查。
+- [ ] 验证方式仍遵循 no-SSH 规则，只使用 GitHub Actions、MCP、HTTP 状态接口和安全的 dev-only 配置入口。
 
 **验收标准**：
 
-- [ ] `ProxyCheckResult` 或等价结构能表达分阶段耗时和出口信息。
-- [ ] MCP `check_proxy` 至少能返回默认目标的更细粒度诊断。
-- [ ] 多目标验证如范围较大，可先规划并明确首个实现切片。
+- [ ] `update_service` 对配置错误、拉取失败和 Watchtower 调用失败返回结构化 JSON。
+- [ ] 失败场景验证能证明旧容器仍在运行，且验证路径不依赖直接 SSH。
+- [ ] 失败注入步骤写入文档或自动化脚本，默认不会误碰生产配置。
+- [ ] 相关单元/集成测试通过。
 - [ ] `cargo test --workspace --all-targets` 通过。
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
@@ -89,6 +93,23 @@
 - [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
 
 ## Done
+
+### P2 — `web-dashboard-real-ops-mvp`
+
+**目标**：把 Web Dashboard 从演示/占位面板推进为真实可用的运维入口。
+
+**当前状态**：已完成 MVP 切片。Dashboard、代理列表、路由诊断、抓取源、MCP Debug、日志入口和设置页现在使用真实 API 数据，或在后端能力不存在时显示明确不可用状态；不再用模拟日志或假默认配置冒充真实状态。
+
+**主要完成项**：
+
+- [x] 首页总览接入真实 `/api/status` 和 `/api/readyz`，展示版本、git hash、运行时间、Redis、WARP、xray 和代理池摘要。
+- [x] Proxies 页面接入 `/api/proxies/scores`，展示评分、保留决策和评分组成。
+- [x] Routes 页面移除不存在的规则编辑器，改为 `/api/routes/test` dry-run 诊断。
+- [x] 新增 Fetchers 页面，对接 `/api/fetchers` 和 `/api/fetchers/{id}/refresh`。
+- [x] MCP Debug 工具列表同步后端工具；REST 等效工具走真实 API，MCP-only 工具显示 transport-required。
+- [x] Logs 页面移除模拟日志；Settings 页面移除不存在的 `/api/settings` 假默认配置。
+- [x] WARP 页面改用 typed API helper，并禁用尚无 Web API 的优选动作。
+- [x] `npm run build` 通过。
 
 ### P1 — `score-retention-policy`
 
@@ -173,21 +194,50 @@
 
 ## Ready
 
-当前无已细化且等待排队的任务；下一批从 Next 中细化。
+当前无额外 Ready 任务；先完成 Now，再从 Next 中选择一项细化 PRD。
 
 ## Next
 
-### P2 — `web-dashboard-real-ops-mvp`
+### P1 — `fetcher-source-circuit-breaker-mvp`
 
-**目标**：把 Web Dashboard 从演示面板推进为真实可用的运维入口。
+**目标**：把抓取源从“只记录失败”推进到“连续失败后自动降噪，恢复时可探测”，降低坏源对代理池刷新质量的影响。
 
 **候选功能**：
 
-- [ ] 首页总览使用真实 `/api/status`、`/api/metrics` 或新增摘要接口。
-- [ ] MCP Debug 工具列表同步后端真实工具，包括 `service_status`、`fetcher_status`、`refresh_fetcher`、`update_service` 和后续 `route_test`。
-- [ ] Logs 页面移除模拟数据，改为真实 API / SSE / WebSocket 方案，或在后端能力未完成前隐藏该入口。
-- [ ] 抓取源页面展示源状态、手动刷新、错误历史。
-- [ ] 路由调试页面对接 `route_test`。
+- [ ] 为每个 fetcher 维护连续失败次数、暂停状态、下次探测时间和最近错误。
+- [ ] 连续失败超过阈值后暂停该源，冷却期内跳过自动刷新。
+- [ ] 冷却期结束进入 half-open 探测，成功后关闭熔断，失败后延长冷却。
+- [ ] `fetcher_status` 和 `/api/fetchers` 展示熔断状态、失败原因和下次探测时间。
+- [ ] `refresh_fetcher` 对暂停源支持显式手动探测，并返回结构化结果。
+- [ ] 不恢复或混入当前隔离的 `stash@{0}`，从当前 main 上重新实现最小可验收切片。
+
+**验收标准**：
+
+- [ ] 单元测试覆盖 closed / open / half-open 状态转换。
+- [ ] API/MCP 返回结构包含源级熔断状态。
+- [ ] `cargo test --workspace --all-targets` 通过。
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+
+### P1 — `validator-observability-v2`
+
+**目标**：进一步提升 `check_proxy` 和批量验证结果的解释能力，说明代理“能连哪里、慢在哪里、出口是谁”。
+
+**当前决策**：按用户最新要求暂不作为 Now。等 Dashboard 和更直接的运维入口完成后，再回到该任务。
+
+**候选功能**：
+
+- [ ] 验证结果记录 TCP 连接时间和请求耗时。
+- [ ] 验证结果记录出口 IP、国家/地区。
+- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
+- [ ] MCP `check_proxy` 返回多目标检查结果和稳定错误分类。
+
+**验收标准**：
+
+- [ ] `ProxyCheckResult` 或等价结构能表达分阶段耗时和出口信息。
+- [ ] MCP `check_proxy` 至少能返回默认目标的更细粒度诊断。
+- [ ] 多目标验证如范围较大，可先规划并明确首个实现切片。
+- [ ] `cargo test --workspace --all-targets` 通过。
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 
 ## Later
 
@@ -209,21 +259,8 @@
 
 **暂缓 TODO**：
 
-- [ ] 增加源级熔断：连续失败后暂停，恢复时半开探测。
-- [ ] 验证结果记录 TCP 连接时间、请求耗时、出口 IP、国家/地区。
-- [ ] 验证目标支持多 URL：默认目标、国内目标、国外目标、Cloudflare trace。
-
-### P0 — `update-failure-hardening`
-
-**目标**：在不影响正常发布节奏的前提下，补齐自更新失败路径的故障注入验证。
-
-**候选功能**：
-
-- [ ] 错误镜像 tag / digest 时，`update_service` 返回结构化错误，旧容器继续运行。
-- [ ] 错误 Watchtower token 时，`update_service` 返回结构化错误，旧容器继续运行。
-- [ ] Watchtower HTTP endpoint 不可达时，`update_service` 返回结构化错误，旧容器继续运行。
-- [ ] 形成一份可重复执行的 dev-only 验证步骤，避免误操作生产配置。
-- [ ] 必要时增加自动化集成测试或最小脚本化检查。
+- [ ] 源级熔断已拆为 `fetcher-source-circuit-breaker-mvp`。
+- [ ] 验证结果可观测性已拆为 `validator-observability-v2`。
 
 ### P3 — `warp-ops-enhancement`
 
@@ -271,13 +308,12 @@
 
 建议按以下顺序创建和推进任务：
 
-1. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
-2. `web-dashboard-real-ops-mvp` — 管理面板接入真实运维数据。
-3. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
-4. `fetcher-validator-quality` — 用户确认后恢复暂缓的源级熔断等内部增强。
-5. `update-failure-hardening` — 仅在允许故障注入 dev 配置且不需要 SSH 时执行。
-6. `warp-ops-enhancement` — WARP 运维增强。
-7. `xray-subscription-ops` — xray 和订阅源管理。
+1. `update-failure-hardening` — 自更新失败路径结构化错误和 no-SSH 验证。
+2. `fetcher-source-circuit-breaker-mvp` — 抓取源级熔断和 half-open 探测。
+3. `validator-observability-v2` — 多目标验证、出口 IP 和耗时拆分。
+4. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
+5. `warp-ops-enhancement` — WARP 运维增强。
+6. `xray-subscription-ops` — xray 和订阅源管理。
 
 ## 任务 PRD 模板
 
