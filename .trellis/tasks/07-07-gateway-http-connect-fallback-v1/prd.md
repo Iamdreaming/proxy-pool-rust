@@ -65,7 +65,15 @@ in-process balancer. This lets later business requests skip WARP until the
 business-failure cooldown expires and the regular health checker marks it
 healthy again.
 
-### R5: Focused regression coverage
+### R5: Runtime pool proxy failure cooldown
+
+When a concrete `Upstream::Proxy` attempt fails in the gateway path, the
+selector should put that proxy key into a short process-local cooldown. This
+must not write Redis, delete proxies, or change persistent pool scores; it only
+prevents live business traffic from repeatedly selecting recently failed pool
+proxies.
+
+### R6: Focused regression coverage
 
 Add local tests proving:
 
@@ -76,8 +84,10 @@ Add local tests proving:
   exit label.
 - WARP balancer failure marking removes a failed instance from healthy
   rotation.
+- Pool proxy cooldown treats active, expired, and missing cooldown entries
+  correctly.
 
-### R6: No host-level live mutation during implementation
+### R7: No host-level live mutation during implementation
 
 Implementation and validation must not SSH, refresh pools, delete proxies, or
 mutate dev state. Live checks, if run after push/update, should use public
@@ -94,6 +104,7 @@ gateway traffic is allowed because it is the runtime behavior being delivered.
       replacement.
 - [x] Local core tests cover WARP failure feedback removing a failed instance
       from healthy rotation.
+- [x] Local core tests cover pool proxy cooldown active/expired/missing cases.
 - [x] `cargo test -p proxy-gateway` passes.
 - [x] Relevant route/gateway/core tests pass.
 - [x] No task changes are made to `.codex/config.toml`.

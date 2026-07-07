@@ -6,9 +6,11 @@ use crate::router::{RouteMatch, Router};
 use crate::store::ProxyStore;
 use crate::warp::balancer::WarpBalancer;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::Mutex;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, RwLock};
 
 /// Runtime upstream selected for a gateway request.
 #[derive(Debug, Clone)]
@@ -227,6 +229,7 @@ impl GatewayAttemptStatus {
 
 const METRIC_CELL_COUNT: usize = 3 * 5 * 3;
 const FREE_POOL_CANDIDATE_LIMIT: usize = 4;
+const POOL_PROXY_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 
 /// Process-local gateway route metrics.
 pub struct GatewayRouteMetrics {
@@ -301,6 +304,7 @@ pub struct UpstreamSelector {
     router: Option<Arc<Router>>,
     geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     metrics: Arc<GatewayRouteMetrics>,
+    pool_proxy_failed_until: Arc<RwLock<HashMap<String, Instant>>>,
 }
 
 impl UpstreamSelector {
@@ -334,6 +338,7 @@ impl UpstreamSelector {
             router,
             geoip,
             metrics,
+            pool_proxy_failed_until: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -344,19 +349,48 @@ impl UpstreamSelector {
 
     /// Feed concrete gateway attempt outcomes back into route health.
     pub async fn record_upstream_attempt(&self, upstream: &Upstream, status: GatewayAttemptStatus) {
-        if status != GatewayAttemptStatus::Failure {
-            return;
-        }
-
-        if let Upstream::Warp { id, socks5_port } = upstream
-            && let Some(balancer) = &self.balancer
-        {
-            balancer.mark_failed(*id).await;
-            tracing::warn!(
-                warp_id = *id,
-                socks5_port = *socks5_port,
-                "gateway marked WARP instance unhealthy after connection failure"
-            );
+        match (upstream, status) {
+            (Upstream::Warp { id, socks5_port }, GatewayAttemptStatus::Failure) => {
+                if let Some(balancer) = &self.balancer {
+                    balancer.mark_failed(*id).await;
+                    tracing::warn!(
+                        warp_id = *id,
+                        socks5_port = *socks5_port,
+                        "gateway marked WARP instance unhealthy after connection failure"
+                    );
+                }
+            }
+            (Upstream::Proxy(proxy), GatewayAttemptStatus::Failure) => {
+                let key = proxy.dedup_key();
+                self.pool_proxy_failed_until
+                    .write()
+                    .await
+                    .insert(key.clone(), Instant::now() + POOL_PROXY_FAILURE_COOLDOWN);
+                tracing::debug!(
+                    proxy = %key,
+                    "gateway put pool proxy into failure cooldown"
+                );
+            }
+            (Upstream::Proxy(proxy), GatewayAttemptStatus::Success) => {
+                let key = proxy.dedup_key();
+                self.pool_proxy_failed_until.write().await.remove(&key);
+            }
+            (
+                Upstream::Direct
+                | Upstream::Xray { .. }
+                | Upstream::WarpChain { .. }
+                | Upstream::NoProxy,
+                GatewayAttemptStatus::Failure,
+            ) => {}
+            (
+                Upstream::Direct
+                | Upstream::Xray { .. }
+                | Upstream::WarpChain { .. }
+                | Upstream::NoProxy
+                | Upstream::Warp { .. },
+                GatewayAttemptStatus::Success | GatewayAttemptStatus::Unavailable,
+            ) => {}
+            (Upstream::Proxy(_), GatewayAttemptStatus::Unavailable) => {}
         }
     }
 
@@ -589,10 +623,18 @@ impl UpstreamSelector {
     async fn try_pool_candidates(&self, protocol: &str, limit: usize) -> Vec<Proxy> {
         let proto = Protocol::from_str_loose(protocol).unwrap_or(Protocol::Http);
         match self.store.get_random_candidates(proto, limit).await {
-            Ok(proxies) => proxies
-                .into_iter()
-                .filter(|proxy| !proxy.circuit_open && proxy.encrypted_state.is_none())
-                .collect(),
+            Ok(proxies) => {
+                let failed_until = self.pool_proxy_failed_until.read().await;
+                let now = Instant::now();
+                proxies
+                    .into_iter()
+                    .filter(|proxy| {
+                        !proxy.circuit_open
+                            && proxy.encrypted_state.is_none()
+                            && !pool_proxy_cooldown_active(&failed_until, &proxy.dedup_key(), now)
+                    })
+                    .collect()
+            }
             Err(e) => {
                 tracing::debug!("try_pool_candidates: failed to query store: {e}");
                 Vec::new()
@@ -714,6 +756,14 @@ fn normalize_host(host: &str) -> String {
     host.trim_end_matches('.').to_string()
 }
 
+fn pool_proxy_cooldown_active(
+    cooldowns: &HashMap<String, Instant>,
+    key: &str,
+    now: Instant,
+) -> bool {
+    matches!(cooldowns.get(key), Some(until) if *until > now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -826,5 +876,35 @@ mod tests {
         assert!(
             rendered.contains("protocol=\"socks5\",exit=\"no_proxy\",status=\"unavailable\"} 0")
         );
+    }
+
+    #[test]
+    fn pool_proxy_cooldown_active_only_before_deadline() {
+        let now = Instant::now();
+        let mut cooldowns = HashMap::new();
+        cooldowns.insert(
+            "http:1.2.3.4:8080".to_string(),
+            now + Duration::from_secs(60),
+        );
+        cooldowns.insert(
+            "http:5.6.7.8:8080".to_string(),
+            now - Duration::from_secs(1),
+        );
+
+        assert!(pool_proxy_cooldown_active(
+            &cooldowns,
+            "http:1.2.3.4:8080",
+            now
+        ));
+        assert!(!pool_proxy_cooldown_active(
+            &cooldowns,
+            "http:5.6.7.8:8080",
+            now
+        ));
+        assert!(!pool_proxy_cooldown_active(
+            &cooldowns,
+            "http:9.9.9.9:8080",
+            now
+        ));
     }
 }

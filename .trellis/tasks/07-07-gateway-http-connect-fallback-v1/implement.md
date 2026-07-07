@@ -13,13 +13,15 @@
    `WarpBalancer::mark_failed(id)`.
 9. [x] Preserve WARP instance id in `Upstream::Warp`.
 10. [x] Add focused WARP balancer failure-marking coverage.
-11. [x] Run local verification:
+11. [x] Add process-local free-pool proxy failure cooldown.
+12. [x] Add focused pool cooldown active/expired/missing coverage.
+13. [x] Run local verification:
    - `cargo fmt --all`
    - `cargo test -p proxy-gateway`
    - `cargo test -p proxy-core route_debug`
    - `cargo test -p proxy-core warp::balancer`
    - `cargo clippy -p proxy-gateway -- -D warnings`
-12. [x] Update task PRD acceptance and gateway/core specs.
+14. [x] Update task PRD acceptance and gateway/core specs.
 
 ## Implementation Notes
 
@@ -46,6 +48,10 @@
 - `WarpBalancer` keeps a 300-second business-failure cooldown per WARP
   instance, so periodic health checks cannot immediately reintroduce a WARP
   instance that just failed real gateway traffic.
+- `UpstreamSelector` keeps a 300-second process-local cooldown for failed
+  free-pool proxy keys. The gateway success path clears the cooldown entry; the
+  failure path inserts it. This improves live request availability without
+  mutating Redis or persistent proxy scores.
 - Route ordering is intentionally unchanged.
 
 ## Verification Results
@@ -61,6 +67,15 @@
 - After WARP runtime feedback changes:
   - `cargo fmt --all --check` passed.
   - `cargo test -p proxy-core route_debug` passed: 5 tests.
+  - `cargo test -p proxy-core warp::balancer` passed: 1 test.
+  - `cargo test -p proxy-gateway` passed: 14 tests.
+  - `cargo test -p proxy-api route_test` passed: 2 tests.
+  - `cargo test -p proxy-mcp route_test` passed: 2 tests.
+  - `cargo clippy -p proxy-core -p proxy-gateway -- -D warnings` passed.
+  - `cargo check --workspace` passed.
+- After free-pool process-local cooldown changes:
+  - `cargo fmt --all --check` passed.
+  - `cargo test -p proxy-core route_debug` passed: 6 tests.
   - `cargo test -p proxy-core warp::balancer` passed: 1 test.
   - `cargo test -p proxy-gateway` passed: 14 tests.
   - `cargo test -p proxy-api route_test` passed: 2 tests.

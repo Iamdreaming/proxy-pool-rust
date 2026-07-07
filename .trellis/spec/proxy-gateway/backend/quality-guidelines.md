@@ -104,7 +104,9 @@ When a concrete candidate fails before the success response is sent, handlers
 must call `UpstreamSelector::record_upstream_attempt()` after recording metrics.
 This lets runtime business failures update shared route health, currently used
 to put failed WARP instances into the balancer's short business-failure
-cooldown.
+cooldown and failed free-pool proxies into a process-local cooldown. Successful
+proxy attempts should also be recorded so any cooldown for that proxy key can
+be cleared.
 
 ### 2. All public functions must have doc comments
 

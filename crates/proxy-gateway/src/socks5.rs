@@ -118,6 +118,9 @@ pub async fn handle(
                     candidate.exit,
                     GatewayAttemptStatus::Success,
                 );
+                selector
+                    .record_upstream_attempt(&candidate.upstream, GatewayAttemptStatus::Success)
+                    .await;
                 let local_addr = remote.local_addr().unwrap_or("0.0.0.0:0".parse().unwrap());
                 let reply = socks5_reply_from_addr(0x00, &local_addr);
                 stream.write_all(&reply).await?;

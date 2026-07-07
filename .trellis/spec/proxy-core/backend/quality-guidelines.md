@@ -395,6 +395,8 @@ proxy_gateway_route_attempts_total{protocol="<http_connect|socks5|other>",exit="
 | Free pool has several usable proxies | The decision may include repeated `exit=free_pool` candidates with different `detail` values |
 | Gateway upstream connection fails before success response | Record `status=failure`, try later concrete candidates, and only then return HTTP 502 / SOCKS failure |
 | Concrete `Upstream::Warp` fails in a gateway attempt | Call attempt feedback and put that WARP instance into the balancer's short business-failure cooldown |
+| Concrete `Upstream::Proxy` fails in a gateway attempt | Call attempt feedback and put that proxy dedup key into a short process-local cooldown without writing Redis |
+| Concrete `Upstream::Proxy` succeeds in a gateway attempt | Clear any process-local cooldown for that proxy dedup key |
 | No concrete upstream exists | Record `exit=no_proxy,status=unavailable` |
 
 ### 5. Good/Base/Bad Cases
@@ -408,6 +410,7 @@ proxy_gateway_route_attempts_total{protocol="<http_connect|socks5|other>",exit="
 - `proxy-core` tests for `RouteDecision` serialization, route suffix diagnostics, candidate order helpers, and gateway metric rendering.
 - `proxy-core` tests for weighted random multi-candidate pool selection without replacement.
 - `proxy-core` tests for WARP balancer failure marking removing failed instances from healthy rotation.
+- `proxy-core` tests for pool proxy failure cooldown active/expired/missing cases.
 - `proxy-gateway` tests for upstream variants and connection helper compatibility.
 - `proxy-api` tests for `RouteTestResponse` serialization and route query deserialization.
 - `proxy-mcp` tests for `RouteTestParam` required and optional fields.

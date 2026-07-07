@@ -63,8 +63,14 @@ client SOCKS5 CONNECT host:port
      just failed real gateway traffic.
    - The regular health checker remains responsible for marking WARP healthy
      after the cooldown window.
-7. Keep route ordering unchanged. This task fixes connection mechanics,
-   fallback progression, and minimal runtime WARP failure feedback only.
+7. Add gateway attempt feedback for pool proxy failures.
+   - For `Upstream::Proxy`, failed attempts are recorded in a process-local
+     cooldown map keyed by `Proxy::dedup_key()`.
+   - Future `free_pool` candidate selection skips active cooldown entries.
+   - Successful proxy attempts clear the cooldown entry.
+   - This does not write Redis or mutate persistent proxy quality state.
+8. Keep route ordering unchanged. This task fixes connection mechanics,
+   fallback progression, and minimal process-local runtime failure feedback.
 
 ## Testing
 
@@ -80,6 +86,7 @@ network dependencies:
   replacement.
 - Pure core test for `WarpBalancer::mark_failed` removing the failed instance
   from healthy rotation.
+- Pure core test for pool proxy failure cooldown active/expired/missing cases.
 
 ## Trade-Offs
 
@@ -87,3 +94,6 @@ HTTP CONNECT upstream support fixes HTTP pool proxy compatibility. Gateway
 failure feedback is intentionally limited to in-process WARP availability; it
 uses a bounded runtime cooldown and does not change WARP endpoint optimization,
 health-check URLs, or persistent quality scoring.
+Pool proxy failure feedback is also process-local. It improves near-term
+business availability without turning gateway traffic into persistent pool
+validation.

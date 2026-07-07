@@ -71,6 +71,9 @@ pub async fn handle(
                     candidate.exit,
                     GatewayAttemptStatus::Success,
                 );
+                selector
+                    .record_upstream_attempt(&candidate.upstream, GatewayAttemptStatus::Success)
+                    .await;
                 let resp = "HTTP/1.1 200 Connection Established\r\n\r\n";
                 stream.write_all(resp.as_bytes()).await?;
                 bidirectional_copy(stream, &mut remote).await;
