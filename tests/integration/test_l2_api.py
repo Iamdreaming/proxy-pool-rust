@@ -4,6 +4,7 @@ import pytest
 import requests
 
 from config import API_BASE
+from helpers.release_status import assert_status_payload_contract
 
 
 class TestApiStatus:
@@ -13,54 +14,7 @@ class TestApiStatus:
         resp = api_client.get(f"{API_BASE}/api/status")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["version"]  # non-empty string
-        assert data["git_hash"]  # non-empty string
-        assert isinstance(data["uptime_sec"], int)
-        assert data["redis"]["status"] in ("ok", "error")
-        assert isinstance(data["pool"]["total"], int)
-        assert isinstance(data["warp"]["configured"], int)
-        assert isinstance(data["warp"]["healthy"], int)
-        assert isinstance(data["xray"]["active_nodes"], int)
-        assert isinstance(data["xray"]["failed_nodes"], int)
-        release = data["release"]
-        assert release["app_version"] == data["version"]
-        assert release["git_hash"] == data["git_hash"]
-        assert isinstance(release["update_enabled"], bool)
-        assert release["update_container"]
-        assert release["configured_image"]
-        assert release["image_repo"]
-        assert release["image_tag"]
-        assert release["watchtower_url"]
-        quality = data["quality"]
-        assert isinstance(quality["total"], int)
-        buckets = quality["score_buckets"]
-        for bucket in ("untested", "poor", "fair", "good", "excellent"):
-            assert isinstance(buckets[bucket], int)
-        assert isinstance(quality["recent_samples"], int)
-        assert quality["recent_success_rate"] is None or isinstance(
-            quality["recent_success_rate"], (int, float)
-        )
-        assert isinstance(quality["recent_failures"], int)
-        assert isinstance(quality["stale_proxies"], int)
-        assert isinstance(quality["stale_after_secs"], int)
-        retention = quality["retention"]
-        assert isinstance(retention["below_min_score"], int)
-        assert isinstance(retention["hard_failure_evict"], int)
-        assert isinstance(quality["top_failure_reasons"], list)
-        for reason in quality["top_failure_reasons"]:
-            assert reason["reason"] in (
-                "unknown",
-                "validation_failed",
-                "timeout",
-                "bad_status",
-                "body_read_failed",
-                "invalid_proxy_url",
-                "client_build_failed",
-                "request_failed",
-                "circuit_open",
-                "other",
-            )
-            assert isinstance(reason["count"], int)
+        assert_status_payload_contract(data)
 
 
 class TestApiProxies:

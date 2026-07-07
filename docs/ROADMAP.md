@@ -232,6 +232,23 @@
 - [x] `cargo test -p proxy-api` 通过。
 - [x] `cargo test -p proxy-mcp` 通过。
 
+### P0 — `release-status-public-smoke-v1`
+
+**目标**：在不恢复完整 REST/MCP 契约 smoke 的前提下，为公开只读发布状态补一组更轻的 smoke，覆盖发布验证真正依赖的字段。
+
+**当前状态**：已完成。新增共享 `helpers.release_status` 断言与轻量 public smoke；默认只校验公开状态结构，只有显式设置 `PROXY_POOL_GIT_HASH` 时才比对目标运行版本，避免本地 HEAD 超前 dev 时误判。测试不调用 `update_service`，也不触发刷新、删除、清理或 apply。
+
+**主要完成项**：
+
+- [x] 新增 `tests/integration/helpers/release_status.py`，集中维护 release/status/readyz/update_status 字段契约。
+- [x] 新增 `tests/integration/test_l0_release_status_public_smoke.py`，本地纯测试覆盖 helper、hash mismatch、readyz、已知 update status 和只读 MCP tool 集合。
+- [x] 新增 `tests/integration/test_release_status_public_smoke.py`，通过公开 HTTP/MCP 只读入口检查 `/api/status`、`/api/readyz`、MCP `service_status` 和 MCP `update_status`。
+- [x] `tests/integration/test_l2_api.py` 与 `tests/integration/test_l4_mcp.py` 复用共享 release/status helper，减少字段契约重复。
+- [x] 新增 `.trellis/spec/integration/testing/release-status-public-smoke.md`，沉淀轻量 smoke 的 no-SSH、no-mutation 和显式 hash 比对契约。
+- [x] `python -m py_compile tests\integration\helpers\release_status.py tests\integration\test_l0_release_status_public_smoke.py tests\integration\test_release_status_public_smoke.py tests\integration\test_l2_api.py tests\integration\test_l4_mcp.py` 通过。
+- [x] `python -m pytest tests\integration\test_l0_release_status_public_smoke.py tests\integration\test_release_status_public_smoke.py -q` 通过。
+- [x] `python -m pytest tests\integration\test_l2_api.py::TestApiStatus::test_status_returns_version tests\integration\test_l4_mcp.py::TestMcpServiceStatus::test_service_status_structure tests\integration\test_l4_mcp.py::TestMcpServiceStatus::test_update_status_read_only_structure -q` 通过。
+
 ### P2 — `pool-quality-metrics-v1`
 
 **目标**：把代理池质量趋势和保留风险沉淀为只读 metrics/status 字段，便于 no-SSH 环境下判断代理池是否正在变好。
@@ -508,17 +525,6 @@
 - [ ] 对失败原因、协议、bucket、状态类 label 给出允许值或归一化规则。
 - [ ] 必要时补测试或文档，防止后续新增指标破坏低基数约束。
 
-### P0 — `release-status-public-smoke-v1`
-
-**目标**：在不恢复完整 REST/MCP 契约 smoke 的前提下，为公开只读发布状态补一组更轻的 smoke，覆盖发布验证真正依赖的字段。
-
-**候选功能**：
-
-- [ ] `/api/status` smoke 覆盖 `git_hash`、`release`、`quality` 和依赖状态字段。
-- [ ] `/api/readyz` smoke 覆盖 HTTP 200/503 与结构化依赖状态。
-- [ ] MCP `service_status` / `update_status` smoke 覆盖只读字段形状，不调用 `update_service`。
-- [ ] 作为 `readonly-dev-smoke-runner-v1` 的本地验证基础之一。
-
 ## Next
 
 ### P0 — `dev-update-config-doc-hardening-v1`
@@ -638,7 +644,7 @@
 9. `readonly-dev-smoke-runner-v1` — 已完成，把 no-SSH 只读验证组合成一条本地可重复命令。
 10. `config-runbook-drift-check-v1` — 已完成，防止 README、dev-validation、compose/env/status 字段继续漂移。
 11. `metrics-low-cardinality-audit-v1` — 系统性审计 Prometheus label 是否持续保持低基数。
-12. `release-status-public-smoke-v1` — 为公开只读发布状态补更轻的 smoke，不恢复完整 REST/MCP smoke。
+12. `release-status-public-smoke-v1` — 已完成，为公开只读发布状态补更轻的 smoke，不恢复完整 REST/MCP smoke。
 13. `dev-update-config-doc-hardening-v1` — 沉淀当前 dev compose 自更新配置和只读排障说明。
 14. `api-readonly-contract-minimal-v1` — 定义 runner/smoke 依赖的最小只读 API/MCP 字段集合。
 15. `quality-dashboard-readonly-v1` — 用户重新确认后再恢复，只读展示质量趋势，不恢复暂停的操作按钮草稿。

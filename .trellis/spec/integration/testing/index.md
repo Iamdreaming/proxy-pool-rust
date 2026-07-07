@@ -16,6 +16,7 @@ that use `PROXY_POOL_*` environment variables.
 |-------|-------------|--------|
 | [Read-only Dev Smoke Runner](./readonly-dev-smoke-runner.md) | Command contract for post-push no-SSH validation | Done |
 | [Config Runbook Drift Check](./config-runbook-drift-check.md) | Local contract for keeping dev compose, runbook docs, and release metadata fields aligned | Done |
+| [Release Status Public Smoke](./release-status-public-smoke.md) | Lightweight public HTTP/MCP release-status smoke contract | Done |
 
 ## Pre-Development Checklist
 

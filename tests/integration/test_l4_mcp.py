@@ -6,6 +6,11 @@ import httpx
 
 from helpers.mcp_client import McpClient
 from config import MCP_BASE
+from helpers.release_status import (
+    assert_status_payload_contract,
+    assert_update_status_contract,
+    parse_mcp_json,
+)
 
 
 class TestMcpConnection:
@@ -73,82 +78,14 @@ class TestMcpServiceStatus:
     def test_service_status_structure(self, mcp_client):
         """service_status returns the shared operator status structure."""
         result = mcp_client.call_tool("service_status")
-        text = _extract_text(result)
-        data = json.loads(text)
-
-        assert data["version"]
-        assert data["git_hash"]
-        assert isinstance(data["uptime_sec"], int)
-        assert "pool" in data
-        assert "redis" in data
-        assert "warp" in data
-        assert "xray" in data
-        assert data["redis"]["status"] in ("ok", "error")
-        assert isinstance(data["pool"]["total"], int)
-        assert isinstance(data["warp"]["configured"], int)
-        assert isinstance(data["warp"]["healthy"], int)
-        assert isinstance(data["xray"]["active_nodes"], int)
-        assert isinstance(data["xray"]["failed_nodes"], int)
-        release = data["release"]
-        assert release["app_version"] == data["version"]
-        assert release["git_hash"] == data["git_hash"]
-        assert isinstance(release["update_enabled"], bool)
-        assert release["update_container"]
-        assert release["configured_image"]
-        assert release["image_repo"]
-        assert release["image_tag"]
-        assert release["watchtower_url"]
-        quality = data["quality"]
-        assert isinstance(quality["total"], int)
-        buckets = quality["score_buckets"]
-        for bucket in ("untested", "poor", "fair", "good", "excellent"):
-            assert isinstance(buckets[bucket], int)
-        assert isinstance(quality["recent_samples"], int)
-        assert quality["recent_success_rate"] is None or isinstance(
-            quality["recent_success_rate"], (int, float)
-        )
-        assert isinstance(quality["recent_failures"], int)
-        assert isinstance(quality["stale_proxies"], int)
-        assert isinstance(quality["stale_after_secs"], int)
-        retention = quality["retention"]
-        assert isinstance(retention["below_min_score"], int)
-        assert isinstance(retention["hard_failure_evict"], int)
-        assert isinstance(quality["top_failure_reasons"], list)
-        for reason in quality["top_failure_reasons"]:
-            assert reason["reason"] in (
-                "unknown",
-                "validation_failed",
-                "timeout",
-                "bad_status",
-                "body_read_failed",
-                "invalid_proxy_url",
-                "client_build_failed",
-                "request_failed",
-                "circuit_open",
-                "other",
-            )
-            assert isinstance(reason["count"], int)
+        data = parse_mcp_json(result)
+        assert_status_payload_contract(data)
 
     def test_update_status_read_only_structure(self, mcp_client):
         """update_status reports the latest update snapshot without mutating."""
         result = mcp_client.call_tool("update_status")
-        text = _extract_text(result)
-        data = json.loads(text)
-
-        assert data["status"] in (
-            "never_triggered",
-            "disabled",
-            "already_current",
-            "updated",
-            "failed",
-        )
-        if data["status"] != "never_triggered":
-            assert isinstance(data["update_enabled"], bool)
-            assert data["container_name"]
-            assert data["image"]
-            assert data["image_repo"]
-            assert data["image_tag"]
-            assert data["watchtower_url"]
+        data = parse_mcp_json(result)
+        assert_update_status_contract(data)
 
     def test_xray_status_structure(self, mcp_client):
         """xray_status returns lifecycle counts and recent node records."""
