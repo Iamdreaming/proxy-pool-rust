@@ -57,7 +57,7 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议推进 `metrics-low-cardinality-audit-v1`。`readonly-dev-smoke-runner-v1` 和 `config-runbook-drift-check-v1` 已完成，dev 发布验证默认保持 no-SSH、只读、本地可重复，并通过文档/配置漂移检查约束 compose env、release 字段和 Watchtower token 说明。`quality-dashboard-readonly-v1`、`revalidation-scheduler-priority-v1`、`update-failure-hardening`、`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求或安全门槛暂停，不作为当前主线。
+当前 Now 任务：`business-e2e-smoke-v1`（P0）。当前路线优先靠近业务可用性：先证明公开 gateway 和池内候选代理能否访问 OpenAI、Reddit、GitHub、Cloudflare 等真实目标站，并输出可重复、no-SSH、no-mutation 的业务冒烟报告。`metrics-low-cardinality-audit-v1`、`api-readonly-contract-minimal-v1` 等 metrics/纯契约任务后移，除非它们直接服务于业务目标站可达性诊断。
 
 ## Paused Closeout
 

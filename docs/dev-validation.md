@@ -55,6 +55,18 @@ The runner checks GitHub Actions, `/api/status`, `/api/readyz`, MCP
 call `update_service`, refresh the pool, delete proxies, or apply any remote
 mutation.
 
+For business availability checks after the basic release smoke is healthy, run:
+
+```powershell
+python tests\integration\business_e2e_smoke.py --json
+```
+
+This checks the public gateway and stored proxy candidates against business
+targets such as Cloudflare trace, GitHub, OpenAI API, and Reddit. It is also
+observational only: it reads `/api/proxies/scores` and calls the diagnostic
+`/api/proxy/check-matrix` endpoint, but it does not refresh, delete, update, or
+apply changes.
+
 The manual steps below remain useful for drilling into a failed runner result.
 
 1. Run local checks relevant to the change.

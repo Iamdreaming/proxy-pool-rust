@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "Check core validator target parsing, error handling, and tests"}
+{"file": ".trellis/spec/proxy-api/backend/index.md", "reason": "Check REST compatibility for legacy and structured target requests"}
+{"file": ".trellis/spec/proxy-mcp/backend/index.md", "reason": "Check MCP schema and conversion consistency"}
+{"file": ".trellis/spec/integration/testing/index.md", "reason": "Check smoke runner safety, reporting, and validation coverage"}
+{"file": ".trellis/spec/integration/testing/business-availability-smoke.md", "reason": "Check task-specific business availability contract"}

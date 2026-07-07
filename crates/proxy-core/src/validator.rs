@@ -96,6 +96,37 @@ pub struct ProxyCheckResult {
     proxy: Option<Proxy>,
 }
 
+/// Request target for checking one proxy against one validation target.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ProxyCheckMatrixTarget {
+    /// Backward-compatible target URL string.
+    Url(String),
+    /// Structured target with explicit successful HTTP status codes.
+    Structured {
+        url: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        expected_statuses: Vec<u16>,
+    },
+}
+
+impl ProxyCheckMatrixTarget {
+    fn into_validation_target(self) -> Result<ValidationTarget, ProxyCheckMatrixError> {
+        let (url, expected_statuses) = match self {
+            Self::Url(url) => (url, Vec::new()),
+            Self::Structured {
+                url,
+                expected_statuses,
+            } => (url, expected_statuses),
+        };
+        let url = normalize_matrix_target_url(&url)?;
+        Ok(ValidationTarget::with_expected_statuses(
+            url,
+            expected_statuses,
+        ))
+    }
+}
+
 /// Request body for checking one proxy against several validation targets.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProxyCheckMatrixRequest {
@@ -103,7 +134,7 @@ pub struct ProxyCheckMatrixRequest {
     pub port: u16,
     pub protocol: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub targets: Option<Vec<String>>,
+    pub targets: Option<Vec<ProxyCheckMatrixTarget>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
 }
@@ -206,7 +237,8 @@ pub async fn check_proxy_matrix(
     let checks = join_all(targets.into_iter().map(|target| {
         let proxy = proxy.clone();
         async move {
-            Validator::new(&target, timeout_secs)
+            Validator::new(&target.url, timeout_secs)
+                .with_expected_statuses(target.expected_statuses)
                 .check_one(&proxy)
                 .await
         }
@@ -237,12 +269,14 @@ fn matrix_request_proxy(request: &ProxyCheckMatrixRequest) -> Result<Proxy, Prox
     Ok(Proxy::new(host, request.port, protocol))
 }
 
-fn matrix_targets(targets: Option<&[String]>) -> Result<Vec<String>, ProxyCheckMatrixError> {
-    let raw_targets: Vec<String> = match targets {
+fn matrix_targets(
+    targets: Option<&[ProxyCheckMatrixTarget]>,
+) -> Result<Vec<ValidationTarget>, ProxyCheckMatrixError> {
+    let raw_targets: Vec<ProxyCheckMatrixTarget> = match targets {
         Some(targets) if !targets.is_empty() => targets.to_vec(),
         _ => DEFAULT_MATRIX_TARGETS
             .iter()
-            .map(|target| (*target).to_string())
+            .map(|target| ProxyCheckMatrixTarget::Url((*target).to_string()))
             .collect(),
     };
 
@@ -254,11 +288,11 @@ fn matrix_targets(targets: Option<&[String]>) -> Result<Vec<String>, ProxyCheckM
 
     raw_targets
         .into_iter()
-        .map(|target| normalize_matrix_target(&target))
+        .map(ProxyCheckMatrixTarget::into_validation_target)
         .collect()
 }
 
-fn normalize_matrix_target(target: &str) -> Result<String, ProxyCheckMatrixError> {
+fn normalize_matrix_target_url(target: &str) -> Result<String, ProxyCheckMatrixError> {
     let trimmed = target.trim();
     if trimmed.is_empty() {
         return Err(ProxyCheckMatrixError::InvalidRequest(
@@ -804,28 +838,85 @@ mod tests {
             targets,
             DEFAULT_MATRIX_TARGETS
                 .iter()
-                .map(|target| (*target).to_string())
+                .map(|target| ValidationTarget::new((*target).to_string()))
                 .collect::<Vec<_>>()
         );
 
-        let empty: Vec<String> = vec![];
+        let empty: Vec<ProxyCheckMatrixTarget> = vec![];
         let targets = matrix_targets(Some(&empty)).unwrap();
         assert_eq!(
             targets,
             DEFAULT_MATRIX_TARGETS
                 .iter()
-                .map(|target| (*target).to_string())
+                .map(|target| ValidationTarget::new((*target).to_string()))
                 .collect::<Vec<_>>()
         );
     }
 
     #[test]
+    fn matrix_targets_accept_legacy_and_structured_entries() {
+        let targets = vec![
+            ProxyCheckMatrixTarget::Url(" https://example.com/path ".into()),
+            ProxyCheckMatrixTarget::Structured {
+                url: "https://api.openai.com/v1/models".into(),
+                expected_statuses: vec![401],
+            },
+        ];
+
+        let normalized = matrix_targets(Some(&targets)).unwrap();
+
+        assert_eq!(
+            normalized,
+            vec![
+                ValidationTarget::new("https://example.com/path"),
+                ValidationTarget::with_expected_statuses(
+                    "https://api.openai.com/v1/models",
+                    vec![401]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn proxy_check_matrix_request_deserializes_target_shapes() {
+        let json = r#"{
+            "host": "1.2.3.4",
+            "port": 8080,
+            "protocol": "http",
+            "targets": [
+                "https://www.cloudflare.com/cdn-cgi/trace",
+                {
+                    "url": "https://api.openai.com/v1/models",
+                    "expected_statuses": [401]
+                }
+            ]
+        }"#;
+
+        let request: ProxyCheckMatrixRequest = serde_json::from_str(json).unwrap();
+        let targets = request.targets.unwrap();
+
+        assert_eq!(
+            targets,
+            vec![
+                ProxyCheckMatrixTarget::Url("https://www.cloudflare.com/cdn-cgi/trace".into()),
+                ProxyCheckMatrixTarget::Structured {
+                    url: "https://api.openai.com/v1/models".into(),
+                    expected_statuses: vec![401],
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn matrix_targets_reject_invalid_entries() {
-        let targets = vec!["".to_string()];
+        let targets = vec![ProxyCheckMatrixTarget::Url("".to_string())];
         let error = matrix_targets(Some(&targets)).unwrap_err();
         assert_eq!(error.to_string(), "target URL must not be empty");
 
-        let targets = vec!["ftp://example.com/file".to_string()];
+        let targets = vec![ProxyCheckMatrixTarget::Structured {
+            url: "ftp://example.com/file".to_string(),
+            expected_statuses: vec![200],
+        }];
         let error = matrix_targets(Some(&targets)).unwrap_err();
         assert!(error.to_string().contains("target URL must be http(s)"));
     }

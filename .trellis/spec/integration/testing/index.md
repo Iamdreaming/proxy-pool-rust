@@ -17,6 +17,7 @@ that use `PROXY_POOL_*` environment variables.
 | [Read-only Dev Smoke Runner](./readonly-dev-smoke-runner.md) | Command contract for post-push no-SSH validation | Done |
 | [Config Runbook Drift Check](./config-runbook-drift-check.md) | Local contract for keeping dev compose, runbook docs, and release metadata fields aligned | Done |
 | [Release Status Public Smoke](./release-status-public-smoke.md) | Lightweight public HTTP/MCP release-status smoke contract | Done |
+| [Business Availability Smoke](./business-availability-smoke.md) | No-mutation gateway and proxy-candidate smoke for real target reachability | Done |
 
 ## Pre-Development Checklist
 
@@ -30,6 +31,8 @@ that use `PROXY_POOL_*` environment variables.
       calls.
 - [ ] Keep default validation read-only: no SSH, no host Docker, no mutating MCP
       tools.
+- [ ] Business target checks must report per-target status and error details
+      instead of hiding partial failures behind one aggregate result.
 
 ## Quality Check
 

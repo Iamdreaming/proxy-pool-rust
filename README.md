@@ -154,6 +154,12 @@ Watchtower 角色、token 配对和回滚/暂停边界见
 python tests/integration/readonly_dev_smoke.py --branch main --wait-ci
 ```
 
+Business availability smoke:
+
+```bash
+python tests/integration/business_e2e_smoke.py --json
+```
+
 它只读取 GitHub Actions、`/api/status`、`/api/readyz`、MCP `service_status`
 和 `update_status`，不会触发远端更新。
 

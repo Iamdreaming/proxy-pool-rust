@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "Core validator check-matrix request and validation target contract"}
+{"file": ".trellis/spec/proxy-api/backend/index.md", "reason": "REST check-matrix error and response behavior"}
+{"file": ".trellis/spec/proxy-mcp/backend/index.md", "reason": "MCP check_proxy_matrix parameter and error behavior"}
+{"file": ".trellis/spec/integration/testing/index.md", "reason": "Integration smoke runner conventions and no-mutation validation"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer implementation and code-reuse guidance"}
