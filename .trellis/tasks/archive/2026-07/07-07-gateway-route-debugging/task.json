@@ -3,7 +3,7 @@
   "name": "gateway-route-debugging",
   "title": "Gateway route debugging",
   "description": "Make gateway routing decisions and fallback behavior explainable, observable, and testable.",
-  "status": "paused",
+  "status": "completed",
   "dev_type": null,
   "scope": "proxy-gateway, proxy-core router, proxy-api, proxy-mcp, metrics, integration tests",
   "package": "proxy-gateway",
@@ -11,7 +11,7 @@
   "creator": "nightrain",
   "assignee": "nightrain",
   "createdAt": "2026-07-07",
-  "completedAt": null,
+  "completedAt": "2026-07-07",
   "branch": "main",
   "base_branch": "main",
   "worktree_path": null,
@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Paused per user request after core implementation was committed as 2842043. Do not continue closeout, archive, or direct dev SSH validation until explicitly resumed.",
+  "notes": "Resumed for closeout on 2026-07-07 and archived after local focused tests plus no-SSH/no-mutation HTTP dev checks. Core implementation was committed as 2842043; closeout did not deploy or call update_service.",
   "meta": {}
 }

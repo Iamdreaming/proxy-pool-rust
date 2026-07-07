@@ -52,7 +52,8 @@
 - [x] `cargo test -p proxy-mcp --lib`
 - [x] `cargo test --workspace --all-targets`
 - [x] `cargo clippy --workspace --all-targets -- -D warnings`
-- [ ] If deployed, verify via HTTP/MCP only; do not SSH to the dev address.
+- [x] If deployed, verify via HTTP/MCP only; do not SSH to the dev address.
+- [x] Record closeout verification in `verification.md`.
 
 ## Risk Points
 

@@ -49,7 +49,7 @@
 - 当前 Trellis 中存在 `proxy-quality-recommendations-dry-run` 暂停草稿。按用户最新要求先不继续，不作为 Ready/Next 主线；后续只有用户重新确认后再恢复。
 - 当前本地存在一组已隔离的 `update-failure-hardening` WIP：`wip: paused update failure hardening`。按用户要求先不继续，不要默认恢复、删除或混入后续任务。
 - 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
-- 当前 Trellis 里 `gateway-route-debugging` 和 `fetcher-validator-quality` 已从 `in_progress` 改为 `paused`，当前会话任务指针已清空。
+- 当前 Trellis 里 `gateway-route-debugging` 已完成收尾并归档到 `.trellis/tasks/archive/2026-07/07-07-gateway-route-debugging`；`fetcher-validator-quality` 仍保持 `paused`，当前会话任务指针已清空。
 - `warp-ops-enhancement` 曾创建 planning 任务目录；按用户最新要求先不继续，任务状态保留为 `paused`，不作为 current task。
 - `xray-config-dry-run-and-remove` 曾创建 planning 任务目录；按用户最新要求先不继续，任务状态保留为 `paused`，不作为 current task。
 - `.codex/config.toml` 属于非本任务改动，不纳入任何 roadmap 提交或后续功能提交。
@@ -104,27 +104,6 @@
 - [ ] 必要时增加自动化集成测试或最小脚本化检查。
 - [ ] 验证方式仍遵循 no-SSH 规则，只使用 GitHub Actions、MCP、HTTP 状态接口和安全的 dev-only 配置入口。
 
-### P1 — `gateway-route-debugging`
-
-**目标**：让网关路由决策和 fallback 链路可解释、可观测、可测试。
-
-**当前状态**：核心实现已落地并推送到 `2842043 feat: add gateway route diagnostics`，包括 route dry-run、MCP `route_test`、gateway fallback 尝试指标和本地测试验证。用户已要求“先不做这个”，因此暂不继续发布后文档/归档收尾。
-
-**已完成并验证**：
-
-- [x] 为网关请求记录 route rule、GeoIP 结果、出口选择、fallback 候选和最终选择。
-- [x] 新增 route dry-run 能力：输入 host/protocol，返回命中规则、GeoIP、出口和 fallback 顺序。
-- [x] MCP 增加 `route_test` 工具。
-- [x] 对 gateway route attempts 增加 Prometheus 指标。
-- [x] 增加 gateway / API / MCP / core 相关自动化测试。
-- [x] `cargo test --workspace --all-targets` 通过。
-- [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
-
-**暂缓 TODO**：
-
-- [ ] 按用户确认后再做 Trellis 任务归档和最终文档收尾。
-- [ ] 可选 debug header，仅在配置启用时返回路由诊断信息。
-
 ### P2 — `dashboard-ops-polish-v2`
 
 **目标**：把新增的 xray、订阅源、抓取源和验证能力接入 Web Dashboard，同时继续坚持只展示真实可用动作。
@@ -168,6 +147,26 @@
 - [ ] 覆盖 core 汇总逻辑、API/MCP shape 和旧数据兼容测试。
 
 ## Done
+
+### P1 — `gateway-route-debugging`
+
+**目标**：让网关路由决策和 fallback 链路可解释、可观测、可测试。
+
+**当前状态**：已完成并归档到 `.trellis/tasks/archive/2026-07/07-07-gateway-route-debugging`。核心实现已落地并推送到 `2842043 feat: add gateway route diagnostics`，收尾验证记录见任务目录的 `verification.md`。
+
+**主要完成项**：
+
+- [x] 为网关请求记录 route rule、GeoIP 结果、出口选择、fallback 候选和最终选择。
+- [x] 新增 route dry-run 能力：输入 host/protocol，返回命中规则、GeoIP、出口和 fallback 顺序。
+- [x] MCP 增加 `route_test` 工具。
+- [x] 对 gateway route attempts 增加 Prometheus 指标。
+- [x] 增加 gateway / API / MCP / core 相关自动化测试。
+- [x] 本地 focused closeout 验证通过：`cargo test -p proxy-core route_debug`、`cargo test -p proxy-api route_test`。
+- [x] 通过 no-SSH、no-mutation 的公开 HTTP 检查确认 dev 上 `/api/routes/test` 和 `/api/metrics` 可用。
+
+**后续可选项**：
+
+- [ ] 如未来需要浏览器/客户端内联诊断，再单独规划配置开关控制的 debug header。
 
 ### P0 — `config-runbook-drift-check-v1`
 
@@ -490,7 +489,7 @@
 **主要完成项**：
 
 - [x] Roadmap 新增 `Paused Closeout` 状态。
-- [x] `gateway-route-debugging` 从 Now 移到 `Paused Closeout`，发布后文档/归档收尾按用户要求暂缓。
+- [x] `gateway-route-debugging` 曾从 Now 移到 `Paused Closeout`；现已按用户恢复要求完成收尾并归档。
 - [x] `fetcher-validator-quality` 保持暂缓，WIP 继续隔离在本地 stash `wip: paused fetcher circuit work`。
 - [x] Trellis 中 `gateway-route-debugging` 和 `fetcher-validator-quality` 的状态从 `in_progress` 改为 `paused`。
 - [x] 当前 Trellis 会话任务指针已清空，`task.py current --source` 返回 none。
@@ -663,7 +662,7 @@
 21. `dashboard-ops-polish-v2` — 用户重新确认后再恢复 Dashboard 运维整合草稿。
 22. `xray-config-dry-run-and-remove` — 用户重新确认后再恢复 xray 配置 dry-run 和单节点移除。
 23. `warp-ops-enhancement` — 用户重新确认后再恢复 WARP 运维增强。
-24. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
+24. `gateway-route-debugging` — 已完成归档；debug header 如未来需要再单独规划。
 
 ## 任务 PRD 模板
 
