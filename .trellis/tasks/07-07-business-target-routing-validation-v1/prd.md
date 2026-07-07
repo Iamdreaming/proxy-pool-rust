@@ -55,7 +55,8 @@ instead of relying only on generic GeoIP and IP echo checks.
 - Relevant local Rust tests and checks pass.
 - Direct-reachable targets such as GitHub and Hacker News are not included in
   the built-in business overseas fallback unless future evidence shows direct
-  routing is unreliable.
+  routing is unreliable; they should keep `direct` even when GeoIP says the
+  domain resolves overseas.
 
 ## Out Of Scope
 

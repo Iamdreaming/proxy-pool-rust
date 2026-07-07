@@ -21,6 +21,9 @@ prevents `default -> direct` from silently routing business targets direct.
 GitHub and Hacker News are intentionally not in this built-in list because live
 dev probes showed the existing direct route returns `200`; forcing them into the
 business fallback would reduce availability when WARP/free-pool exits are bad.
+They are handled as built-in direct-reachable domains before GeoIP fallback so
+an overseas GeoIP result does not pull them away from the known-good direct
+path.
 
 For GeoIP route fallback, `UNKNOWN` becomes an overseas route decision for
 gateway planning only. The stored proxy `is_overseas` enrichment remains owned

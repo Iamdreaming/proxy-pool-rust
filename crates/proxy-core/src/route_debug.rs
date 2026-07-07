@@ -21,6 +21,8 @@ const BUSINESS_OVERSEAS_DOMAINS: &[&str] = &[
     "twitter.com",
 ];
 
+const DIRECT_REACHABLE_DOMAINS: &[&str] = &["github.com", "news.ycombinator.com"];
+
 /// Runtime upstream selected for a gateway request.
 #[derive(Debug, Clone)]
 pub enum Upstream {
@@ -514,6 +516,15 @@ impl UpstreamSelector {
             return plan;
         }
 
+        if let Some(exits) = direct_reachable_domain_exits(host) {
+            return RoutePlan {
+                matched_reason: "direct_reachable_domain".into(),
+                exits,
+                route_match: None,
+                geoip: None,
+            };
+        }
+
         if let Some(exits) = business_domain_exits(host) {
             return RoutePlan {
                 matched_reason: "business_domain_overseas".into(),
@@ -759,6 +770,15 @@ fn route_match_plan(host: &str, route_match: RouteMatch) -> Option<RoutePlan> {
         });
     }
 
+    if let Some(exits) = direct_reachable_domain_exits(host) {
+        return Some(RoutePlan {
+            matched_reason: "direct_reachable_domain".into(),
+            exits,
+            route_match: Some(route_match),
+            geoip: None,
+        });
+    }
+
     if let Some(exits) = business_domain_exits(host) {
         return Some(RoutePlan {
             matched_reason: "business_domain_overseas".into(),
@@ -786,6 +806,18 @@ fn geoip_route_decision(country: &str, country_overseas: bool) -> (bool, &'stati
     }
 }
 
+fn direct_reachable_domain_exits(host: &str) -> Option<Vec<RouteExit>> {
+    if is_direct_reachable_host(host) {
+        Some(vec![RouteExit::Direct])
+    } else {
+        None
+    }
+}
+
+fn is_direct_reachable_host(host: &str) -> bool {
+    domain_list_matches(DIRECT_REACHABLE_DOMAINS, host)
+}
+
 fn business_domain_exits(host: &str) -> Option<Vec<RouteExit>> {
     if is_business_overseas_host(host) {
         Some(geoip_exits(true))
@@ -795,8 +827,12 @@ fn business_domain_exits(host: &str) -> Option<Vec<RouteExit>> {
 }
 
 fn is_business_overseas_host(host: &str) -> bool {
+    domain_list_matches(BUSINESS_OVERSEAS_DOMAINS, host)
+}
+
+fn domain_list_matches(domains: &[&str], host: &str) -> bool {
     let host = normalize_host(host);
-    BUSINESS_OVERSEAS_DOMAINS
+    domains
         .iter()
         .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
 }
@@ -897,6 +933,19 @@ mod tests {
     }
 
     #[test]
+    fn direct_reachable_domains_match_roots_and_subdomains_only() {
+        assert!(is_direct_reachable_host("github.com"));
+        assert!(is_direct_reachable_host("api.github.com:443"));
+        assert!(is_direct_reachable_host("NEWS.YCOMBINATOR.COM."));
+        assert!(!is_direct_reachable_host("notgithub.com"));
+        assert!(!is_direct_reachable_host("github.com.example"));
+        assert_eq!(
+            direct_reachable_domain_exits("news.ycombinator.com"),
+            Some(vec![RouteExit::Direct])
+        );
+    }
+
+    #[test]
     fn business_domain_exits_use_overseas_candidate_order() {
         assert_eq!(
             business_domain_exits("chatgpt.com"),
@@ -922,6 +971,23 @@ mod tests {
         let route_match = plan.route_match.unwrap();
         assert_eq!(route_match.group, "direct");
         assert!(route_match.is_default);
+    }
+
+    #[test]
+    fn direct_reachable_domain_wins_before_default_and_geoip_fallback() {
+        let plan = route_match_plan(
+            "github.com",
+            RouteMatch {
+                group: "warp".into(),
+                matched_rule: "default".into(),
+                is_default: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.matched_reason, "direct_reachable_domain");
+        assert_eq!(plan.exits, vec![RouteExit::Direct]);
+        assert!(plan.route_match.unwrap().is_default);
     }
 
     #[test]
