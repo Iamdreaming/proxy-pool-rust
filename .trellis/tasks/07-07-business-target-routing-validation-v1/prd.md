@@ -3,14 +3,15 @@
 ## Goal
 
 Improve real business access for targets such as OpenAI, Reddit, ChatGPT,
-Discord, X/Twitter, GitHub, and Hacker News by making routing and validation
-match those targets instead of relying only on generic GeoIP and IP echo checks.
+Discord, and X/Twitter by making routing and validation match those targets
+instead of relying only on generic GeoIP and IP echo checks.
 
 ## Background
 
 - Live gateway probes through `100.64.0.2:9080` showed GitHub and Hacker News
-  can return `200`, while `api.openai.com`, `chatgpt.com`, Reddit, Discord, and
-  X either returned gateway `502` or timed out.
+  can return `200` through the existing route, while `api.openai.com`,
+  `chatgpt.com`, Reddit, Discord, and X either returned gateway `502` or timed
+  out.
 - `route_test` showed some business domains such as `openai.com`,
   `www.reddit.com`, and `x.com` can be classified as `UNKNOWN` and then routed
   as domestic/direct.
@@ -52,6 +53,9 @@ match those targets instead of relying only on generic GeoIP and IP echo checks.
   - validator success for configured expected status such as `401`.
 - `config/settings.example.yaml` documents structured validation targets.
 - Relevant local Rust tests and checks pass.
+- Direct-reachable targets such as GitHub and Hacker News are not included in
+  the built-in business overseas fallback unless future evidence shows direct
+  routing is unreliable.
 
 ## Out Of Scope
 

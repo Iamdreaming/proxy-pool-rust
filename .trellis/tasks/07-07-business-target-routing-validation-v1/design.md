@@ -15,12 +15,12 @@ that are known to be real overseas business targets:
 - `discord.com`
 - `x.com`
 - `twitter.com`
-- `github.com`
-- `news.ycombinator.com`
-
 Explicit non-default route rules still win. A router default match only applies
 after the business-domain classifier has a chance to classify the host. This
 prevents `default -> direct` from silently routing business targets direct.
+GitHub and Hacker News are intentionally not in this built-in list because live
+dev probes showed the existing direct route returns `200`; forcing them into the
+business fallback would reduce availability when WARP/free-pool exits are bad.
 
 For GeoIP route fallback, `UNKNOWN` becomes an overseas route decision for
 gateway planning only. The stored proxy `is_overseas` enrichment remains owned

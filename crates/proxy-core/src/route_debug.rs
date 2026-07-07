@@ -19,8 +19,6 @@ const BUSINESS_OVERSEAS_DOMAINS: &[&str] = &[
     "discord.com",
     "x.com",
     "twitter.com",
-    "github.com",
-    "news.ycombinator.com",
 ];
 
 /// Runtime upstream selected for a gateway request.
@@ -892,9 +890,10 @@ mod tests {
         assert!(is_business_overseas_host("openai.com"));
         assert!(is_business_overseas_host("api.openai.com:443"));
         assert!(is_business_overseas_host("WWW.REDDIT.COM."));
-        assert!(is_business_overseas_host("news.ycombinator.com"));
         assert!(!is_business_overseas_host("notopenai.com"));
         assert!(!is_business_overseas_host("openai.com.example"));
+        assert!(!is_business_overseas_host("github.com"));
+        assert!(!is_business_overseas_host("news.ycombinator.com"));
     }
 
     #[test]
