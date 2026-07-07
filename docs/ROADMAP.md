@@ -37,13 +37,14 @@
 
 用户最新要求先不做 `mcp-api-contract-smoke-v2`，因此该契约 smoke 草稿已暂停并隔离，不作为当前 Ready/Next 主线。`dashboard-ops-polish-v2` 也继续保持暂停。`proxy-quality-history-lite` 已完成；用户随后明确“先不做” `proxy-quality-recommendations-dry-run`，因此该 dry-run 建议任务只保留暂停草稿，不进入当前主线。
 
-用户最新要求“先不做这个，规划新的 todo list”，因此 `fetcher-source-quality-ranking` 也从当前主线移出并隔离。新的 TODO 队列先回到 no-SSH 发布/运维闭环：`release-validation-no-ssh-runbook-v2` 已完成，把推送后如何通过公开入口判断 dev 是否更新固定为默认只读清单；`release-status-contract-smoke-v1` 也已完成，用最小自动化防止 status/update_status 等发布状态契约漂移。`update-failure-hardening` 仍需用户确认安全验证入口后再恢复；如果不恢复它，下一项可直接推进 `revalidation-scheduler-priority-v1`。
+用户随后要求“先不做这个，规划新的 todo list”，因此 `revalidation-scheduler-priority-v1` 也从当前主线移出并隔离。新的 TODO 队列优先推进 no-SSH、只读、低风险的质量可观测能力：`pool-quality-metrics-v1` 已完成，`/api/status`、MCP `service_status` 和 `/api/metrics` 现在共享只读代理池质量摘要。下一项建议推进 `quality-dashboard-readonly-v1`，只消费真实后端字段，不恢复已暂停的操作按钮草稿。
 
 **工作区注意事项**：
 
 - 当前本地存在一组已隔离的 `dashboard-ops-polish-v2` WIP：`wip: paused dashboard ops polish v2`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
 - 当前本地存在一组已隔离的 `mcp-api-contract-smoke-v2` WIP：`wip: paused mcp api contract smoke v2`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
 - 当前本地存在一组已隔离的 `fetcher-source-quality-ranking` WIP：`wip: paused fetcher source quality ranking`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
+- 当前本地存在一组已隔离的 `revalidation-scheduler-priority-v1` WIP：`wip: paused revalidation scheduler priority`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
 - 当前 Trellis 中存在 `proxy-quality-recommendations-dry-run` 暂停草稿。按用户最新要求先不继续，不作为 Ready/Next 主线；后续只有用户重新确认后再恢复。
 - 当前本地存在一组已隔离的 `update-failure-hardening` WIP：`wip: paused update failure hardening`。按用户要求先不继续，不要默认恢复、删除或混入后续任务。
 - 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
@@ -55,9 +56,23 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议从 Ready 选择 `revalidation-scheduler-priority-v1`。`update-failure-hardening`、`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求或安全门槛暂停，不作为当前主线。
+当前无 Now 任务；下一步建议从 Next 选择 `quality-dashboard-readonly-v1`。`revalidation-scheduler-priority-v1`、`update-failure-hardening`、`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求或安全门槛暂停，不作为当前主线。
 
 ## Paused Closeout
+
+### P1 — `revalidation-scheduler-priority-v1`
+
+**目标**：让已有质量历史影响复验顺序，优先复查长期未检查、近期退化、失败压力高或来源风险高的代理，同时避免单一来源长期占满复验预算。
+
+**当前状态**：已按用户最新要求“先不做这个”暂停。此前已有一组可继续的本地 WIP，已隔离在 stash `wip: paused revalidation scheduler priority`；Trellis current 指针已清空。后续只有用户重新确认后再恢复，不纳入当前 Ready/Next 主线。
+
+**暂缓 TODO**：
+
+- [ ] 定义复验候选优先级：last_checked、quality trend、fail_count、success_count、score、source quality 和 protocol 公平性。
+- [ ] 调度器在不改变外部接口的前提下使用优先级排序，保留合理随机性或分桶公平性，避免饥饿。
+- [ ] 对持续失败代理提高复验优先级但不直接清理；清理/降权策略仍留给后续单独任务。
+- [ ] 暴露最小可观测字段或日志，说明本轮复验选择了哪些类别的代理。
+- [ ] 覆盖排序规则、边界值和 scheduler revalidation 行为测试。
 
 ### P0 — `update-failure-hardening`
 
@@ -170,6 +185,27 @@
 - [x] `python -m py_compile tests\integration\test_l2_api.py tests\integration\test_l4_mcp.py` 通过。
 - [x] `cargo test -p proxy-api` 通过。
 - [x] `cargo test -p proxy-mcp` 通过。
+
+### P2 — `pool-quality-metrics-v1`
+
+**目标**：把代理池质量趋势和保留风险沉淀为只读 metrics/status 字段，便于 no-SSH 环境下判断代理池是否正在变好。
+
+**当前状态**：已完成共享只读质量摘要。`proxy-core::status::ServiceStatus` 现在包含 `quality` 对象；REST `/api/status` 和 MCP `service_status` 复用同一结构；`/api/metrics` 输出低基数质量指标。失败原因会归一化为 bounded reason label，不把代理地址、完整 URL、订阅内容或原始错误字符串作为 Prometheus label。
+
+**主要完成项**：
+
+- [x] `ServiceStatus.quality` 返回 total、score buckets、recent samples、recent success rate、recent failures、stale proxy count、retention-risk counts 和 normalized top failure reasons。
+- [x] Redis 质量扫描失败时，状态仍返回默认 quality，且 `redis.status=error` 暴露失败。
+- [x] `/api/metrics` 增加 `proxy_quality_score_bucket`、`proxy_quality_recent_samples_total`、`proxy_quality_recent_success_rate`、`proxy_quality_recent_failures_total`、`proxy_quality_stale_proxies_total`、`proxy_quality_retention_candidates` 和 `proxy_quality_failure_reasons_total`。
+- [x] REST `/api/status` 和 MCP `service_status` integration smoke 已覆盖 `quality` shape。
+- [x] README、`docs/score-retention.md` 和 `.trellis/spec/proxy-core/backend/quality-guidelines.md` 已同步质量摘要契约。
+- [x] `cargo fmt --all --check` 通过。
+- [x] `cargo test -p proxy-core` 通过。
+- [x] `cargo test -p proxy-api` 通过。
+- [x] `cargo test -p proxy-mcp` 通过。
+- [x] `cargo test --workspace --all-targets` 通过。
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+- [x] `python -m py_compile tests\integration\test_l2_api.py tests\integration\test_l4_mcp.py` 通过。
 
 ### P1 — `proxy-quality-history-lite`
 
@@ -415,30 +451,9 @@
 
 ## Ready
 
-### P1 — `revalidation-scheduler-priority-v1`
-
-**目标**：让已有质量历史影响复验顺序，优先复查长期未检查、近期退化、失败压力高或来源风险高的代理，同时避免单一来源长期占满复验预算。
-
-**候选功能**：
-
-- [ ] 定义复验候选优先级：last_checked、quality trend、fail_count、success_count、score、source quality 和 protocol 公平性。
-- [ ] 调度器在不改变外部接口的前提下使用优先级排序，保留合理随机性或分桶公平性，避免饥饿。
-- [ ] 对持续失败代理提高复验优先级但不直接清理；清理/降权策略仍留给后续单独任务。
-- [ ] 暴露最小可观测字段或日志，说明本轮复验选择了哪些类别的代理。
-- [ ] 覆盖排序规则、边界值和 scheduler revalidation 行为测试。
+当前无 Ready 任务。下一项建议仍从 Next 中选择 `quality-dashboard-readonly-v1`，先做只读 UI 消费真实质量字段。
 
 ## Next
-
-### P2 — `pool-quality-metrics-v1`
-
-**目标**：把代理池质量趋势、来源质量和复验调度效果沉淀为只读 metrics/status 字段，便于 no-SSH 环境下判断代理池是否正在变好。
-
-**候选功能**：
-
-- [ ] `/api/status` 或 `/api/metrics` 增加 score bucket、recent success rate、recent failure reason、stale proxy count 等聚合字段。
-- [ ] 指标来自 `proxy-core` 统一聚合模型，REST/MCP/Web 不重复推导。
-- [ ] Prometheus 指标保持低基数，避免把代理地址、完整 URL 或敏感订阅内容作为 label。
-- [ ] 覆盖 metrics 文本、status JSON 和空代理池场景测试。
 
 ### P2 — `quality-dashboard-readonly-v1`
 
@@ -543,17 +558,20 @@
 5. `proxy-quality-history-lite` — 已完成，代理质量轻量趋势和只读解释字段。
 6. `release-validation-no-ssh-runbook-v2` — 已完成，把 post-push dev 验证清单固定为 GitHub Actions、公开 HTTP 和 MCP 只读入口。
 7. `release-status-contract-smoke-v1` — 已完成，为发布验证依赖的 status/update_status 字段补最小契约 smoke，不恢复完整 REST/MCP smoke。
-8. `update-failure-hardening` — 用户确认安全验证入口后再恢复自更新失败路径结构化错误和 no-SSH 验证。
-9. `revalidation-scheduler-priority-v1` — 下一项建议，让质量历史影响复验优先级，但不直接清理代理。
-10. `pool-quality-metrics-v1` — 将质量趋势、来源质量和复验效果暴露为低基数只读指标。
-11. `quality-dashboard-readonly-v1` — 只读展示质量趋势，不恢复暂停的操作按钮草稿。
-12. `fetcher-source-quality-ranking` — 用户重新确认后再恢复，来源维度质量排名和退化提示。
-13. `proxy-quality-recommendations-dry-run` — 用户重新确认后再恢复，基于趋势输出清理/降权建议，默认 dry-run。
-14. `mcp-api-contract-smoke-v2` — 用户重新确认后再恢复 REST/MCP 运维入口契约 smoke。
-15. `dashboard-ops-polish-v2` — 用户重新确认后再恢复 Dashboard 运维整合草稿。
-16. `xray-config-dry-run-and-remove` — 用户重新确认后再恢复 xray 配置 dry-run 和单节点移除。
-17. `warp-ops-enhancement` — 用户重新确认后再恢复 WARP 运维增强。
-18. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
+8. `pool-quality-metrics-v1` — 已完成，将质量趋势和保留风险暴露为低基数只读指标。
+9. `quality-dashboard-readonly-v1` — 下一项建议，只读展示质量趋势，不恢复暂停的操作按钮草稿。
+10. `readonly-dev-smoke-runner-v1` — 可选后续，把 no-SSH 只读验证组合成一条本地可重复命令。
+11. `metrics-low-cardinality-audit-v1` — 可选后续，系统性审计 Prometheus label 是否持续保持低基数。
+12. `config-runbook-drift-check-v1` — 可选后续，防止 README、dev-validation、compose/env/status 字段继续漂移。
+13. `revalidation-scheduler-priority-v1` — 用户重新确认后再恢复，让质量历史影响复验优先级，但不直接清理代理。
+14. `update-failure-hardening` — 用户确认安全验证入口后再恢复自更新失败路径结构化错误和 no-SSH 验证。
+15. `fetcher-source-quality-ranking` — 用户重新确认后再恢复，来源维度质量排名和退化提示。
+16. `proxy-quality-recommendations-dry-run` — 用户重新确认后再恢复，基于趋势输出清理/降权建议，默认 dry-run。
+17. `mcp-api-contract-smoke-v2` — 用户重新确认后再恢复 REST/MCP 运维入口契约 smoke。
+18. `dashboard-ops-polish-v2` — 用户重新确认后再恢复 Dashboard 运维整合草稿。
+19. `xray-config-dry-run-and-remove` — 用户重新确认后再恢复 xray 配置 dry-run 和单节点移除。
+20. `warp-ops-enhancement` — 用户重新确认后再恢复 WARP 运维增强。
+21. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
 
 ## 任务 PRD 模板
 

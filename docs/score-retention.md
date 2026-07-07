@@ -83,6 +83,35 @@ bounded recent validation history:
 The trend is read-only evidence for operators. It does not change the Redis
 sorted-set score formula or cleanup behavior.
 
+## Pool Quality Summary
+
+REST `/api/status`, MCP `service_status`, and Prometheus `/api/metrics` expose a
+shared read-only pool quality summary derived in `proxy-core`.
+
+The status `quality` object includes:
+
+| Field | Meaning |
+|-------|---------|
+| `total` | Stored proxies scanned for the quality summary |
+| `score_buckets` | Counts for `untested`, `poor`, `fair`, `good`, and `excellent` |
+| `recent_samples` | Total retained validation observations across the pool |
+| `recent_success_rate` | Aggregate recent success rate, or `null` with no recent samples |
+| `recent_failures` | Total retained failed observations |
+| `stale_proxies` | Proxies with no check or no check newer than `stale_after_secs` |
+| `stale_after_secs` | Current stale threshold, fixed at one hour |
+| `retention` | Counts for `below_min_score` and `hard_failure_evict` candidates |
+| `top_failure_reasons` | Normalized recent failure reason counts |
+
+Prometheus metrics use only bounded labels:
+
+- `proxy_quality_score_bucket{bucket="untested|poor|fair|good|excellent"}`
+- `proxy_quality_retention_candidates{decision="below_min_score|hard_failure_evict"}`
+- `proxy_quality_failure_reasons_total{reason="<normalized reason>"}`
+
+Failure reasons are normalized before becoming labels. Raw proxy addresses,
+ports, URLs, subscription content, and free-form error strings must not appear as
+metric labels.
+
 ## Cleanup
 
 MCP `cleanup_low_score_proxies` is dry-run by default. It scans stored proxies,

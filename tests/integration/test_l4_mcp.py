@@ -98,6 +98,36 @@ class TestMcpServiceStatus:
         assert release["image_repo"]
         assert release["image_tag"]
         assert release["watchtower_url"]
+        quality = data["quality"]
+        assert isinstance(quality["total"], int)
+        buckets = quality["score_buckets"]
+        for bucket in ("untested", "poor", "fair", "good", "excellent"):
+            assert isinstance(buckets[bucket], int)
+        assert isinstance(quality["recent_samples"], int)
+        assert quality["recent_success_rate"] is None or isinstance(
+            quality["recent_success_rate"], (int, float)
+        )
+        assert isinstance(quality["recent_failures"], int)
+        assert isinstance(quality["stale_proxies"], int)
+        assert isinstance(quality["stale_after_secs"], int)
+        retention = quality["retention"]
+        assert isinstance(retention["below_min_score"], int)
+        assert isinstance(retention["hard_failure_evict"], int)
+        assert isinstance(quality["top_failure_reasons"], list)
+        for reason in quality["top_failure_reasons"]:
+            assert reason["reason"] in (
+                "unknown",
+                "validation_failed",
+                "timeout",
+                "bad_status",
+                "body_read_failed",
+                "invalid_proxy_url",
+                "client_build_failed",
+                "request_failed",
+                "circuit_open",
+                "other",
+            )
+            assert isinstance(reason["count"], int)
 
     def test_update_status_read_only_structure(self, mcp_client):
         """update_status reports the latest update snapshot without mutating."""

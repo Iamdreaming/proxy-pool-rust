@@ -90,7 +90,7 @@ docker compose logs -f proxy-pool
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/status` | 系统状态、版本、git hash、release 镜像配置和协议分布 |
+| GET | `/api/status` | 系统状态、版本、git hash、release 镜像配置、协议分布和只读质量摘要 |
 | GET | `/api/readyz` | 依赖 readiness |
 | GET | `/api/routes/test` | 路由 dry-run 诊断 |
 | GET | `/api/fetchers` | 抓取源状态和源级熔断状态 |
@@ -104,7 +104,7 @@ docker compose logs -f proxy-pool
 | GET | `/api/proxy/best` | 最佳代理 |
 | POST | `/api/proxies/refresh` | 触发刷新（返回抓取/验证/存储计数） |
 | DELETE | `/api/proxy/{key}` | 删除代理（key 格式：protocol:host:port） |
-| GET | `/api/metrics` | Prometheus 指标 |
+| GET | `/api/metrics` | Prometheus 指标，包含代理池规模、只读质量摘要、依赖和路由指标 |
 | GET | `/api/xray/status` | xray 节点生命周期、活跃/失败计数和最近状态 |
 
 ## MCP Server
@@ -122,7 +122,7 @@ docker compose logs -f proxy-pool
 | `cleanup_low_score_proxies` | dry-run 或显式 apply 清理低分代理 |
 | `check_proxy` | 验证指定代理可用性，并返回目标、耗时、HTTP 状态和出口信息 |
 | `check_proxy_matrix` | 对单个代理执行多目标验证矩阵，默认检查 Cloudflare trace 和 httpbin IP |
-| `service_status` | 查看结构化服务状态、release metadata、依赖和代理池摘要 |
+| `service_status` | 查看结构化服务状态、release metadata、依赖、代理池摘要和只读质量摘要 |
 | `update_status` | 查看最近一次 `update_service` 结果，不触发更新 |
 | `update_service` | 拉取配置镜像并触发 Watchtower 更新，需显式启用 `PROXY_POOL_UPDATE_ENABLED=true` |
 | `pool_status` | 查看池状态概览 |

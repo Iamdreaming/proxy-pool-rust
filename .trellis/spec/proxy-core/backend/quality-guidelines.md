@@ -518,3 +518,97 @@ Json(ScoredProxiesResponse {
 ```
 
 The store owns score math and retention decisions; adapters only select inputs and serialize outputs.
+
+## Scenario: Pool Quality Status And Metrics
+
+### 1. Scope / Trigger
+
+- Trigger: shared `/api/status`, MCP `service_status`, and `/api/metrics`
+  expose aggregate proxy quality state.
+- The quality aggregation contract is owned by `proxy-core::status`; API and MCP
+  must serialize `ServiceStatus` instead of recomputing aggregate quality fields.
+
+### 2. Signatures
+
+- Status collection:
+  `collect_service_status(store, balancer, version, git_hash, uptime_sec, xray) -> ServiceStatus`.
+- Quality status field: `ServiceStatus.quality: QualityStatus`.
+- Metrics rendering: `render_prometheus_metrics(status: &ServiceStatus) -> String`.
+- API endpoint: `GET /api/status` and `GET /api/metrics`.
+- MCP tool: `service_status`.
+
+### 3. Contracts
+
+`QualityStatus` fields:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `total` | integer | Stored proxies scanned for quality aggregation |
+| `score_buckets` | object | Counts for `untested`, `poor`, `fair`, `good`, `excellent` |
+| `recent_samples` | integer | Total retained validation observations across the pool |
+| `recent_success_rate` | optional number | Recent successes divided by recent samples; `null` when no samples exist |
+| `recent_failures` | integer | Total retained failed observations |
+| `stale_proxies` | integer | Proxies with no check or older than `stale_after_secs` |
+| `stale_after_secs` | integer | Stale threshold used by the aggregation |
+| `retention` | object | Counts for `below_min_score` and `hard_failure_evict` candidates |
+| `top_failure_reasons` | array | Normalized recent failure reason counts |
+
+Prometheus labels must stay bounded:
+
+| Metric | Allowed labels |
+|--------|----------------|
+| `proxy_quality_score_bucket` | `bucket=untested|poor|fair|good|excellent` |
+| `proxy_quality_retention_candidates` | `decision=below_min_score|hard_failure_evict` |
+| `proxy_quality_failure_reasons_total` | normalized `reason`, never raw error text |
+
+### 4. Validation & Error Matrix
+
+| Condition | Contract |
+|-----------|----------|
+| Empty proxy pool | `quality.total=0`, all bucket/count fields are `0`, `recent_success_rate=null` |
+| Proxy has no `last_check` and no trend samples | Counts as `untested` and stale |
+| Proxy score is `<0.3`, `<0.6`, `<0.8`, or `>=0.8` | Counts as `poor`, `fair`, `good`, or `excellent` respectively |
+| Recent sample has a failed observation | Included in `recent_failures` and normalized failure reason counts |
+| Failure text contains URLs, addresses, or arbitrary details | Prometheus label uses bounded reason such as `timeout`, `request_failed`, or `other` |
+| Redis quality scan fails | Status still serializes with default `quality`; `redis.status=error` carries the failure |
+
+### 5. Good/Base/Bad Cases
+
+- Good: REST `/api/status` and MCP `service_status` both expose the same
+  `quality` object from `ServiceStatus`.
+- Good: `/api/metrics` renders quality metrics from the status snapshot and does
+  not read Redis or inspect proxies itself.
+- Base: old stored proxy JSON without `quality_history` produces deterministic
+  no-sample quality output.
+- Bad: API, MCP, or frontend code recomputes bucket thresholds or failure reason
+  labels locally.
+- Bad: Prometheus labels contain proxy hosts, ports, full URLs, subscription
+  values, or raw free-form errors.
+
+### 6. Tests Required
+
+- `proxy-core` tests for empty-pool output, bucket classification, stale
+  classification, retention counts, failure reason normalization, and metrics
+  rendering.
+- REST integration smoke should assert `/api/status.quality` shape and
+  `/api/metrics` quality metric names.
+- MCP integration smoke should assert `service_status.quality` shape.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// API layer invents buckets and labels independently.
+let bucket = if proxy.latency_ms.unwrap_or(9999.0) < 300.0 { "fast" } else { "slow" };
+```
+
+#### Correct
+
+```rust
+let status = collect_service_status(&store, balancer, version, git_hash, uptime, xray).await;
+let metrics = render_prometheus_metrics(&status);
+```
+
+The shared core status contract owns aggregate quality semantics; adapters only
+serialize or render that contract.

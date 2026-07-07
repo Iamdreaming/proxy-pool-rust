@@ -1,9 +1,14 @@
-use crate::models::Protocol;
-use crate::store::ProxyStore;
+use crate::models::{Protocol, Proxy};
+use crate::store::{ProxyStore, RetentionDecision, ScoreExplanation};
 use crate::warp::balancer::WarpBalancer;
 use crate::xray_status::XrayStatusSnapshot;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fmt::Write;
+
+const QUALITY_STALE_AFTER_SECS: i64 = 3600;
+const MAX_FAILURE_REASON_METRICS: usize = 5;
 
 /// Process and dependency status summary shared by API and MCP surfaces.
 #[derive(Debug, Clone, Serialize)]
@@ -13,6 +18,7 @@ pub struct ServiceStatus {
     pub uptime_sec: u64,
     pub release: ReleaseMetadata,
     pub pool: PoolStatus,
+    pub quality: QualityStatus,
     pub redis: DependencyStatus,
     pub warp: WarpStatus,
     pub xray: XrayStatus,
@@ -100,6 +106,60 @@ pub struct PoolStatus {
     pub total: usize,
 }
 
+/// Aggregate proxy quality summary for status and metrics surfaces.
+#[derive(Debug, Clone, Serialize)]
+pub struct QualityStatus {
+    pub total: usize,
+    pub score_buckets: QualityScoreBuckets,
+    pub recent_samples: usize,
+    pub recent_success_rate: Option<f64>,
+    pub recent_failures: usize,
+    pub stale_proxies: usize,
+    pub stale_after_secs: i64,
+    pub retention: QualityRetentionStatus,
+    pub top_failure_reasons: Vec<FailureReasonCount>,
+}
+
+impl Default for QualityStatus {
+    fn default() -> Self {
+        Self {
+            total: 0,
+            score_buckets: QualityScoreBuckets::default(),
+            recent_samples: 0,
+            recent_success_rate: None,
+            recent_failures: 0,
+            stale_proxies: 0,
+            stale_after_secs: QUALITY_STALE_AFTER_SECS,
+            retention: QualityRetentionStatus::default(),
+            top_failure_reasons: Vec::new(),
+        }
+    }
+}
+
+/// Count of proxies grouped by bounded score buckets.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct QualityScoreBuckets {
+    pub untested: usize,
+    pub poor: usize,
+    pub fair: usize,
+    pub good: usize,
+    pub excellent: usize,
+}
+
+/// Count of proxies that currently match retention-risk decisions.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct QualityRetentionStatus {
+    pub below_min_score: usize,
+    pub hard_failure_evict: usize,
+}
+
+/// Normalized recent failure reason and count.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FailureReasonCount {
+    pub reason: &'static str,
+    pub count: usize,
+}
+
 /// Dependency health state.
 #[derive(Debug, Clone, Serialize)]
 pub struct DependencyStatus {
@@ -167,9 +227,25 @@ pub async fn collect_service_status(
     uptime_sec: u64,
     xray: XrayStatus,
 ) -> ServiceStatus {
-    let (pool, redis) = match collect_pool_status(store).await {
-        Ok(pool) => (pool, DependencyStatus::ok()),
-        Err(e) => (PoolStatus::default(), DependencyStatus::error(e)),
+    let mut redis_errors = Vec::new();
+    let pool = match collect_pool_status(store).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            redis_errors.push(e);
+            PoolStatus::default()
+        }
+    };
+    let quality = match collect_quality_status(store, Utc::now()).await {
+        Ok(quality) => quality,
+        Err(e) => {
+            redis_errors.push(e);
+            QualityStatus::default()
+        }
+    };
+    let redis = if redis_errors.is_empty() {
+        DependencyStatus::ok()
+    } else {
+        DependencyStatus::error(redis_errors.join("; "))
     };
 
     ServiceStatus {
@@ -178,6 +254,7 @@ pub async fn collect_service_status(
         uptime_sec,
         release: ReleaseMetadata::from_env(version, git_hash),
         pool,
+        quality,
         redis,
         warp: collect_warp_status(balancer).await,
         xray,
@@ -202,6 +279,148 @@ async fn collect_pool_status(store: &ProxyStore) -> Result<PoolStatus, String> {
         socks5,
         total: http + https + socks5,
     })
+}
+
+async fn collect_quality_status(
+    store: &ProxyStore,
+    now: DateTime<Utc>,
+) -> Result<QualityStatus, String> {
+    let mut proxies = Vec::new();
+    for protocol in Protocol::all() {
+        proxies.extend(
+            store
+                .all(*protocol)
+                .await
+                .map_err(|e| format!("redis quality scan failed: {e}"))?,
+        );
+    }
+    Ok(build_quality_status(
+        &proxies,
+        |proxy| store.explain(proxy),
+        now,
+    ))
+}
+
+fn build_quality_status(
+    proxies: &[Proxy],
+    explain: impl Fn(&Proxy) -> ScoreExplanation,
+    now: DateTime<Utc>,
+) -> QualityStatus {
+    let mut status = QualityStatus {
+        stale_after_secs: QUALITY_STALE_AFTER_SECS,
+        ..Default::default()
+    };
+    let mut recent_successes = 0usize;
+    let mut failure_reasons: BTreeMap<&'static str, usize> = BTreeMap::new();
+
+    for proxy in proxies {
+        let explanation = explain(proxy);
+        let trend = &explanation.trend;
+        status.total += 1;
+        status.recent_samples += trend.recent_samples;
+        status.recent_failures += trend.recent_failures;
+        recent_successes += trend.recent_samples.saturating_sub(trend.recent_failures);
+
+        let last_checked = last_checked_unix_secs(proxy, &explanation);
+        if is_stale(last_checked, now) {
+            status.stale_proxies += 1;
+        }
+        add_score_bucket(&mut status.score_buckets, last_checked, explanation.score);
+        add_retention_count(&mut status.retention, explanation.retention);
+        add_failure_reasons(&mut failure_reasons, proxy);
+    }
+
+    status.recent_success_rate = (status.recent_samples > 0)
+        .then_some(recent_successes as f64 / status.recent_samples as f64);
+    status.top_failure_reasons = top_failure_reasons(failure_reasons);
+    status
+}
+
+fn last_checked_unix_secs(proxy: &Proxy, explanation: &ScoreExplanation) -> Option<i64> {
+    explanation
+        .trend
+        .last_checked_at_unix_secs
+        .or_else(|| proxy.last_check.map(|checked| checked.timestamp()))
+}
+
+fn is_stale(last_checked: Option<i64>, now: DateTime<Utc>) -> bool {
+    last_checked
+        .is_none_or(|checked| now.timestamp().saturating_sub(checked) >= QUALITY_STALE_AFTER_SECS)
+}
+
+fn add_score_bucket(buckets: &mut QualityScoreBuckets, last_checked: Option<i64>, score: f64) {
+    if last_checked.is_none() {
+        buckets.untested += 1;
+    } else if score >= 0.8 {
+        buckets.excellent += 1;
+    } else if score >= 0.6 {
+        buckets.good += 1;
+    } else if score >= 0.3 {
+        buckets.fair += 1;
+    } else {
+        buckets.poor += 1;
+    }
+}
+
+fn add_retention_count(retention: &mut QualityRetentionStatus, decision: RetentionDecision) {
+    match decision {
+        RetentionDecision::Keep => {}
+        RetentionDecision::BelowMinScore => retention.below_min_score += 1,
+        RetentionDecision::HardFailureEvict => retention.hard_failure_evict += 1,
+    }
+}
+
+fn add_failure_reasons(reasons: &mut BTreeMap<&'static str, usize>, proxy: &Proxy) {
+    for sample in proxy
+        .quality_history
+        .samples
+        .iter()
+        .filter(|sample| !sample.success)
+    {
+        let reason = normalize_failure_reason(sample.error.as_deref());
+        *reasons.entry(reason).or_default() += 1;
+    }
+}
+
+fn normalize_failure_reason(error: Option<&str>) -> &'static str {
+    let Some(error) = error.map(str::trim).filter(|value| !value.is_empty()) else {
+        return "unknown";
+    };
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("validation_failed") || lower.contains("validation failed") {
+        "validation_failed"
+    } else if lower.contains("timeout") {
+        "timeout"
+    } else if lower.contains("bad_status") || lower.contains("bad status") {
+        "bad_status"
+    } else if lower.contains("body_read_failed") || lower.contains("body read failed") {
+        "body_read_failed"
+    } else if lower.contains("invalid_proxy_url") || lower.contains("invalid proxy url") {
+        "invalid_proxy_url"
+    } else if lower.contains("client_build_failed") || lower.contains("client build failed") {
+        "client_build_failed"
+    } else if lower.contains("request_failed") || lower.contains("request failed") {
+        "request_failed"
+    } else if lower.contains("circuit") {
+        "circuit_open"
+    } else {
+        "other"
+    }
+}
+
+fn top_failure_reasons(reasons: BTreeMap<&'static str, usize>) -> Vec<FailureReasonCount> {
+    let mut counts: Vec<FailureReasonCount> = reasons
+        .into_iter()
+        .map(|(reason, count)| FailureReasonCount { reason, count })
+        .collect();
+    counts.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.reason.cmp(right.reason))
+    });
+    counts.truncate(MAX_FAILURE_REASON_METRICS);
+    counts
 }
 
 async fn count_protocol(store: &ProxyStore, protocol: Protocol) -> Result<usize, String> {
@@ -256,6 +475,136 @@ pub fn render_prometheus_metrics(status: &ServiceStatus) -> String {
     )
     .ok();
 
+    writeln!(
+        out,
+        "# HELP proxy_quality_score_bucket Number of proxies by quality score bucket"
+    )
+    .ok();
+    writeln!(out, "# TYPE proxy_quality_score_bucket gauge").ok();
+    writeln!(
+        out,
+        "proxy_quality_score_bucket{{bucket=\"untested\"}} {}",
+        status.quality.score_buckets.untested
+    )
+    .ok();
+    writeln!(
+        out,
+        "proxy_quality_score_bucket{{bucket=\"poor\"}} {}",
+        status.quality.score_buckets.poor
+    )
+    .ok();
+    writeln!(
+        out,
+        "proxy_quality_score_bucket{{bucket=\"fair\"}} {}",
+        status.quality.score_buckets.fair
+    )
+    .ok();
+    writeln!(
+        out,
+        "proxy_quality_score_bucket{{bucket=\"good\"}} {}",
+        status.quality.score_buckets.good
+    )
+    .ok();
+    writeln!(
+        out,
+        "proxy_quality_score_bucket{{bucket=\"excellent\"}} {}",
+        status.quality.score_buckets.excellent
+    )
+    .ok();
+
+    writeln!(
+        out,
+        "# HELP proxy_quality_recent_samples_total Recent validation samples retained in the pool"
+    )
+    .ok();
+    writeln!(out, "# TYPE proxy_quality_recent_samples_total gauge").ok();
+    writeln!(
+        out,
+        "proxy_quality_recent_samples_total {}",
+        status.quality.recent_samples
+    )
+    .ok();
+    writeln!(
+        out,
+        "# HELP proxy_quality_recent_success_rate Aggregate recent validation success rate"
+    )
+    .ok();
+    writeln!(out, "# TYPE proxy_quality_recent_success_rate gauge").ok();
+    writeln!(
+        out,
+        "proxy_quality_recent_success_rate {}",
+        status.quality.recent_success_rate.unwrap_or(0.0)
+    )
+    .ok();
+    writeln!(
+        out,
+        "# HELP proxy_quality_recent_failures_total Recent validation failures retained in the pool"
+    )
+    .ok();
+    writeln!(out, "# TYPE proxy_quality_recent_failures_total gauge").ok();
+    writeln!(
+        out,
+        "proxy_quality_recent_failures_total {}",
+        status.quality.recent_failures
+    )
+    .ok();
+    writeln!(
+        out,
+        "# HELP proxy_quality_stale_proxies_total Proxies with no recent quality check"
+    )
+    .ok();
+    writeln!(out, "# TYPE proxy_quality_stale_proxies_total gauge").ok();
+    writeln!(
+        out,
+        "proxy_quality_stale_proxies_total {}",
+        status.quality.stale_proxies
+    )
+    .ok();
+    writeln!(
+        out,
+        "# HELP proxy_quality_stale_after_seconds Age threshold used for stale quality classification"
+    )
+    .ok();
+    writeln!(out, "# TYPE proxy_quality_stale_after_seconds gauge").ok();
+    writeln!(
+        out,
+        "proxy_quality_stale_after_seconds {}",
+        status.quality.stale_after_secs
+    )
+    .ok();
+    writeln!(
+        out,
+        "# HELP proxy_quality_retention_candidates Number of proxies matching retention-risk decisions"
+    )
+    .ok();
+    writeln!(out, "# TYPE proxy_quality_retention_candidates gauge").ok();
+    writeln!(
+        out,
+        "proxy_quality_retention_candidates{{decision=\"below_min_score\"}} {}",
+        status.quality.retention.below_min_score
+    )
+    .ok();
+    writeln!(
+        out,
+        "proxy_quality_retention_candidates{{decision=\"hard_failure_evict\"}} {}",
+        status.quality.retention.hard_failure_evict
+    )
+    .ok();
+    writeln!(
+        out,
+        "# HELP proxy_quality_failure_reasons_total Recent validation failures by normalized reason"
+    )
+    .ok();
+    writeln!(out, "# TYPE proxy_quality_failure_reasons_total gauge").ok();
+    for reason in &status.quality.top_failure_reasons {
+        writeln!(
+            out,
+            "proxy_quality_failure_reasons_total{{reason=\"{}\"}} {}",
+            reason.reason, reason.count
+        )
+        .ok();
+    }
+
     writeln!(out, "# HELP proxy_redis_ready Redis readiness state").ok();
     writeln!(out, "# TYPE proxy_redis_ready gauge").ok();
     writeln!(out, "proxy_redis_ready {redis_ready}").ok();
@@ -297,6 +646,21 @@ pub fn render_prometheus_metrics(status: &ServiceStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ScoreWeights;
+    use crate::store::explain_score;
+    use chrono::TimeZone;
+
+    fn default_weights() -> ScoreWeights {
+        ScoreWeights {
+            latency: 0.5,
+            success: 0.3,
+            anonymity: 0.2,
+        }
+    }
+
+    fn explain_for_test(proxy: &Proxy) -> ScoreExplanation {
+        explain_score(proxy, &default_weights(), 0.1)
+    }
 
     #[test]
     fn service_status_serializes_required_sections() {
@@ -311,6 +675,7 @@ mod tests {
                 socks5: 3,
                 total: 6,
             },
+            quality: QualityStatus::default(),
             redis: DependencyStatus::ok(),
             warp: WarpStatus {
                 configured: 3,
@@ -332,6 +697,7 @@ mod tests {
         assert!(json.contains("\"configured_image\""));
         assert!(json.contains("\"uptime_sec\":42"));
         assert!(json.contains("\"total\":6"));
+        assert!(json.contains("\"quality\""));
         assert!(json.contains("\"redis\""));
         assert!(json.contains("\"warp\""));
         assert!(json.contains("\"xray\""));
@@ -404,6 +770,102 @@ mod tests {
     }
 
     #[test]
+    fn quality_status_empty_pool_is_deterministic() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 7, 0, 0, 0).unwrap();
+        let quality = build_quality_status(&[], explain_for_test, now);
+
+        assert_eq!(quality.total, 0);
+        assert_eq!(quality.recent_samples, 0);
+        assert_eq!(quality.recent_success_rate, None);
+        assert_eq!(quality.recent_failures, 0);
+        assert_eq!(quality.stale_proxies, 0);
+        assert_eq!(quality.stale_after_secs, QUALITY_STALE_AFTER_SECS);
+        assert_eq!(quality.score_buckets.untested, 0);
+        assert!(quality.top_failure_reasons.is_empty());
+    }
+
+    #[test]
+    fn quality_status_aggregates_buckets_stale_retention_and_failures() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 7, 0, 0, 0).unwrap();
+        let old = now - chrono::Duration::seconds(QUALITY_STALE_AFTER_SECS + 60);
+
+        let untested = Proxy::new("1.1.1.1", 80, Protocol::Http);
+
+        let mut poor_stale = Proxy::new("2.2.2.2", 8080, Protocol::Http);
+        poor_stale.last_check = Some(old);
+        poor_stale.latency_ms = Some(3000.0);
+        poor_stale.fail_count = 1;
+        poor_stale
+            .quality_history
+            .record_failure(old, "timeout while checking http://2.2.2.2:8080");
+
+        let mut excellent = Proxy::new("3.3.3.3", 8080, Protocol::Http);
+        excellent.last_check = Some(now);
+        excellent.latency_ms = Some(100.0);
+        excellent.success_count = 10;
+        excellent.anonymity = Some(crate::models::Anonymity::Elite);
+        excellent.quality_history.record_success(now, Some(100.0));
+
+        let mut hard_failure = Proxy::new("4.4.4.4", 8080, Protocol::Http);
+        hard_failure.last_check = Some(now);
+        hard_failure.latency_ms = Some(100.0);
+        hard_failure.fail_count = 9;
+        hard_failure.anonymity = Some(crate::models::Anonymity::Elite);
+        hard_failure
+            .quality_history
+            .record_failure(now, "validation_failed");
+
+        let quality = build_quality_status(
+            &[untested, poor_stale, excellent, hard_failure],
+            explain_for_test,
+            now,
+        );
+
+        assert_eq!(quality.total, 4);
+        assert_eq!(quality.score_buckets.untested, 1);
+        assert_eq!(quality.score_buckets.poor, 1);
+        assert_eq!(quality.score_buckets.good, 1);
+        assert_eq!(quality.score_buckets.excellent, 1);
+        assert_eq!(quality.stale_proxies, 2);
+        assert_eq!(quality.recent_samples, 3);
+        assert_eq!(quality.recent_failures, 2);
+        assert_eq!(quality.recent_success_rate, Some(1.0 / 3.0));
+        assert_eq!(quality.retention.below_min_score, 1);
+        assert_eq!(quality.retention.hard_failure_evict, 1);
+        assert_eq!(
+            quality.top_failure_reasons,
+            vec![
+                FailureReasonCount {
+                    reason: "timeout",
+                    count: 1,
+                },
+                FailureReasonCount {
+                    reason: "validation_failed",
+                    count: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn failure_reason_normalization_is_bounded() {
+        assert_eq!(normalize_failure_reason(None), "unknown");
+        assert_eq!(normalize_failure_reason(Some("")), "unknown");
+        assert_eq!(
+            normalize_failure_reason(Some("bad status: 500")),
+            "bad_status"
+        );
+        assert_eq!(
+            normalize_failure_reason(Some("request failed for http://1.2.3.4")),
+            "request_failed"
+        );
+        assert_eq!(
+            normalize_failure_reason(Some("opaque upstream said 1.2.3.4:8080 failed")),
+            "other"
+        );
+    }
+
+    #[test]
     fn metrics_include_pool_dependency_warp_and_xray_values() {
         let status = ServiceStatus {
             version: "0.1.0",
@@ -415,6 +877,29 @@ mod tests {
                 https: 1,
                 socks5: 3,
                 total: 6,
+            },
+            quality: QualityStatus {
+                total: 6,
+                score_buckets: QualityScoreBuckets {
+                    untested: 1,
+                    poor: 2,
+                    fair: 1,
+                    good: 1,
+                    excellent: 1,
+                },
+                recent_samples: 10,
+                recent_success_rate: Some(0.7),
+                recent_failures: 3,
+                stale_proxies: 2,
+                stale_after_secs: QUALITY_STALE_AFTER_SECS,
+                retention: QualityRetentionStatus {
+                    below_min_score: 2,
+                    hard_failure_evict: 1,
+                },
+                top_failure_reasons: vec![FailureReasonCount {
+                    reason: "timeout",
+                    count: 2,
+                }],
             },
             redis: DependencyStatus::ok(),
             warp: WarpStatus {
@@ -433,6 +918,15 @@ mod tests {
         let metrics = render_prometheus_metrics(&status);
         assert!(metrics.contains("proxy_pool_size{protocol=\"http\"} 2"));
         assert!(metrics.contains("proxy_pool_size{protocol=\"total\"} 6"));
+        assert!(metrics.contains("proxy_quality_score_bucket{bucket=\"poor\"} 2"));
+        assert!(metrics.contains("proxy_quality_recent_samples_total 10"));
+        assert!(metrics.contains("proxy_quality_recent_success_rate 0.7"));
+        assert!(metrics.contains("proxy_quality_recent_failures_total 3"));
+        assert!(metrics.contains("proxy_quality_stale_proxies_total 2"));
+        assert!(
+            metrics.contains("proxy_quality_retention_candidates{decision=\"below_min_score\"} 2")
+        );
+        assert!(metrics.contains("proxy_quality_failure_reasons_total{reason=\"timeout\"} 2"));
         assert!(metrics.contains("proxy_redis_ready 1"));
         assert!(metrics.contains("proxy_warp_instances_configured 3"));
         assert!(metrics.contains("proxy_xray_active_nodes 5"));
