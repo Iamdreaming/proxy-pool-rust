@@ -491,6 +491,8 @@ fn default_apply_recommendation() -> SubscriptionApplyRecommendation {
     }
 }
 
+const MIN_SUPPORTED_NODES_FOR_NOISY_REVIEW: usize = 20;
+
 fn recommend_apply(report: &SubscriptionSourceReport) -> SubscriptionApplyRecommendation {
     let metrics = source_quality_metrics(report);
     let supported_nodes = report.direct_nodes + report.encrypted_nodes;
@@ -514,7 +516,9 @@ fn recommend_apply(report: &SubscriptionSourceReport) -> SubscriptionApplyRecomm
     {
         reasons.push("supported_protocol_ratio_below_10_percent".into());
     }
-    if metrics.unknown_node_ratio.is_some_and(|ratio| ratio > 0.80) {
+    if metrics.unknown_node_ratio.is_some_and(|ratio| ratio > 0.80)
+        && supported_nodes < MIN_SUPPORTED_NODES_FOR_NOISY_REVIEW
+    {
         reasons.push("unknown_node_ratio_above_80_percent".into());
     }
     if report.parsed_nodes >= 20
@@ -897,6 +901,37 @@ mod tests {
             recommendation
                 .reasons
                 .contains(&"parsed_nodes_below_20".into())
+        );
+    }
+
+    #[test]
+    fn test_recommend_review_when_noisy_source_has_enough_supported_nodes() {
+        let descriptor = SubscriptionSourceDescriptor {
+            id: "static-url-1".into(),
+            kind: SubscriptionSourceKind::StaticUrl,
+            label: "https://example.com/sub".into(),
+            enabled: true,
+        };
+        let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
+        report.unique_urls = 1;
+        report.fetched_urls = 1;
+        report.parsed_nodes = 3726;
+        report.encrypted_nodes = 722;
+        report.unknown_nodes = 3004;
+        report.duplicate_nodes = 3222;
+
+        let recommendation = recommend_apply(&report);
+
+        assert_eq!(recommendation.decision, SubscriptionApplyDecision::Review);
+        assert!(
+            !recommendation
+                .reasons
+                .contains(&"unknown_node_ratio_above_80_percent".into())
+        );
+        assert!(
+            recommendation
+                .reasons
+                .contains(&"source_has_usable_nodes_but_needs_review".into())
         );
     }
 

@@ -62,7 +62,7 @@ pub struct SubscriptionApplyRecommendation {
 | No supported nodes (`direct_nodes + encrypted_nodes == 0`) | `reject`, reason `no_supported_nodes` |
 | Fetch success rate below 10% | `reject`, reason `fetch_success_rate_below_10_percent` |
 | Supported protocol ratio below 10% | `reject`, reason `supported_protocol_ratio_below_10_percent` |
-| Unknown node ratio above 80% | `reject`, reason `unknown_node_ratio_above_80_percent` |
+| Unknown node ratio above 80% and fewer than 20 supported nodes | `reject`, reason `unknown_node_ratio_above_80_percent` |
 | Duplicate node ratio above 95% with at least 20 parsed nodes | `reject`, reason `duplicate_node_ratio_above_95_percent` |
 | Usable but below apply thresholds | `review` with the failed threshold reasons |
 | Meets first-version apply thresholds | `apply`, reason `source_meets_apply_thresholds` |
@@ -72,6 +72,7 @@ pub struct SubscriptionApplyRecommendation {
 
 - Good: 30 parsed nodes, fetch success >= 60%, supported ratio >= 50%, unknown <= 40%, duplicate <= 70% -> `apply`.
 - Base: 5 supported nodes from one fetched URL -> `review`; operator may apply intentionally.
+- Noisy but usable: large mixed feeds with at least 20 supported `ss`, `vmess`, or `trojan` nodes and many unsupported entries -> `review`; normal apply may write only supported nodes.
 - Bad: only `Unknown` nodes or no fetched URLs -> `reject`; normal apply is blocked.
 
 ### 6. Tests Required

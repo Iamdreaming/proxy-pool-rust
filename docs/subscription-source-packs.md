@@ -65,9 +65,11 @@ The `apply` recommendation requires:
 - no dominant fetch/parse error pattern.
 
 Sources are usually `review` when they have usable nodes but miss one of those
-thresholds. Sources are `reject` when they have no usable nodes, near-total fetch
-failure, extremely low supported protocol ratio, unknown nodes dominating,
-extreme duplication, or malformed/private-looking content.
+thresholds, including noisy mixed feeds that still contain at least 20 supported
+nodes. Sources are `reject` when they have no usable nodes, near-total fetch
+failure, extremely low supported protocol ratio, unknown nodes dominating while
+supported yield is tiny, extreme duplication, or malformed/private-looking
+content.
 
 ## GitHub Search Candidate Lane
 
