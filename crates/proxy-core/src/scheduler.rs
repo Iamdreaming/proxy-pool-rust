@@ -231,6 +231,7 @@ impl Scheduler {
             all_proxies.extend(proxies);
         }
         result.fetched = all_proxies.len();
+        self.update_fetcher_statuses(&result.fetchers).await;
 
         // 2. Dedup within this batch
         let unique = dedup::dedup(all_proxies);
