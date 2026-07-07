@@ -69,6 +69,12 @@ Two sub-modules use the `mod_name.rs` + `mod_name/` directory pattern (not `mod.
 
 When adding a new fetcher: create `src/fetcher/new_source.rs`, add `pub mod new_source;` in `fetcher.rs`, and wire it into `build_fetchers()` with a `FetcherToggle` field in `FetchersConfig`.
 
+For multiple public raw-list sources that only differ by URL, parser kind, and
+fallback protocol, extend `fetcher/public_lists.rs` instead of copying a full
+HTTP fetcher module. Keep ids stable (`source:variant`) because
+`refresh_fetcher`, fetcher status, source circuits, and validation survival
+metrics all key on fetcher id.
+
 ---
 
 ## Naming Conventions

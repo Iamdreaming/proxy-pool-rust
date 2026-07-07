@@ -105,6 +105,16 @@ pub struct FetchersConfig {
     pub clarketm: FetcherToggle,
     #[serde(default)]
     pub geonode: FetcherToggle,
+    #[serde(default)]
+    pub proxifly: FetcherToggle,
+    #[serde(default)]
+    pub databay: FetcherToggle,
+    #[serde(default)]
+    pub iplocate: FetcherToggle,
+    #[serde(default)]
+    pub vpslab: FetcherToggle,
+    #[serde(default)]
+    pub monosans: FetcherToggle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -668,5 +678,41 @@ mod tests {
                 expected_statuses: vec![401],
             }]
         );
+    }
+
+    #[test]
+    fn fetchers_config_defaults_enable_public_sources() {
+        let config = FetchersConfig::default();
+
+        assert!(config.proxifly.enabled);
+        assert!(config.databay.enabled);
+        assert!(config.iplocate.enabled);
+        assert!(config.vpslab.enabled);
+        assert!(config.monosans.enabled);
+        assert!(config.proxifly.use_mirror);
+        assert!(config.databay.use_mirror);
+        assert!(config.iplocate.use_mirror);
+        assert!(config.vpslab.use_mirror);
+        assert!(config.monosans.use_mirror);
+    }
+
+    #[test]
+    fn fetchers_config_can_disable_public_sources() {
+        let config: FetchersConfig = serde_yaml::from_str(
+            r#"
+proxifly: { enabled: false }
+databay: { enabled: false }
+iplocate: { enabled: false }
+vpslab: { enabled: false }
+monosans: { enabled: false }
+"#,
+        )
+        .unwrap();
+
+        assert!(!config.proxifly.enabled);
+        assert!(!config.databay.enabled);
+        assert!(!config.iplocate.enabled);
+        assert!(!config.vpslab.enabled);
+        assert!(!config.monosans.enabled);
     }
 }

@@ -51,6 +51,11 @@ pool:
     free_proxy_list: { enabled: true }
     clarketm: { enabled: true }
     geonode: { enabled: true }
+    proxifly: { enabled: true }
+    databay: { enabled: true }
+    iplocate: { enabled: true }
+    vpslab: { enabled: true }
+    monosans: { enabled: true }
 
 warp:
   instances:
