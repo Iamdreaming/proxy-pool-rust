@@ -1561,6 +1561,42 @@ mod tests {
     }
 
     #[test]
+    fn test_fetcher_status_json_includes_quality_fields() {
+        let report = proxy_core::fetcher::base::FetcherRunReport {
+            id: "proxyscrape:http".into(),
+            name: "ProxyScrape".into(),
+            status: proxy_core::fetcher::base::FetcherRunStatus::Success,
+            fetched: 5,
+            parsed: 4,
+            unique: 4,
+            validated: 2,
+            stored: 1,
+            validation_survival_rate: Some(0.5),
+            error: None,
+            circuit_state: proxy_core::fetcher::base::FetcherCircuitState::Closed,
+            consecutive_failures: 0,
+            last_error: None,
+            last_attempt_at: None,
+            last_success_at: None,
+            opened_at: None,
+            next_probe_at: None,
+            action: Some(proxy_core::fetcher::base::FetcherRunAction::Fetched),
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+        };
+
+        let json = to_json(serde_json::json!({
+            "fetchers": [report],
+        }));
+
+        assert!(json.contains("\"unique\": 4"));
+        assert!(json.contains("\"validated\": 2"));
+        assert!(json.contains("\"stored\": 1"));
+        assert!(json.contains("\"validation_survival_rate\": 0.5"));
+    }
+
+    #[test]
     fn test_scheduler_handle_clone() {
         let (cmd_tx, _cmd_rx) = mpsc::channel::<SchedulerCommand>(8);
         let handle = SchedulerHandle::new(cmd_tx);

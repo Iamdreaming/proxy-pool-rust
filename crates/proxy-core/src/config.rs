@@ -119,6 +119,8 @@ pub struct PoolSettings {
     pub validate_timeout_sec: u64,
     #[serde(default = "default_validate_target")]
     pub validate_target_url: String,
+    #[serde(default)]
+    pub validate_target_urls: Vec<String>,
     #[serde(default = "default_min_score")]
     pub min_score: f64,
     #[serde(default)]
@@ -128,6 +130,16 @@ pub struct PoolSettings {
     /// Max connection attempts per second (0 = unlimited).
     #[serde(default = "default_pace_rate")]
     pub pace_rate_per_sec: f64,
+}
+
+impl PoolSettings {
+    /// Return validation targets with backward-compatible single-target fallback.
+    pub fn effective_validate_target_urls(&self) -> Vec<String> {
+        if self.validate_target_urls.is_empty() {
+            return vec![self.validate_target_url.clone()];
+        }
+        self.validate_target_urls.clone()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -526,5 +538,44 @@ impl Default for SubscriptionConfig {
 impl Default for XraySettings {
     fn default() -> Self {
         serde_yaml::from_str("{}").unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_validate_target_urls_falls_back_to_single_target() {
+        let settings = PoolSettings {
+            validate_target_url: "https://one.example/check".into(),
+            validate_target_urls: vec![],
+            ..PoolSettings::default()
+        };
+
+        assert_eq!(
+            settings.effective_validate_target_urls(),
+            vec!["https://one.example/check".to_string()]
+        );
+    }
+
+    #[test]
+    fn effective_validate_target_urls_prefers_explicit_list() {
+        let settings = PoolSettings {
+            validate_target_url: "https://legacy.example/check".into(),
+            validate_target_urls: vec![
+                "https://one.example/check".into(),
+                "https://two.example/check".into(),
+            ],
+            ..PoolSettings::default()
+        };
+
+        assert_eq!(
+            settings.effective_validate_target_urls(),
+            vec![
+                "https://one.example/check".to_string(),
+                "https://two.example/check".to_string()
+            ]
+        );
     }
 }

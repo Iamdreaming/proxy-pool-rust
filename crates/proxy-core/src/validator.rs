@@ -353,6 +353,32 @@ impl Validator {
         self.check_one(proxy).await.into_proxy()
     }
 
+    /// Validate a single proxy against every target URL. All targets must pass.
+    pub async fn validate_one_against_targets(
+        &self,
+        proxy: &Proxy,
+        targets: &[String],
+    ) -> Option<Proxy> {
+        if targets.is_empty() {
+            return self.validate_one(proxy).await;
+        }
+
+        let mut checks = Vec::with_capacity(targets.len());
+        for target in targets {
+            let validator = Self {
+                target_url: target.clone(),
+                timeout_secs: self.timeout_secs,
+                real_ip: self.real_ip.clone(),
+                pacer: self.pacer.clone(),
+            };
+            checks.push(validator.validate_one(proxy).await);
+            if checks.last().is_some_and(Option::is_none) {
+                break;
+            }
+        }
+        strict_target_admission_result(proxy, checks)
+    }
+
     /// Check a single proxy and return a structured validation result.
     pub async fn check_one(&self, proxy: &Proxy) -> ProxyCheckResult {
         // Rate-limit if pacer is configured
@@ -497,6 +523,43 @@ impl Validator {
         alive
     }
 
+    /// Validate many proxies against every target URL with bounded proxy concurrency.
+    pub async fn validate_many_against_targets(
+        &self,
+        proxies: &[Proxy],
+        targets: &[String],
+        concurrency: usize,
+    ) -> Vec<Proxy> {
+        if targets.is_empty() {
+            return self.validate_many(proxies, concurrency).await;
+        }
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let mut handles = Vec::with_capacity(proxies.len());
+
+        for proxy in proxies {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let validator = self.clone();
+            let targets = targets.to_vec();
+            let proxy = proxy.clone();
+            handles.push(tokio::spawn(async move {
+                let result = validator
+                    .validate_one_against_targets(&proxy, &targets)
+                    .await;
+                drop(permit);
+                result
+            }));
+        }
+
+        let mut alive = Vec::new();
+        for handle in handles {
+            if let Ok(Some(proxy)) = handle.await {
+                alive.push(proxy);
+            }
+        }
+        alive
+    }
+
     /// Detect anonymity level from the observed origin IP.
     fn detect_anonymity(&self, observed_ip: Option<&str>, proxy: &Proxy) -> Anonymity {
         let origin = observed_ip.unwrap_or_default();
@@ -557,6 +620,17 @@ fn first_non_empty_csv_value(value: &str) -> Option<String> {
         .map(str::trim)
         .find(|part| !part.is_empty())
         .map(ToString::to_string)
+}
+
+fn strict_target_admission_result(original: &Proxy, checks: Vec<Option<Proxy>>) -> Option<Proxy> {
+    let mut accepted = None;
+    for check in checks {
+        accepted = Some(check?);
+    }
+    accepted.map(|mut proxy| {
+        proxy.success_count = original.success_count.saturating_add(1);
+        proxy
+    })
 }
 
 #[cfg(test)]
@@ -728,6 +802,31 @@ mod tests {
         assert!(json.contains("\"alive_count\":1"));
         assert!(json.contains("\"checks\""));
         assert!(json.contains("\"target_url\":\"https://httpbin.org/ip\""));
+    }
+
+    #[test]
+    fn strict_target_admission_accepts_only_when_all_targets_pass() {
+        let mut original = Proxy::new("1.2.3.4", 8080, Protocol::Http);
+        original.success_count = 7;
+        let mut first = original.clone();
+        first.latency_ms = Some(50.0);
+        let mut second = original.clone();
+        second.latency_ms = Some(75.0);
+
+        let accepted =
+            strict_target_admission_result(&original, vec![Some(first), Some(second)]).unwrap();
+
+        assert_eq!(accepted.latency_ms, Some(75.0));
+        assert_eq!(accepted.success_count, 8);
+    }
+
+    #[test]
+    fn strict_target_admission_rejects_when_any_target_fails() {
+        let original = Proxy::new("1.2.3.4", 8080, Protocol::Http);
+        let accepted =
+            strict_target_admission_result(&original, vec![Some(original.clone()), None]);
+
+        assert!(accepted.is_none());
     }
 
     #[test]

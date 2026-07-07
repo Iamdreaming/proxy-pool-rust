@@ -2,25 +2,25 @@
 
 ## Checklist
 
-1. [ ] Load `trellis-before-dev` and read applicable specs:
+1. [x] Load `trellis-before-dev` and read applicable specs:
    - `proxy-core/backend`
    - `proxy-api/backend`
    - `proxy-mcp/backend`
    - shared guides
-2. [ ] Update `PoolSettings` with backward-compatible
+2. [x] Update `PoolSettings` with backward-compatible
    `validate_target_urls`.
-3. [ ] Add an effective validation target helper and tests.
-4. [ ] Add scheduler admission validation for one or many targets.
-5. [ ] Extend `FetcherRunReport` with source quality fields.
-6. [ ] Update scheduler attribution:
+3. [x] Add an effective validation target helper and tests.
+4. [x] Add scheduler admission validation for one or many targets.
+5. [x] Extend `FetcherRunReport` with source quality fields.
+6. [x] Update scheduler attribution:
    - parsed/fetched remains per fetcher output
    - `unique` counted after batch dedup
    - `validated` counted after admission validation
    - `stored` counted after Redis store success
-7. [ ] Ensure REST and MCP fetcher status serialize new fields without local
+7. [x] Ensure REST and MCP fetcher status serialize new fields without local
    recomputation.
-8. [ ] Update config example and relevant Trellis specs.
-9. [ ] Run local verification:
+8. [x] Update config example and relevant Trellis specs.
+9. [x] Run local verification:
    - `cargo fmt --all --check`
    - `cargo test -p proxy-core fetcher`
    - `cargo test -p proxy-core scheduler`

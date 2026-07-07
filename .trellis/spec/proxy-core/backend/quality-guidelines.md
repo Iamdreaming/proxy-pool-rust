@@ -216,8 +216,10 @@ Current test coverage:
 - Structured fetch: `Fetcher::fetch_with_report(&self) -> FetcherOutput`.
 - Scheduler status: `SchedulerHandle::fetcher_statuses(&self) -> Vec<FetcherRunReport>`.
 - Single refresh: `SchedulerHandle::refresh_fetcher(&self, fetcher_id) -> anyhow::Result<SchedulerResult>`.
+- Pool validation targets: `PoolSettings::effective_validate_target_urls()` falls back to `validate_target_url` when `validate_target_urls` is empty.
 - Structured validation: `Validator::check_one(&self, proxy: &Proxy) -> ProxyCheckResult`.
 - Compatibility validation: `Validator::validate_one(&self, proxy: &Proxy) -> Option<Proxy>` delegates to `check_one()`.
+- Scheduler admission validation: `Validator::validate_many_against_targets(&self, proxies, targets, concurrency)` is strict all-target admission.
 - Multi-target validation: `check_proxy_matrix(request: ProxyCheckMatrixRequest) -> Result<ProxyCheckMatrixResult, ProxyCheckMatrixError>`.
 
 ### 3. Contracts
@@ -233,6 +235,10 @@ Fetcher ids are stable machine ids used by API/MCP clients. Protocol-specific fe
 | `status` | enum | `never_run`, `success`, `empty`, `error`, `skipped` |
 | `fetched` | integer | Raw candidate count when known |
 | `parsed` | integer | Parsed proxy count |
+| `unique` | integer | Deduplicated candidate count credited to this fetcher id |
+| `validated` | integer | Deduplicated candidates from this fetcher that passed admission validation |
+| `stored` | integer | Validated candidates from this fetcher that were stored successfully |
+| `validation_survival_rate` | optional number | `validated / unique`, omitted when `unique` is zero |
 | `error` | optional string | Error reason for failed fetch attempts |
 | `circuit_state` | enum | Source circuit state: `closed`, `open`, or `half_open` |
 | `consecutive_failures` | integer | Consecutive unsuccessful fetch attempts used by the source circuit |

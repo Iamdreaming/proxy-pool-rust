@@ -213,41 +213,52 @@ impl Scheduler {
 
         let mut all_proxies = Vec::new();
         for output in outputs {
-            let previous = previous_by_id.get(&output.report.id);
-            let report = output.report.apply_circuit_transition(
-                previous,
-                manual_refresh,
-                chrono::Utc::now(),
-            );
+            let FetcherOutput {
+                mut proxies,
+                report,
+            } = output;
+            let source_id = report.id.clone();
+            let previous = previous_by_id.get(&source_id);
+            let report =
+                report.apply_circuit_transition(previous, manual_refresh, chrono::Utc::now());
             if report.status == crate::fetcher::base::FetcherRunStatus::Error {
                 result.errors += 1;
             }
+            for proxy in &mut proxies {
+                proxy.source = Some(source_id.clone());
+            }
             result.fetchers.push(report);
-            all_proxies.extend(output.proxies);
+            all_proxies.extend(proxies);
         }
-        self.update_fetcher_statuses(&result.fetchers).await;
         result.fetched = all_proxies.len();
 
         // 2. Dedup within this batch
         let unique = dedup::dedup(all_proxies);
+        let unique_by_source = count_by_source(&unique);
         tracing::info!("fetched proxies ({} unique after dedup)", unique.len());
         if unique.is_empty() {
+            apply_source_quality_counts(
+                &mut result.fetchers,
+                &unique_by_source,
+                &HashMap::new(),
+                &HashMap::new(),
+            );
+            self.update_fetcher_statuses(&result.fetchers).await;
             return Ok(result);
         }
 
         // 3. Filter out proxies whose circuit breaker is still open in the store
+        let unique_count = unique.len();
         let candidates = self.filter_circuit_broken(unique).await;
-        let skipped = result.fetched - candidates.len();
+        let skipped = unique_count.saturating_sub(candidates.len());
         if skipped > 0 {
             tracing::info!("skipped {} circuit-broken proxies", skipped);
         }
 
         // 4. Validate concurrently
-        let mut working = self
-            .validator
-            .validate_many(&candidates, self.settings.validate_concurrency)
-            .await;
+        let mut working = self.validate_candidates(&candidates).await;
         result.validated = working.len();
+        let validated_by_source = count_by_source(&working);
         tracing::info!("validated {} working proxies", working.len());
 
         // 4b. Enrich working proxies with GeoIP data
@@ -263,15 +274,39 @@ impl Scheduler {
         }
 
         // 5. Store
+        let mut stored_by_source = HashMap::new();
         for p in &working {
             if let Err(e) = self.store.add(p).await {
                 tracing::warn!("failed to store proxy {}: {e}", p.key());
                 result.errors += 1;
+            } else {
+                increment_source_count(&mut stored_by_source, p);
+                result.stored += 1;
             }
         }
-        result.stored = working.len() - result.errors;
+        apply_source_quality_counts(
+            &mut result.fetchers,
+            &unique_by_source,
+            &validated_by_source,
+            &stored_by_source,
+        );
+        self.update_fetcher_statuses(&result.fetchers).await;
 
         Ok(result)
+    }
+
+    async fn validate_candidates(&self, candidates: &[Proxy]) -> Vec<Proxy> {
+        if self.settings.validate_target_urls.is_empty() {
+            return self
+                .validator
+                .validate_many(candidates, self.settings.validate_concurrency)
+                .await;
+        }
+
+        let targets = self.settings.effective_validate_target_urls();
+        self.validator
+            .validate_many_against_targets(candidates, &targets, self.settings.validate_concurrency)
+            .await
     }
 
     async fn update_fetcher_statuses(&self, reports: &[FetcherRunReport]) {
@@ -328,10 +363,7 @@ impl Scheduler {
                 continue;
             }
 
-            let working = self
-                .validator
-                .validate_many(&existing, self.settings.validate_concurrency)
-                .await;
+            let working = self.validate_candidates(&existing).await;
 
             let working_keys: std::collections::HashSet<String> =
                 working.iter().map(|p| p.key()).collect();
@@ -426,12 +458,54 @@ fn should_skip_fetcher_for_run(
     !manual_refresh && previous.is_some_and(|report| report.should_skip_automatic_at(now))
 }
 
+fn count_by_source(proxies: &[Proxy]) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for proxy in proxies {
+        increment_source_count(&mut counts, proxy);
+    }
+    counts
+}
+
+fn increment_source_count(counts: &mut HashMap<String, usize>, proxy: &Proxy) {
+    if let Some(source) = proxy.source.as_deref() {
+        *counts.entry(source.to_string()).or_insert(0) += 1;
+    }
+}
+
+fn apply_source_quality_counts(
+    reports: &mut [FetcherRunReport],
+    unique_by_source: &HashMap<String, usize>,
+    validated_by_source: &HashMap<String, usize>,
+    stored_by_source: &HashMap<String, usize>,
+) {
+    for report in reports {
+        report.set_quality_counts(
+            unique_by_source.get(&report.id).copied().unwrap_or(0),
+            validated_by_source.get(&report.id).copied().unwrap_or(0),
+            stored_by_source.get(&report.id).copied().unwrap_or(0),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fetcher::base::FetcherCircuitState;
     use chrono::{Duration, Utc};
     use tokio::sync::mpsc;
+
+    struct TestFetcher;
+
+    #[async_trait::async_trait]
+    impl Fetcher for TestFetcher {
+        fn name(&self) -> &str {
+            "TestFetcher"
+        }
+
+        async fn fetch(&self) -> Vec<Proxy> {
+            Vec::new()
+        }
+    }
 
     #[test]
     fn test_scheduler_result_default() {
@@ -510,6 +584,10 @@ mod tests {
             status: crate::fetcher::base::FetcherRunStatus::Error,
             fetched: 0,
             parsed: 0,
+            unique: 0,
+            validated: 0,
+            stored: 0,
+            validation_survival_rate: None,
             error: Some("timeout".into()),
             circuit_state: FetcherCircuitState::Open,
             consecutive_failures: 3,
@@ -526,5 +604,38 @@ mod tests {
 
         assert!(should_skip_fetcher_for_run(false, Some(&report), now));
         assert!(!should_skip_fetcher_for_run(true, Some(&report), now));
+    }
+
+    #[test]
+    fn applies_source_quality_counts_to_matching_reports() {
+        let mut reports = vec![
+            FetcherRunReport {
+                id: "source-a".into(),
+                name: "Source A".into(),
+                ..FetcherRunReport::never_run(&TestFetcher)
+            },
+            FetcherRunReport {
+                id: "source-b".into(),
+                name: "Source B".into(),
+                ..FetcherRunReport::never_run(&TestFetcher)
+            },
+        ];
+        let unique_by_source = HashMap::from([("source-a".to_string(), 3)]);
+        let validated_by_source = HashMap::from([("source-a".to_string(), 2)]);
+        let stored_by_source = HashMap::from([("source-a".to_string(), 1)]);
+
+        apply_source_quality_counts(
+            &mut reports,
+            &unique_by_source,
+            &validated_by_source,
+            &stored_by_source,
+        );
+
+        assert_eq!(reports[0].unique, 3);
+        assert_eq!(reports[0].validated, 2);
+        assert_eq!(reports[0].stored, 1);
+        assert_eq!(reports[0].validation_survival_rate, Some(2.0 / 3.0));
+        assert_eq!(reports[1].unique, 0);
+        assert_eq!(reports[1].validation_survival_rate, None);
     }
 }

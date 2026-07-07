@@ -117,12 +117,10 @@ creates the measurement and stricter admission foundation first.
 - Dynamic refresh scheduling by source quality.
 - Gateway route ordering changes.
 
-## Open Question
+## Decision
 
-Should the first implementation use strict all-target admission when multiple
-validation targets are configured?
-
-Recommended answer: yes. It makes "high quality" concrete and avoids admitting
-proxies that only pass a generic health endpoint but fail real business
-targets. The trade-off is fewer stored proxies; if the pool becomes too small,
-a later slice can add a configurable threshold such as "2 of 3 targets".
+The first implementation will use strict all-target admission when multiple
+validation targets are configured. This makes "high quality" concrete and avoids
+admitting proxies that only pass a generic health endpoint but fail real
+business targets. The trade-off is fewer stored proxies; if the pool becomes too
+small, a later slice can add a configurable threshold such as "2 of 3 targets".

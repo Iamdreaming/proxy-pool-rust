@@ -653,6 +653,30 @@ mod tests {
     }
 
     #[test]
+    fn test_fetchers_response_serializes_quality_fields() {
+        let report = FetcherRunReport::completed_for(
+            "proxyscrape:http".into(),
+            "ProxyScrape".into(),
+            chrono::Utc::now(),
+            std::time::Instant::now(),
+            5,
+            4,
+            None,
+        )
+        .with_quality_counts(4, 2, 1);
+        let resp = FetchersResponse {
+            fetchers: vec![report],
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+
+        assert!(json.contains("\"unique\":4"));
+        assert!(json.contains("\"validated\":2"));
+        assert!(json.contains("\"stored\":1"));
+        assert!(json.contains("\"validation_survival_rate\":0.5"));
+    }
+
+    #[test]
     fn test_subscription_sources_response_serialization() {
         let resp = SubscriptionSourcesResponse {
             status: "ok".into(),

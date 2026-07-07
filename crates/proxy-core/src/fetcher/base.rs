@@ -43,13 +43,18 @@ pub enum FetcherRunAction {
 }
 
 /// Structured metadata for a fetcher run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FetcherRunReport {
     pub id: String,
     pub name: String,
     pub status: FetcherRunStatus,
     pub fetched: usize,
     pub parsed: usize,
+    pub unique: usize,
+    pub validated: usize,
+    pub stored: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_survival_rate: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub circuit_state: FetcherCircuitState,
@@ -83,6 +88,10 @@ impl FetcherRunReport {
             status: FetcherRunStatus::NeverRun,
             fetched: 0,
             parsed: 0,
+            unique: 0,
+            validated: 0,
+            stored: 0,
+            validation_survival_rate: None,
             error: None,
             circuit_state: FetcherCircuitState::Closed,
             consecutive_failures: 0,
@@ -143,6 +152,10 @@ impl FetcherRunReport {
             status,
             fetched,
             parsed,
+            unique: 0,
+            validated: 0,
+            stored: 0,
+            validation_survival_rate: None,
             error,
             circuit_state: FetcherCircuitState::Closed,
             consecutive_failures: 0,
@@ -180,6 +193,20 @@ impl FetcherRunReport {
         self
     }
 
+    /// Attach post-fetch source quality counts from the scheduler pipeline.
+    pub fn with_quality_counts(mut self, unique: usize, validated: usize, stored: usize) -> Self {
+        self.set_quality_counts(unique, validated, stored);
+        self
+    }
+
+    /// Update post-fetch source quality counts in place.
+    pub fn set_quality_counts(&mut self, unique: usize, validated: usize, stored: usize) {
+        self.unique = unique;
+        self.validated = validated;
+        self.stored = stored;
+        self.validation_survival_rate = validation_survival_rate(unique, validated);
+    }
+
     /// Build a skipped report for an automatic refresh blocked by an open source circuit.
     pub fn skipped_open(
         fetcher: &dyn Fetcher,
@@ -192,6 +219,10 @@ impl FetcherRunReport {
             status: FetcherRunStatus::Skipped,
             fetched: 0,
             parsed: 0,
+            unique: 0,
+            validated: 0,
+            stored: 0,
+            validation_survival_rate: None,
             error: previous
                 .last_error
                 .clone()
@@ -295,6 +326,10 @@ fn fetcher_circuit_cooldown_sec(failures: u32) -> i64 {
     (FETCHER_CIRCUIT_COOLDOWN_SEC * multiplier).min(FETCHER_CIRCUIT_MAX_COOLDOWN_SEC)
 }
 
+fn validation_survival_rate(unique: usize, validated: usize) -> Option<f64> {
+    (unique > 0).then_some(validated as f64 / unique as f64)
+}
+
 /// Fetcher output plus the run report that produced it.
 #[derive(Debug, Clone)]
 pub struct FetcherOutput {
@@ -382,6 +417,10 @@ mod tests {
         assert_eq!(report.status, FetcherRunStatus::NeverRun);
         assert_eq!(report.fetched, 0);
         assert_eq!(report.parsed, 0);
+        assert_eq!(report.unique, 0);
+        assert_eq!(report.validated, 0);
+        assert_eq!(report.stored, 0);
+        assert_eq!(report.validation_survival_rate, None);
     }
 
     #[test]
@@ -405,6 +444,23 @@ mod tests {
             Some("network failed".into()),
         );
         assert_eq!(error.status, FetcherRunStatus::Error);
+    }
+
+    #[test]
+    fn quality_counts_compute_survival_rate_and_serialize() {
+        let fetcher = TestFetcher;
+        let report = FetcherRunReport::never_run(&fetcher).with_quality_counts(4, 2, 1);
+
+        assert_eq!(report.unique, 4);
+        assert_eq!(report.validated, 2);
+        assert_eq!(report.stored, 1);
+        assert_eq!(report.validation_survival_rate, Some(0.5));
+
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"unique\":4"));
+        assert!(json.contains("\"validated\":2"));
+        assert!(json.contains("\"stored\":1"));
+        assert!(json.contains("\"validation_survival_rate\":0.5"));
     }
 
     #[test]
