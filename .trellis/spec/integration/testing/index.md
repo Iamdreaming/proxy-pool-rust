@@ -15,11 +15,14 @@ that use `PROXY_POOL_*` environment variables.
 | Guide | Description | Status |
 |-------|-------------|--------|
 | [Read-only Dev Smoke Runner](./readonly-dev-smoke-runner.md) | Command contract for post-push no-SSH validation | Done |
+| [Config Runbook Drift Check](./config-runbook-drift-check.md) | Local contract for keeping dev compose, runbook docs, and release metadata fields aligned | Done |
 
 ## Pre-Development Checklist
 
 - [ ] Read `docs/dev-validation.md` before adding or changing deployment
       validation helpers.
+- [ ] Read `config-runbook-drift-check.md` before changing dev compose update
+      env wiring, release metadata field names, or operator runbook text.
 - [ ] Reuse `tests/integration/config.py` for `PROXY_POOL_*` environment
       variables.
 - [ ] Reuse `tests/integration/helpers/mcp_client.py` for MCP Streamable HTTP
@@ -33,5 +36,7 @@ that use `PROXY_POOL_*` environment variables.
       dev access.
 - [ ] Live smoke failures produce actionable public-surface triage hints.
 - [ ] New helper commands document how to run from the repository root.
+- [ ] Compose/runbook/release-field changes keep
+      `tests/integration/test_l0_config_runbook_drift.py` passing.
 - [ ] `.codex/config.toml` and other unrelated local config files are not staged
       with integration helper changes.

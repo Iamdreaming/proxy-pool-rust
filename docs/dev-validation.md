@@ -96,8 +96,8 @@ The manual steps below remain useful for drilling into a failed runner result.
 
    MCP `service_status` should expose `release.git_hash`,
    `release.configured_image`, `release.update_enabled`,
-   `release.update_container`, `release.update_image`, and
-   `release.watchtower_url`.
+   `release.update_container`, `release.image_repo`,
+   `release.image_tag`, and `release.watchtower_url`.
 
    MCP `update_status` should report the latest in-process update snapshot
    without touching Docker or Watchtower. Common statuses are
@@ -117,6 +117,7 @@ The manual steps below remain useful for drilling into a failed runner result.
 Managed dev compose wiring should keep these settings aligned:
 
 - `PROXY_POOL_UPDATE_ENABLED=true`
+- `PROXY_POOL_UPDATE_DOCKER_SOCKET=/var/run/docker.sock`
 - `PROXY_POOL_UPDATE_CONTAINER=proxy-pool`
 - `PROXY_POOL_UPDATE_IMAGE=ghcr.io/iamdreaming/proxy-pool-rust:latest`
 - `PROXY_POOL_UPDATE_WATCHTOWER_URL=http://watchtower-proxy-pool:8080/v1/update`
@@ -126,6 +127,11 @@ Managed dev compose wiring should keep these settings aligned:
 Verify these through deployment configuration, `/api/status.release`, MCP
 `service_status.release`, or MCP `update_status`. Do not SSH to the host just
 to print environment variables.
+
+The `containrrr/watchtower` image may not include common shell utilities such
+as `printenv`, so `docker compose exec watchtower-proxy-pool printenv` is not a
+recommended token check. Prefer the compose file, app-container update env,
+`service_status.release`, and `update_status` instead.
 
 ## Optional Explicit Update Step
 

@@ -57,7 +57,7 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议推进 `config-runbook-drift-check-v1`。`readonly-dev-smoke-runner-v1` 已完成，只组合已有只读入口，不直接 SSH、不访问宿主 Docker、不触发 `update_service`，用于把 post-push dev 验证变成一条本地可重复执行的命令。`quality-dashboard-readonly-v1`、`revalidation-scheduler-priority-v1`、`update-failure-hardening`、`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求或安全门槛暂停，不作为当前主线。
+当前无 Now 任务；下一步建议推进 `metrics-low-cardinality-audit-v1`。`readonly-dev-smoke-runner-v1` 和 `config-runbook-drift-check-v1` 已完成，dev 发布验证默认保持 no-SSH、只读、本地可重复，并通过文档/配置漂移检查约束 compose env、release 字段和 Watchtower token 说明。`quality-dashboard-readonly-v1`、`revalidation-scheduler-priority-v1`、`update-failure-hardening`、`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求或安全门槛暂停，不作为当前主线。
 
 ## Paused Closeout
 
@@ -168,6 +168,21 @@
 - [ ] 覆盖 core 汇总逻辑、API/MCP shape 和旧数据兼容测试。
 
 ## Done
+
+### P0 — `config-runbook-drift-check-v1`
+
+**目标**：防止 README、`docs/dev-validation.md`、dev compose/env 示例和状态接口字段继续漂移，尤其是自更新相关环境变量与 no-SSH 验证边界。
+
+**当前状态**：已完成。`docs/dev-validation.md` 已对齐实际 release 字段，使用 `release.configured_image`、`release.image_repo` 和 `release.image_tag`，不再记录过时的 `release.update_image`。runbook 也补齐 `PROXY_POOL_UPDATE_DOCKER_SOCKET`、Watchtower token 配对关系，以及 Watchtower 镜像可能缺少 `printenv` 的预期限制。
+
+**主要完成项**：
+
+- [x] 梳理并记录 dev compose 所需 `PROXY_POOL_UPDATE_*` 与 Watchtower token 对应关系。
+- [x] 检查并修正 dev-validation / compose / status 字段描述中的 `release.update_image` 漂移。
+- [x] 明确记录 Watchtower 镜像内缺少常规 shell 工具时属于预期限制，不把 `docker compose exec watchtower-proxy-pool printenv` 作为推荐验证方式。
+- [x] 新增 `tests/integration/test_l0_config_runbook_drift.py`，本地只读检查 compose env、Watchtower token、release 字段和 no-SSH/no-routine-update 边界。
+- [x] 新增 `.trellis/spec/integration/testing/config-runbook-drift-check.md`，沉淀后续修改部署验证文档时的可执行契约。
+- [x] `python -m pytest tests\integration\test_l0_config_runbook_drift.py tests\integration\test_l0_no_ssh_helpers.py tests\integration\test_l0_readonly_dev_smoke.py -q` 通过。
 
 ### P0 — `readonly-dev-smoke-runner-v1`
 
@@ -482,17 +497,6 @@
 
 ## Ready
 
-### P0 — `config-runbook-drift-check-v1`
-
-**目标**：防止 README、`docs/dev-validation.md`、dev compose/env 示例和状态接口字段继续漂移，尤其是自更新相关环境变量与 no-SSH 验证边界。
-
-**候选功能**：
-
-- [ ] 梳理 dev compose 所需 `PROXY_POOL_UPDATE_*` 与 Watchtower token 的对应关系。
-- [ ] 检查 README / dev-validation / compose 示例是否一致描述 update enabled、container/image、Watchtower URL 和 token。
-- [ ] 明确记录 Watchtower 镜像内缺少常规 shell 工具时属于预期限制，不把 `docker compose exec watchtower printenv` 作为推荐验证方式。
-- [ ] 如适合自动化，增加轻量文档/配置漂移检查；否则形成可执行清单。
-
 ### P2 — `metrics-low-cardinality-audit-v1`
 
 **目标**：系统性审计 Prometheus 指标 label，确保最近新增质量、路由、fetcher、release 指标持续保持低基数。
@@ -632,7 +636,7 @@
 7. `release-status-contract-smoke-v1` — 已完成，为发布验证依赖的 status/update_status 字段补最小契约 smoke，不恢复完整 REST/MCP smoke。
 8. `pool-quality-metrics-v1` — 已完成，将质量趋势和保留风险暴露为低基数只读指标。
 9. `readonly-dev-smoke-runner-v1` — 已完成，把 no-SSH 只读验证组合成一条本地可重复命令。
-10. `config-runbook-drift-check-v1` — 下一项建议，防止 README、dev-validation、compose/env/status 字段继续漂移。
+10. `config-runbook-drift-check-v1` — 已完成，防止 README、dev-validation、compose/env/status 字段继续漂移。
 11. `metrics-low-cardinality-audit-v1` — 系统性审计 Prometheus label 是否持续保持低基数。
 12. `release-status-public-smoke-v1` — 为公开只读发布状态补更轻的 smoke，不恢复完整 REST/MCP smoke。
 13. `dev-update-config-doc-hardening-v1` — 沉淀当前 dev compose 自更新配置和只读排障说明。
