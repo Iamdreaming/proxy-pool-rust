@@ -17,7 +17,7 @@ crates/proxy-gateway/
 ├── Cargo.toml
 └── src/
     ├── lib.rs           # ProxyGateway struct, run() (accept loop), handle_connection() (protocol sniff)
-    ├── upstream.rs      # Upstream enum, UpstreamSelector, SOCKS5 connect helpers, parse_target_addr()
+    ├── upstream.rs      # Upstream enum, UpstreamSelector, protocol-aware connect helpers, parse_target_addr()
     ├── http_connect.rs  # HTTP CONNECT handler, bidirectional_copy
     └── socks5.rs        # SOCKS5 (RFC 1928) handler, reply encoding, bidirectional_copy
 ```
@@ -29,19 +29,20 @@ crates/proxy-gateway/
 ### `lib.rs` — Entry point and accept loop
 
 - Declares `mod http_connect`, `mod socks5`, `mod upstream`
-- Re-exports: `UpstreamSelector`, `connect_via_socks5`, `connect_via_warp_chain`, `socks5_handshake_on_stream`
+- Re-exports: `UpstreamSelector`, `connect_via_http_proxy`, `connect_via_socks5`, `connect_via_warp_chain`, `socks5_handshake_on_stream`
 - `ProxyGateway` struct: holds `GatewaySettings` + `Arc<UpstreamSelector>`
 - `run()`: binds TCP listener, spawns a tokio task per connection
 - `handle_connection()`: single-byte peek to dispatch protocol
 
-### `upstream.rs` — Upstream selection and SOCKS5 connect utilities
+### `upstream.rs` — Upstream selection and protocol-aware connect utilities
 
 - `Upstream` enum: `Direct`, `Proxy(Proxy)`, `Warp{socks5_port}`, `Xray{local_socks5_port}`, `WarpChain{proxy, socks5_port}`, `NoProxy`
 - `UpstreamSelector`: holds `ProxyStore`, `WarpBalancer`, `Router`, `GeoIPLookup`
 - `select()` method: Router match → GeoIP auto-split → generic fallback chain
 - Helper methods: `try_pool()`, `try_warp()`, `try_xray()`
-- Free functions: `socks5_handshake_on_stream()`, `connect_via_socks5()`, `connect_via_warp_chain()`, `parse_target_addr()`
-- Tests: address parsing (IPv4/IPv6/domain), variant construction, SOCKS5 request format
+- Free functions: `socks5_handshake_on_stream()`, `connect_via_http_proxy()`, `connect_via_socks5()`, `connect_via_warp_chain()`, `parse_target_addr()`
+- `connect_to_upstream()` must dispatch `Upstream::Proxy(proxy)` by `proxy.protocol`: HTTP/HTTPS use HTTP CONNECT, SOCKS5 uses SOCKS5 handshake, SOCKS4 is rejected as unsupported.
+- Tests: address parsing (IPv4/IPv6/domain), variant construction, SOCKS5 request format, loopback HTTP CONNECT/SOCKS5 upstream dispatch, HTTP CONNECT tunnel byte preservation, slow-upstream timeout
 
 ### `http_connect.rs` — HTTP CONNECT protocol handler
 
@@ -65,7 +66,7 @@ crates/proxy-gateway/
 | Source files | `snake_case`, one word or compound | `http_connect.rs`, `socks5.rs`, `upstream.rs` |
 | Public structs | `PascalCase` | `ProxyGateway`, `UpstreamSelector` |
 | Public enums | `PascalCase` enum, `PascalCase` variants | `Upstream::WarpChain { .. }` |
-| Public functions | `snake_case` | `connect_via_socks5`, `socks5_handshake_on_stream` |
+| Public functions | `snake_case` | `connect_via_http_proxy`, `connect_via_socks5`, `socks5_handshake_on_stream` |
 | Private helpers | `snake_case` | `bidirectional_copy`, `socks5_reply` |
 | Protocol constants | Hex literals inline | `0x05`, `0x01`, `0x03`, `0xFF` |
 

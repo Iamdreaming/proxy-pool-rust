@@ -48,7 +48,9 @@ handle_connection()  ← peek first byte: 0x05 → SOCKS5, else HTTP CONNECT
 UpstreamSelector::select()  ← Router → GeoIP → fallback chain
     │
     ├── Direct           → TcpStream::connect(target)
-    ├── Proxy(proxy)     → connect_via_socks5(proxy, target)
+    ├── Proxy(http/https) → connect_via_http_proxy(proxy, target)
+    ├── Proxy(socks5)     → connect_via_socks5(proxy, target)
+    ├── Proxy(socks4)     → unsupported → failure/fallback
     ├── Warp{port}       → connect_via_socks5(127.0.0.1:port, target)
     ├── Xray{port}       → connect_via_socks5(127.0.0.1:port, target)
     ├── WarpChain{..}    → connect_via_warp_chain(proxy, warp_port, target)

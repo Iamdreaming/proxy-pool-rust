@@ -1,7 +1,22 @@
 //! Upstream connection helpers for gateway handlers.
 
-use proxy_core::models::Proxy;
+use proxy_core::models::{Protocol, Proxy};
 use proxy_core::route_debug::Upstream;
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+pub(crate) const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+pub(crate) async fn connect_to_upstream_with_timeout(
+    upstream: &Upstream,
+    target_addr: &str,
+    timeout: Duration,
+) -> anyhow::Result<tokio::net::TcpStream> {
+    match tokio::time::timeout(timeout, connect_to_upstream(upstream, target_addr)).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!("upstream connect timed out after {}ms", timeout.as_millis()),
+    }
+}
 
 /// Perform a SOCKS5 CONNECT handshake on an already-connected stream.
 ///
@@ -94,6 +109,51 @@ pub async fn connect_via_socks5(
     Ok(stream)
 }
 
+/// Connect to a target through an HTTP proxy using CONNECT.
+///
+/// This establishes a TCP connection to the upstream HTTP proxy, sends a
+/// CONNECT request for `target_addr`, and returns a stream tunneled to the
+/// target when the proxy replies with any 2xx status.
+pub async fn connect_via_http_proxy(
+    upstream_addr: &str,
+    target_addr: &str,
+) -> anyhow::Result<tokio::net::TcpStream> {
+    let mut stream = tokio::net::TcpStream::connect(upstream_addr).await?;
+    let request = format!(
+        "CONNECT {target_addr} HTTP/1.1\r\nHost: {target_addr}\r\nProxy-Connection: keep-alive\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await?;
+
+    let mut response = Vec::with_capacity(512);
+    let mut byte = [0u8; 1];
+    loop {
+        let n = stream.read(&mut byte).await?;
+        if n == 0 {
+            anyhow::bail!("HTTP proxy closed before CONNECT response completed");
+        }
+        response.push(byte[0]);
+        if response.ends_with(b"\r\n\r\n") {
+            break;
+        }
+        if response.len() > 8192 {
+            anyhow::bail!("HTTP proxy CONNECT response headers too large");
+        }
+    }
+
+    let response_text = String::from_utf8_lossy(&response);
+    let status_line = response_text.lines().next().unwrap_or("");
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| anyhow::anyhow!("invalid HTTP proxy CONNECT response: {status_line}"))?;
+    if !(200..300).contains(&status_code) {
+        anyhow::bail!("HTTP proxy CONNECT failed with status: {status_code}");
+    }
+
+    Ok(stream)
+}
+
 /// Connect to a target through a WarpChain: proxy -> WARP -> target.
 ///
 /// Step 1: Connect to the pool proxy via SOCKS5, targeting the WARP SOCKS5 entry.
@@ -124,7 +184,13 @@ pub async fn connect_to_upstream(
         Upstream::Direct => Ok(tokio::net::TcpStream::connect(target_addr).await?),
         Upstream::Proxy(proxy) => {
             let upstream_addr = format!("{}:{}", proxy.host, proxy.port);
-            connect_via_socks5(&upstream_addr, target_addr).await
+            match proxy.protocol {
+                Protocol::Http | Protocol::Https => {
+                    connect_via_http_proxy(&upstream_addr, target_addr).await
+                }
+                Protocol::Socks5 => connect_via_socks5(&upstream_addr, target_addr).await,
+                Protocol::Socks4 => anyhow::bail!("SOCKS4 upstream proxies are not supported"),
+            }
         }
         Upstream::Warp { socks5_port }
         | Upstream::Xray {
@@ -169,6 +235,26 @@ fn parse_target_addr(target: &str) -> anyhow::Result<(String, u16)> {
 mod tests {
     use super::*;
     use proxy_core::models::Protocol;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    async fn read_http_headers(stream: &mut TcpStream) -> Vec<u8> {
+        let mut response = Vec::new();
+        let mut buf = [0u8; 128];
+        loop {
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "stream closed before HTTP headers completed");
+            response.extend_from_slice(&buf[..n]);
+            if response.windows(4).any(|window| window == b"\r\n\r\n") {
+                return response;
+            }
+            assert!(
+                response.len() <= 8192,
+                "HTTP headers exceeded test size limit"
+            );
+        }
+    }
 
     #[test]
     fn test_parse_target_ipv4() {
@@ -273,5 +359,147 @@ mod tests {
 
         assert_eq!(request.len(), 22); // 3 + 1 + 16 + 2
         assert_eq!(request[3], 0x04); // ATYP=IPv6
+    }
+
+    #[tokio::test]
+    async fn test_http_proxy_upstream_uses_http_connect() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_headers(&mut socket).await;
+            let request_text = String::from_utf8(request).unwrap();
+            assert!(request_text.starts_with("CONNECT example.com:443 HTTP/1.1\r\n"));
+            assert!(request_text.contains("\r\nHost: example.com:443\r\n"));
+
+            socket
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            let mut tunneled = [0u8; 4];
+            socket.read_exact(&mut tunneled).await.unwrap();
+            assert_eq!(&tunneled, b"ping");
+            socket.write_all(b"pong").await.unwrap();
+        });
+
+        let proxy = Proxy::new("127.0.0.1", upstream_port, Protocol::Http);
+        let mut stream = connect_to_upstream(&Upstream::Proxy(proxy), "example.com:443")
+            .await
+            .unwrap();
+        stream.write_all(b"ping").await.unwrap();
+        let mut response = [0u8; 4];
+        stream.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"pong");
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_http_proxy_connect_preserves_tunneled_bytes_after_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _request = read_http_headers(&mut socket).await;
+            socket
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\npreface")
+                .await
+                .unwrap();
+        });
+
+        let mut stream =
+            connect_via_http_proxy(&format!("127.0.0.1:{upstream_port}"), "example.com:443")
+                .await
+                .unwrap();
+        let mut tunneled = [0u8; 7];
+        stream.read_exact(&mut tunneled).await.unwrap();
+        assert_eq!(&tunneled, b"preface");
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_socks5_proxy_upstream_uses_socks5_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut greeting = [0u8; 3];
+            socket.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [0x05, 0x01, 0x00]);
+            socket.write_all(&[0x05, 0x00]).await.unwrap();
+
+            let mut header = [0u8; 4];
+            socket.read_exact(&mut header).await.unwrap();
+            assert_eq!(header, [0x05, 0x01, 0x00, 0x03]);
+
+            let mut domain_len = [0u8; 1];
+            socket.read_exact(&mut domain_len).await.unwrap();
+            let mut domain = vec![0u8; domain_len[0] as usize];
+            socket.read_exact(&mut domain).await.unwrap();
+            assert_eq!(domain, b"example.com");
+
+            let mut port = [0u8; 2];
+            socket.read_exact(&mut port).await.unwrap();
+            assert_eq!(u16::from_be_bytes(port), 443);
+
+            socket
+                .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0])
+                .await
+                .unwrap();
+            let mut tunneled = [0u8; 4];
+            socket.read_exact(&mut tunneled).await.unwrap();
+            assert_eq!(&tunneled, b"ping");
+            socket.write_all(b"pong").await.unwrap();
+        });
+
+        let proxy = Proxy::new("127.0.0.1", upstream_port, Protocol::Socks5);
+        let mut stream = connect_to_upstream(&Upstream::Proxy(proxy), "example.com:443")
+            .await
+            .unwrap();
+        stream.write_all(b"ping").await.unwrap();
+        let mut response = [0u8; 4];
+        stream.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"pong");
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_upstream_attempt_timeout_bounds_slow_proxy() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        });
+
+        let proxy = Proxy::new("127.0.0.1", upstream_port, Protocol::Http);
+        let err = connect_to_upstream_with_timeout(
+            &Upstream::Proxy(proxy),
+            "example.com:443",
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("timed out"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_socks4_proxy_upstream_is_rejected_without_connecting() {
+        let proxy = Proxy::new("127.0.0.1", 9, Protocol::Socks4);
+        let err = connect_to_upstream(&Upstream::Proxy(proxy), "example.com:80")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("SOCKS4 upstream proxies are not supported")
+        );
     }
 }

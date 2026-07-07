@@ -1,6 +1,6 @@
 //! HTTP CONNECT proxy handler.
 
-use crate::upstream::connect_to_upstream;
+use crate::upstream::{UPSTREAM_CONNECT_TIMEOUT, connect_to_upstream_with_timeout};
 use proxy_core::route_debug::{
     GatewayAttemptStatus, GatewayRouteProtocol, RouteExit, Upstream, UpstreamSelector,
 };
@@ -58,7 +58,13 @@ pub async fn handle(
             continue;
         }
 
-        match connect_to_upstream(&candidate.upstream, &target).await {
+        match connect_to_upstream_with_timeout(
+            &candidate.upstream,
+            &target,
+            UPSTREAM_CONNECT_TIMEOUT,
+        )
+        .await
+        {
             Ok(mut remote) => {
                 metrics.record(
                     GatewayRouteProtocol::HttpConnect,

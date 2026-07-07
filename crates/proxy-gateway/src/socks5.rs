@@ -1,6 +1,6 @@
 //! SOCKS5 proxy handler (RFC 1928).
 
-use crate::upstream::connect_to_upstream;
+use crate::upstream::{UPSTREAM_CONNECT_TIMEOUT, connect_to_upstream_with_timeout};
 use proxy_core::route_debug::{
     GatewayAttemptStatus, GatewayRouteProtocol, RouteExit, Upstream, UpstreamSelector,
 };
@@ -105,7 +105,13 @@ pub async fn handle(
             continue;
         }
 
-        match connect_to_upstream(&candidate.upstream, &target_addr).await {
+        match connect_to_upstream_with_timeout(
+            &candidate.upstream,
+            &target_addr,
+            UPSTREAM_CONNECT_TIMEOUT,
+        )
+        .await
+        {
             Ok(mut remote) => {
                 metrics.record(
                     GatewayRouteProtocol::Socks5,
