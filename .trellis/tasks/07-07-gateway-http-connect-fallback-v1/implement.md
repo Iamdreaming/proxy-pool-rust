@@ -43,6 +43,9 @@
   Gateway handlers report concrete connection failures back through
   `UpstreamSelector::record_upstream_attempt()`, which marks failed WARP
   instances unhealthy in the in-process `WarpBalancer`.
+- `WarpBalancer` keeps a 300-second business-failure cooldown per WARP
+  instance, so periodic health checks cannot immediately reintroduce a WARP
+  instance that just failed real gateway traffic.
 - Route ordering is intentionally unchanged.
 
 ## Verification Results
@@ -64,6 +67,15 @@
   - `cargo test -p proxy-mcp route_test` passed: 2 tests.
   - `cargo clippy -p proxy-core -p proxy-gateway -- -D warnings` passed.
   - `cargo check --workspace` passed.
+- After WARP business-failure cooldown:
+  - `cargo fmt --all --check` passed.
+  - `cargo test -p proxy-core warp::balancer` passed: 1 test.
+  - `cargo test -p proxy-core route_debug` passed: 5 tests.
+  - `cargo test -p proxy-gateway` passed: 14 tests.
+  - `cargo test -p proxy-api route_test` passed: 2 tests.
+  - `cargo test -p proxy-mcp route_test` passed: 2 tests.
+  - `cargo clippy -p proxy-core -p proxy-gateway -- -D warnings` passed.
+  - `cargo check --workspace` passed.
 
 ## Rollback Points
 
@@ -71,6 +83,7 @@
   no-auth CONNECT first and document proxy-auth as out of scope.
 - If timeout behavior needs configuration, start with a local constant and
   promote to config in a later task only if required.
-- If WARP runtime feedback disables WARP too aggressively, revert the
+- If WARP runtime feedback disables WARP too aggressively, shorten the
+  balancer's business-failure cooldown first. If needed, revert the
   `Upstream::Warp { id, .. }` feedback path and keep HTTP proxy upstream plus
   free-pool multi-candidate fallback.

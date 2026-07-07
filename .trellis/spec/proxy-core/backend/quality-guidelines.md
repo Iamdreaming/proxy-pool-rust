@@ -394,7 +394,7 @@ proxy_gateway_route_attempts_total{protocol="<http_connect|socks5|other>",exit="
 | No router and no GeoIP | Candidate order is `free_pool -> warp -> xray -> no_proxy` |
 | Free pool has several usable proxies | The decision may include repeated `exit=free_pool` candidates with different `detail` values |
 | Gateway upstream connection fails before success response | Record `status=failure`, try later concrete candidates, and only then return HTTP 502 / SOCKS failure |
-| Concrete `Upstream::Warp` fails in a gateway attempt | Call attempt feedback and mark that WARP instance unhealthy in `WarpBalancer` |
+| Concrete `Upstream::Warp` fails in a gateway attempt | Call attempt feedback and put that WARP instance into the balancer's short business-failure cooldown |
 | No concrete upstream exists | Record `exit=no_proxy,status=unavailable` |
 
 ### 5. Good/Base/Bad Cases

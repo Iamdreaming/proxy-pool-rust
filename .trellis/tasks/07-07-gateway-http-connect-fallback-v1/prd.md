@@ -62,7 +62,8 @@ proxy does not immediately end the business request.
 When a concrete `Upstream::Warp` attempt fails in the HTTP CONNECT or SOCKS5
 gateway path, the selector should mark that WARP instance unhealthy in the
 in-process balancer. This lets later business requests skip WARP until the
-regular health checker marks it healthy again.
+business-failure cooldown expires and the regular health checker marks it
+healthy again.
 
 ### R5: Focused regression coverage
 

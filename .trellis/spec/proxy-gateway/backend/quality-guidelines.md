@@ -103,7 +103,8 @@ Handlers that use `select_with_trace()` must iterate every concrete
 When a concrete candidate fails before the success response is sent, handlers
 must call `UpstreamSelector::record_upstream_attempt()` after recording metrics.
 This lets runtime business failures update shared route health, currently used
-to mark failed WARP instances unhealthy.
+to put failed WARP instances into the balancer's short business-failure
+cooldown.
 
 ### 2. All public functions must have doc comments
 

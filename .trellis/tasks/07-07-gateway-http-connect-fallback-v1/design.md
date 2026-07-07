@@ -58,8 +58,11 @@ client SOCKS5 CONNECT host:port
    - HTTP CONNECT and SOCKS5 handlers record the failed attempt through
      `UpstreamSelector`.
    - For `Upstream::Warp`, the selector calls `WarpBalancer::mark_failed(id)`.
+   - `WarpBalancer` applies a short process-local business-failure cooldown so
+     periodic health checks cannot immediately reintroduce a WARP instance that
+     just failed real gateway traffic.
    - The regular health checker remains responsible for marking WARP healthy
-     again.
+     after the cooldown window.
 7. Keep route ordering unchanged. This task fixes connection mechanics,
    fallback progression, and minimal runtime WARP failure feedback only.
 
@@ -82,5 +85,5 @@ network dependencies:
 
 HTTP CONNECT upstream support fixes HTTP pool proxy compatibility. Gateway
 failure feedback is intentionally limited to in-process WARP availability; it
-does not change WARP endpoint optimization, health-check URLs, or persistent
-quality scoring.
+uses a bounded runtime cooldown and does not change WARP endpoint optimization,
+health-check URLs, or persistent quality scoring.
