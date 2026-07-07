@@ -121,6 +121,8 @@ pub struct PoolSettings {
     pub validate_target_url: String,
     #[serde(default)]
     pub validate_target_urls: Vec<String>,
+    #[serde(default)]
+    pub validate_targets: Vec<ValidationTargetConfig>,
     #[serde(default = "default_min_score")]
     pub min_score: f64,
     #[serde(default)]
@@ -132,6 +134,25 @@ pub struct PoolSettings {
     pub pace_rate_per_sec: f64,
 }
 
+/// Structured proxy validation target configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationTargetConfig {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub expected_statuses: Vec<u16>,
+}
+
+impl ValidationTargetConfig {
+    /// Build a target with default successful-status handling.
+    pub fn from_url(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            expected_statuses: Vec::new(),
+        }
+    }
+}
+
 impl PoolSettings {
     /// Return validation targets with backward-compatible single-target fallback.
     pub fn effective_validate_target_urls(&self) -> Vec<String> {
@@ -139,6 +160,17 @@ impl PoolSettings {
             return vec![self.validate_target_url.clone()];
         }
         self.validate_target_urls.clone()
+    }
+
+    /// Return structured validation targets with legacy URL field fallback.
+    pub fn effective_validate_targets(&self) -> Vec<ValidationTargetConfig> {
+        if !self.validate_targets.is_empty() {
+            return self.validate_targets.clone();
+        }
+        self.effective_validate_target_urls()
+            .into_iter()
+            .map(ValidationTargetConfig::from_url)
+            .collect()
     }
 }
 
@@ -576,6 +608,65 @@ mod tests {
                 "https://one.example/check".to_string(),
                 "https://two.example/check".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn effective_validate_targets_falls_back_to_single_target() {
+        let settings = PoolSettings {
+            validate_target_url: "https://one.example/check".into(),
+            validate_target_urls: vec![],
+            validate_targets: vec![],
+            ..PoolSettings::default()
+        };
+
+        assert_eq!(
+            settings.effective_validate_targets(),
+            vec![ValidationTargetConfig::from_url(
+                "https://one.example/check"
+            )]
+        );
+    }
+
+    #[test]
+    fn effective_validate_targets_prefers_legacy_url_list() {
+        let settings = PoolSettings {
+            validate_target_url: "https://legacy.example/check".into(),
+            validate_target_urls: vec![
+                "https://one.example/check".into(),
+                "https://two.example/check".into(),
+            ],
+            validate_targets: vec![],
+            ..PoolSettings::default()
+        };
+
+        assert_eq!(
+            settings.effective_validate_targets(),
+            vec![
+                ValidationTargetConfig::from_url("https://one.example/check"),
+                ValidationTargetConfig::from_url("https://two.example/check")
+            ]
+        );
+    }
+
+    #[test]
+    fn effective_validate_targets_prefers_structured_targets() {
+        let settings = PoolSettings {
+            validate_target_url: "https://legacy.example/check".into(),
+            validate_target_urls: vec!["https://one.example/check".into()],
+            validate_targets: vec![ValidationTargetConfig {
+                url: "https://api.openai.com/v1/models".into(),
+                expected_statuses: vec![401],
+            }],
+            ..PoolSettings::default()
+        };
+
+        assert_eq!(
+            settings.effective_validate_targets(),
+            vec![ValidationTargetConfig {
+                url: "https://api.openai.com/v1/models".into(),
+                expected_statuses: vec![401],
+            }]
         );
     }
 }

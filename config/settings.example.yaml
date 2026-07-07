@@ -27,6 +27,13 @@ pool:
   # validate_target_urls:
   #   - "https://www.cloudflare.com/cdn-cgi/trace"
   #   - "https://httpbin.org/ip"
+  # Optional structured targets. Leave expected_statuses empty to accept any
+  # status below 400. Configure statuses such as 401 when auth failure proves
+  # the target was reached.
+  # validate_targets:
+  #   - url: "https://www.cloudflare.com/cdn-cgi/trace"
+  #   - url: "https://api.openai.com/v1/models"
+  #     expected_statuses: [401]
   min_score: 0.1
   pace_rate_per_sec: 10      # 0 = unlimited; 10 recommended to avoid socket exhaustion
   score_weights:

@@ -216,7 +216,8 @@ Current test coverage:
 - Structured fetch: `Fetcher::fetch_with_report(&self) -> FetcherOutput`.
 - Scheduler status: `SchedulerHandle::fetcher_statuses(&self) -> Vec<FetcherRunReport>`.
 - Single refresh: `SchedulerHandle::refresh_fetcher(&self, fetcher_id) -> anyhow::Result<SchedulerResult>`.
-- Pool validation targets: `PoolSettings::effective_validate_target_urls()` falls back to `validate_target_url` when `validate_target_urls` is empty.
+- Pool validation target URLs: `PoolSettings::effective_validate_target_urls()` falls back to `validate_target_url` when `validate_target_urls` is empty.
+- Structured pool validation targets: `PoolSettings::effective_validate_targets()` prefers `validate_targets`, then `validate_target_urls`, then `validate_target_url`.
 - Structured validation: `Validator::check_one(&self, proxy: &Proxy) -> ProxyCheckResult`.
 - Compatibility validation: `Validator::validate_one(&self, proxy: &Proxy) -> Option<Proxy>` delegates to `check_one()`.
 - Scheduler admission validation: `Validator::validate_many_against_targets(&self, proxies, targets, concurrency)` is strict all-target admission.
@@ -368,7 +369,7 @@ The scheduler owns fetcher state; API and MCP only serialize it.
 | `protocol` | string | Protocol used for pool lookup; invalid input falls back to `http` |
 | `matched_group` | optional string | Configured route group, when a router exists |
 | `matched_rule` | optional string | Matched suffix rule or `default`, when a router exists |
-| `matched_reason` | string | `route_rule`, `route_default_group`, `geoip_domestic`, `geoip_overseas`, or `general_fallback` |
+| `matched_reason` | string | `route_rule`, `route_default_group`, `business_domain_overseas`, `geoip_domestic`, `geoip_overseas`, `geoip_unknown_overseas`, or `general_fallback` |
 | `geoip` | optional object | Country and overseas decision when GeoIP was consulted |
 | `candidates` | array | Ordered exit candidates with availability and reason |
 | `selected` | enum | First available exit: `direct`, `free_pool`, `warp`, `xray`, `no_proxy` |
@@ -395,8 +396,11 @@ proxy_gateway_route_attempts_total{protocol="<http_connect|socks5|other>",exit="
 | Unknown protocol | Falls back to `http`, matching existing MCP behavior |
 | Router suffix matches | `matched_reason=route_rule`, `matched_rule=<suffix>` |
 | Router default group selected | `matched_reason=route_default_group`, `matched_rule=default` |
+| Router default group is direct but host is a built-in business overseas domain | `matched_reason=business_domain_overseas`, candidate order is `warp -> xray -> free_pool -> no_proxy` |
+| Explicit non-default route rule matches a built-in business overseas domain | The explicit rule wins when its group maps to a known exit |
 | No router but GeoIP available and domestic | Candidate order is `direct` |
 | No router but GeoIP available and overseas | Candidate order is `warp -> xray -> free_pool -> no_proxy` |
+| No router but GeoIP country is `UNKNOWN` | `matched_reason=geoip_unknown_overseas`, candidate order is `warp -> xray -> free_pool -> no_proxy` |
 | No router and no GeoIP | Candidate order is `free_pool -> warp -> xray -> no_proxy` |
 | Free pool has several usable proxies | The decision may include repeated `exit=free_pool` candidates with different `detail` values |
 | Gateway upstream connection fails before success response | Record `status=failure`, try later concrete candidates, and only then return HTTP 502 / SOCKS failure |

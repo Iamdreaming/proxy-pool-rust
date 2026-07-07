@@ -8,7 +8,7 @@ use crate::fetcher::base::{FetcherOutput, FetcherRunReport};
 use crate::geoip::GeoIPLookup;
 use crate::models::{Protocol, Proxy};
 use crate::store::ProxyStore;
-use crate::validator::Validator;
+use crate::validator::{ValidationTarget, Validator};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
@@ -297,14 +297,14 @@ impl Scheduler {
     }
 
     async fn validate_candidates(&self, candidates: &[Proxy]) -> Vec<Proxy> {
-        if self.settings.validate_target_urls.is_empty() {
-            return self
-                .validator
-                .validate_many(candidates, self.settings.validate_concurrency)
-                .await;
-        }
-
-        let targets = self.settings.effective_validate_target_urls();
+        let targets: Vec<ValidationTarget> = self
+            .settings
+            .effective_validate_targets()
+            .into_iter()
+            .map(|target| {
+                ValidationTarget::with_expected_statuses(target.url, target.expected_statuses)
+            })
+            .collect();
         self.validator
             .validate_many_against_targets(candidates, &targets, self.settings.validate_concurrency)
             .await

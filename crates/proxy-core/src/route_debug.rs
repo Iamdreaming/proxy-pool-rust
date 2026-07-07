@@ -12,6 +12,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 
+const BUSINESS_OVERSEAS_DOMAINS: &[&str] = &[
+    "openai.com",
+    "chatgpt.com",
+    "reddit.com",
+    "discord.com",
+    "x.com",
+    "twitter.com",
+    "github.com",
+    "news.ycombinator.com",
+];
+
 /// Runtime upstream selected for a gateway request.
 #[derive(Debug, Clone)]
 pub enum Upstream {
@@ -496,22 +507,22 @@ impl UpstreamSelector {
     async fn build_plan(&self, host: &str) -> RoutePlan {
         if let Some(router) = &self.router {
             let route_match = router.match_route(host);
-            if let Some(exits) = exits_for_known_group(&route_match.group) {
-                return RoutePlan {
-                    matched_reason: if route_match.is_default {
-                        "route_default_group".into()
-                    } else {
-                        "route_rule".into()
-                    },
-                    exits,
-                    route_match: Some(route_match),
-                    geoip: None,
-                };
+            if let Some(plan) = route_match_plan(host, route_match.clone()) {
+                return plan;
             }
 
             let mut plan = self.geoip_plan(host).await;
             plan.route_match = Some(route_match);
             return plan;
+        }
+
+        if let Some(exits) = business_domain_exits(host) {
+            return RoutePlan {
+                matched_reason: "business_domain_overseas".into(),
+                exits,
+                route_match: None,
+                geoip: None,
+            };
         }
 
         self.geoip_plan(host).await
@@ -522,13 +533,9 @@ impl UpstreamSelector {
             let (geoip_decision, exits, reason) = {
                 let mut geoip = geoip.lock().await;
                 let info = geoip.lookup(host).await;
-                let overseas = geoip.is_overseas(&info.country);
+                let (overseas, reason) =
+                    geoip_route_decision(&info.country, geoip.is_overseas(&info.country));
                 let exits = geoip_exits(overseas);
-                let reason = if overseas {
-                    "geoip_overseas"
-                } else {
-                    "geoip_domestic"
-                };
                 (
                     RouteGeoIpDecision {
                         country: info.country,
@@ -744,6 +751,58 @@ fn geoip_exits(overseas: bool) -> Vec<RouteExit> {
     }
 }
 
+fn route_match_plan(host: &str, route_match: RouteMatch) -> Option<RoutePlan> {
+    if !route_match.is_default {
+        return exits_for_known_group(&route_match.group).map(|exits| RoutePlan {
+            matched_reason: "route_rule".into(),
+            exits,
+            route_match: Some(route_match),
+            geoip: None,
+        });
+    }
+
+    if let Some(exits) = business_domain_exits(host) {
+        return Some(RoutePlan {
+            matched_reason: "business_domain_overseas".into(),
+            exits,
+            route_match: Some(route_match),
+            geoip: None,
+        });
+    }
+
+    exits_for_known_group(&route_match.group).map(|exits| RoutePlan {
+        matched_reason: "route_default_group".into(),
+        exits,
+        route_match: Some(route_match),
+        geoip: None,
+    })
+}
+
+fn geoip_route_decision(country: &str, country_overseas: bool) -> (bool, &'static str) {
+    if country == "UNKNOWN" {
+        (true, "geoip_unknown_overseas")
+    } else if country_overseas {
+        (true, "geoip_overseas")
+    } else {
+        (false, "geoip_domestic")
+    }
+}
+
+fn business_domain_exits(host: &str) -> Option<Vec<RouteExit>> {
+    if is_business_overseas_host(host) {
+        Some(geoip_exits(true))
+    } else {
+        None
+    }
+}
+
+fn is_business_overseas_host(host: &str) -> bool {
+    let host = normalize_host(host);
+    BUSINESS_OVERSEAS_DOMAINS
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+}
+
 fn normalize_protocol(protocol: &str) -> String {
     Protocol::from_str_loose(protocol)
         .unwrap_or(Protocol::Http)
@@ -816,6 +875,81 @@ mod tests {
                 RouteExit::NoProxy
             ]
         );
+    }
+
+    #[test]
+    fn geoip_unknown_routes_as_overseas_for_gateway_planning() {
+        assert_eq!(
+            geoip_route_decision("UNKNOWN", false),
+            (true, "geoip_unknown_overseas")
+        );
+        assert_eq!(geoip_route_decision("CN", false), (false, "geoip_domestic"));
+        assert_eq!(geoip_route_decision("US", true), (true, "geoip_overseas"));
+    }
+
+    #[test]
+    fn business_domains_match_roots_and_subdomains_only() {
+        assert!(is_business_overseas_host("openai.com"));
+        assert!(is_business_overseas_host("api.openai.com:443"));
+        assert!(is_business_overseas_host("WWW.REDDIT.COM."));
+        assert!(is_business_overseas_host("news.ycombinator.com"));
+        assert!(!is_business_overseas_host("notopenai.com"));
+        assert!(!is_business_overseas_host("openai.com.example"));
+    }
+
+    #[test]
+    fn business_domain_exits_use_overseas_candidate_order() {
+        assert_eq!(
+            business_domain_exits("chatgpt.com"),
+            Some(geoip_exits(true))
+        );
+        assert_eq!(business_domain_exits("example.com"), None);
+    }
+
+    #[test]
+    fn router_default_does_not_mask_business_domain() {
+        let plan = route_match_plan(
+            "api.openai.com",
+            RouteMatch {
+                group: "direct".into(),
+                matched_rule: "default".into(),
+                is_default: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.matched_reason, "business_domain_overseas");
+        assert_eq!(plan.exits, geoip_exits(true));
+        let route_match = plan.route_match.unwrap();
+        assert_eq!(route_match.group, "direct");
+        assert!(route_match.is_default);
+    }
+
+    #[test]
+    fn explicit_route_rule_wins_over_business_domain_fallback() {
+        let plan = route_match_plan(
+            "api.openai.com",
+            RouteMatch {
+                group: "direct".into(),
+                matched_rule: "openai.com".into(),
+                is_default: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.matched_reason, "route_rule");
+        assert_eq!(plan.exits, vec![RouteExit::Direct]);
+        assert!(!plan.route_match.unwrap().is_default);
+
+        let custom_plan = route_match_plan(
+            "api.openai.com",
+            RouteMatch {
+                group: "custom".into(),
+                matched_rule: "openai.com".into(),
+                is_default: false,
+            },
+        );
+        assert!(custom_plan.is_none());
     }
 
     #[test]

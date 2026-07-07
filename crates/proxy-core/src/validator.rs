@@ -16,6 +16,33 @@ pub const DEFAULT_MATRIX_TARGETS: &[&str] = &[
 const DEFAULT_MATRIX_TIMEOUT_SECS: u64 = 10;
 const MAX_MATRIX_TARGETS: usize = 8;
 
+/// One validation target plus optional accepted HTTP status codes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationTarget {
+    /// Target URL to request through the proxy.
+    pub url: String,
+    /// Accepted status codes. Empty means any status below 400 is accepted.
+    pub expected_statuses: Vec<u16>,
+}
+
+impl ValidationTarget {
+    /// Build a target that accepts any HTTP status below 400.
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            expected_statuses: Vec::new(),
+        }
+    }
+
+    /// Build a target that accepts only the supplied HTTP status codes.
+    pub fn with_expected_statuses(url: impl Into<String>, expected_statuses: Vec<u16>) -> Self {
+        Self {
+            url: url.into(),
+            expected_statuses,
+        }
+    }
+}
+
 /// Stable validation failure category for API/MCP clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -321,6 +348,7 @@ struct ObservedProxyMetadata {
 #[derive(Clone)]
 pub struct Validator {
     target_url: String,
+    expected_statuses: Vec<u16>,
     timeout_secs: u64,
     real_ip: Option<String>,
     /// Optional connection rate pacer.
@@ -331,6 +359,7 @@ impl Validator {
     pub fn new(target_url: &str, timeout_secs: u64) -> Self {
         Self {
             target_url: target_url.to_string(),
+            expected_statuses: Vec::new(),
             timeout_secs,
             real_ip: None,
             pacer: None,
@@ -339,6 +368,12 @@ impl Validator {
 
     pub fn with_real_ip(mut self, ip: String) -> Self {
         self.real_ip = Some(ip);
+        self
+    }
+
+    /// Accept only the configured HTTP status codes as validation success.
+    pub fn with_expected_statuses(mut self, expected_statuses: Vec<u16>) -> Self {
+        self.expected_statuses = expected_statuses;
         self
     }
 
@@ -357,7 +392,7 @@ impl Validator {
     pub async fn validate_one_against_targets(
         &self,
         proxy: &Proxy,
-        targets: &[String],
+        targets: &[ValidationTarget],
     ) -> Option<Proxy> {
         if targets.is_empty() {
             return self.validate_one(proxy).await;
@@ -366,7 +401,8 @@ impl Validator {
         let mut checks = Vec::with_capacity(targets.len());
         for target in targets {
             let validator = Self {
-                target_url: target.clone(),
+                target_url: target.url.clone(),
+                expected_statuses: target.expected_statuses.clone(),
                 timeout_secs: self.timeout_secs,
                 real_ip: self.real_ip.clone(),
                 pacer: self.pacer.clone(),
@@ -441,7 +477,7 @@ impl Validator {
         let request_elapsed = request_start.elapsed();
         let status = resp.status();
 
-        if status.as_u16() >= 400 {
+        if !self.accepts_status(status.as_u16()) {
             return ProxyCheckResult::failure(
                 proxy,
                 diagnostics.with_response(
@@ -527,7 +563,7 @@ impl Validator {
     pub async fn validate_many_against_targets(
         &self,
         proxies: &[Proxy],
-        targets: &[String],
+        targets: &[ValidationTarget],
         concurrency: usize,
     ) -> Vec<Proxy> {
         if targets.is_empty() {
@@ -576,6 +612,14 @@ impl Validator {
         }
 
         Anonymity::Anonymous
+    }
+
+    fn accepts_status(&self, status: u16) -> bool {
+        if self.expected_statuses.is_empty() {
+            status < 400
+        } else {
+            self.expected_statuses.contains(&status)
+        }
     }
 }
 
@@ -711,6 +755,46 @@ mod tests {
             Some("example.com")
         );
         assert_eq!(target_host("not a url"), None);
+    }
+
+    #[test]
+    fn validation_target_builders_keep_expected_status_contract() {
+        assert_eq!(
+            ValidationTarget::new("https://example.com/check"),
+            ValidationTarget {
+                url: "https://example.com/check".into(),
+                expected_statuses: vec![],
+            }
+        );
+        assert_eq!(
+            ValidationTarget::with_expected_statuses("https://api.openai.com/v1/models", vec![401]),
+            ValidationTarget {
+                url: "https://api.openai.com/v1/models".into(),
+                expected_statuses: vec![401],
+            }
+        );
+    }
+
+    #[test]
+    fn validator_default_status_accepts_only_below_400() {
+        let validator = Validator::new("https://example.com/check", 10);
+
+        assert!(validator.accepts_status(200));
+        assert!(validator.accepts_status(399));
+        assert!(!validator.accepts_status(400));
+        assert!(!validator.accepts_status(401));
+        assert!(!validator.accepts_status(500));
+    }
+
+    #[test]
+    fn validator_expected_statuses_override_default_success_window() {
+        let validator = Validator::new("https://api.openai.com/v1/models", 10)
+            .with_expected_statuses(vec![401]);
+
+        assert!(!validator.accepts_status(200));
+        assert!(validator.accepts_status(401));
+        assert!(!validator.accepts_status(403));
+        assert!(!validator.accepts_status(500));
     }
 
     #[test]
