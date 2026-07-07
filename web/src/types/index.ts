@@ -193,6 +193,16 @@ export interface FetchersResponse {
   fetchers: FetcherRunReport[]
 }
 
+export type ProxyPoolSettings = Record<string, unknown>
+
+export interface SettingsResponse {
+  status: string
+  path: string
+  restart_required: boolean
+  redacted_fields: string[]
+  settings: ProxyPoolSettings
+}
+
 export interface RefreshResponse {
   status: string
   fetched: number

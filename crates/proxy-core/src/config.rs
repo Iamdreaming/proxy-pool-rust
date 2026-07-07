@@ -1,7 +1,33 @@
 //! Configuration: YAML loading with defaults.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
+
+/// Placeholder returned by settings edit APIs for sensitive values.
+pub const REDACTED_VALUE: &str = "__PROXY_POOL_REDACTED__";
+
+/// Errors from strict settings read/write helpers used by operator config APIs.
+#[derive(Debug, thiserror::Error)]
+pub enum SettingsEditError {
+    #[error("cannot read config file {path}: {source}")]
+    Read { path: PathBuf, source: io::Error },
+    #[error("invalid config file {path}: {source}")]
+    Parse {
+        path: PathBuf,
+        source: serde_yaml::Error,
+    },
+    #[error("invalid settings: {0}")]
+    Validation(String),
+    #[error("cannot serialize settings: {0}")]
+    Serialize(#[from] serde_yaml::Error),
+    #[error("cannot create config directory {path}: {source}")]
+    CreateDir { path: PathBuf, source: io::Error },
+    #[error("cannot write temporary config file {path}: {source}")]
+    WriteTemp { path: PathBuf, source: io::Error },
+    #[error("cannot replace config file {path}: {source}")]
+    Replace { path: PathBuf, source: io::Error },
+}
 
 // ---------------------------------------------------------------------------
 // Sub-configs
@@ -355,6 +381,272 @@ pub fn load_settings(path: impl AsRef<Path>) -> Settings {
             Settings::default()
         }
     }
+}
+
+/// Strictly read settings for an operator edit surface.
+///
+/// Missing files still produce defaults, matching startup behavior. Read or
+/// parse failures are returned so an edit UI cannot accidentally overwrite a
+/// broken config file with defaults.
+pub fn read_settings_for_edit(path: impl AsRef<Path>) -> Result<Settings, SettingsEditError> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(Settings::default());
+    }
+    let text = std::fs::read_to_string(path).map_err(|source| SettingsEditError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    serde_yaml::from_str(&text).map_err(|source| SettingsEditError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Return a display-safe settings clone plus field paths replaced by placeholders.
+pub fn redact_settings(settings: &Settings) -> (Settings, Vec<String>) {
+    let mut redacted = settings.clone();
+    let mut fields = Vec::new();
+
+    if !redacted.redis.url.is_empty() {
+        redacted.redis.url = REDACTED_VALUE.into();
+        fields.push("redis.url".into());
+    }
+
+    if matches!(
+        redacted.subscription.github.token.as_deref(),
+        Some(token) if !token.is_empty()
+    ) {
+        redacted.subscription.github.token = Some(REDACTED_VALUE.into());
+        fields.push("subscription.github.token".into());
+    }
+
+    (redacted, fields)
+}
+
+/// Merge redacted placeholders in a submitted settings object with current values.
+pub fn merge_redacted_settings(mut submitted: Settings, current: &Settings) -> Settings {
+    if submitted.redis.url == REDACTED_VALUE {
+        submitted.redis.url = current.redis.url.clone();
+    }
+
+    if matches!(
+        submitted.subscription.github.token.as_deref(),
+        Some(token) if token == REDACTED_VALUE
+    ) {
+        submitted.subscription.github.token = current.subscription.github.token.clone();
+    }
+
+    submitted
+}
+
+/// Validate settings before writing them from an operator edit surface.
+pub fn validate_settings(settings: &Settings) -> Result<(), SettingsEditError> {
+    validate_port("gateway.listen_port", settings.gateway.listen_port)?;
+    validate_port("api.listen_port", settings.api.listen_port)?;
+    validate_port("mcp.http_port", settings.mcp.http_port)?;
+    validate_port("xray.api_port", settings.xray.api_port)?;
+    validate_port("xray.port_range_start", settings.xray.port_range_start)?;
+    validate_port("xray.port_range_end", settings.xray.port_range_end)?;
+
+    if settings.xray.port_range_start > settings.xray.port_range_end {
+        return Err(SettingsEditError::Validation(
+            "xray.port_range_start must be <= xray.port_range_end".into(),
+        ));
+    }
+
+    validate_non_empty("redis.url", &settings.redis.url)?;
+    validate_non_empty(
+        "pool.validate_target_url",
+        &settings.pool.validate_target_url,
+    )?;
+    for (idx, url) in settings.pool.validate_target_urls.iter().enumerate() {
+        validate_non_empty(&format!("pool.validate_target_urls[{idx}]"), url)?;
+    }
+    for (idx, target) in settings.pool.validate_targets.iter().enumerate() {
+        validate_non_empty(&format!("pool.validate_targets[{idx}].url"), &target.url)?;
+    }
+    for (idx, url) in settings.subscription.urls.iter().enumerate() {
+        validate_non_empty(&format!("subscription.urls[{idx}]"), url)?;
+    }
+    for (idx, aggregator) in settings.subscription.aggregators.iter().enumerate() {
+        validate_non_empty(
+            &format!("subscription.aggregators[{idx}].url"),
+            &aggregator.url,
+        )?;
+    }
+
+    validate_non_negative_finite("pool.min_score", settings.pool.min_score)?;
+    if settings.pool.min_score > 1.0 {
+        return Err(SettingsEditError::Validation(
+            "pool.min_score must be <= 1.0".into(),
+        ));
+    }
+    validate_non_negative_finite("pool.pace_rate_per_sec", settings.pool.pace_rate_per_sec)?;
+    validate_non_negative_finite(
+        "pool.score_weights.latency",
+        settings.pool.score_weights.latency,
+    )?;
+    validate_non_negative_finite(
+        "pool.score_weights.success",
+        settings.pool.score_weights.success,
+    )?;
+    validate_non_negative_finite(
+        "pool.score_weights.anonymity",
+        settings.pool.score_weights.anonymity,
+    )?;
+    validate_non_negative_finite(
+        "warp.optimizer.max_loss_pct",
+        settings.warp.optimizer.max_loss_pct,
+    )?;
+    if settings.warp.optimizer.max_loss_pct > 100.0 {
+        return Err(SettingsEditError::Validation(
+            "warp.optimizer.max_loss_pct must be <= 100.0".into(),
+        ));
+    }
+
+    if settings.pool.validate_concurrency == 0 {
+        return Err(SettingsEditError::Validation(
+            "pool.validate_concurrency must be greater than 0".into(),
+        ));
+    }
+    if settings.pool.validate_timeout_sec == 0 {
+        return Err(SettingsEditError::Validation(
+            "pool.validate_timeout_sec must be greater than 0".into(),
+        ));
+    }
+    if settings.subscription.fetch_timeout_sec == 0 {
+        return Err(SettingsEditError::Validation(
+            "subscription.fetch_timeout_sec must be greater than 0".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Merge, validate, and persist submitted settings for an operator edit surface.
+pub fn write_settings_for_edit(
+    path: impl AsRef<Path>,
+    submitted: Settings,
+) -> Result<Settings, SettingsEditError> {
+    let path = path.as_ref();
+    let current = read_settings_for_edit(path)?;
+    let settings = merge_redacted_settings(submitted, &current);
+    validate_settings(&settings)?;
+    let yaml = serde_yaml::to_string(&settings)?;
+    let _: Settings = serde_yaml::from_str(&yaml)?;
+    write_settings_yaml(path, &yaml)?;
+    Ok(settings)
+}
+
+fn validate_non_empty(field: &str, value: &str) -> Result<(), SettingsEditError> {
+    if value.trim().is_empty() {
+        return Err(SettingsEditError::Validation(format!(
+            "{field} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_non_negative_finite(field: &str, value: f64) -> Result<(), SettingsEditError> {
+    if !value.is_finite() {
+        return Err(SettingsEditError::Validation(format!(
+            "{field} must be finite"
+        )));
+    }
+    if value < 0.0 {
+        return Err(SettingsEditError::Validation(format!(
+            "{field} must be >= 0"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_port(field: &str, value: u16) -> Result<(), SettingsEditError> {
+    if value == 0 {
+        return Err(SettingsEditError::Validation(format!(
+            "{field} must be greater than 0"
+        )));
+    }
+    Ok(())
+}
+
+fn write_settings_yaml(path: &Path, yaml: &str) -> Result<(), SettingsEditError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(|source| SettingsEditError::CreateDir {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    let temp_path = sibling_path(path, "tmp");
+    std::fs::write(&temp_path, yaml).map_err(|source| SettingsEditError::WriteTemp {
+        path: temp_path.clone(),
+        source,
+    })?;
+
+    replace_settings_file(path, &temp_path)
+}
+
+fn replace_settings_file(path: &Path, temp_path: &Path) -> Result<(), SettingsEditError> {
+    if !path.exists() {
+        return std::fs::rename(temp_path, path).map_err(|source| SettingsEditError::Replace {
+            path: path.to_path_buf(),
+            source,
+        });
+    }
+
+    let backup_path = sibling_path(path, "bak");
+    let _ = std::fs::remove_file(&backup_path);
+    std::fs::copy(path, &backup_path).map_err(|source| SettingsEditError::Replace {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    if let Err(source) = std::fs::remove_file(path) {
+        let _ = std::fs::remove_file(temp_path);
+        let _ = std::fs::remove_file(&backup_path);
+        return Err(SettingsEditError::Replace {
+            path: path.to_path_buf(),
+            source,
+        });
+    }
+
+    match std::fs::rename(temp_path, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&backup_path);
+            Ok(())
+        }
+        Err(source) => {
+            let _ = std::fs::copy(&backup_path, path);
+            let _ = std::fs::remove_file(temp_path);
+            let _ = std::fs::remove_file(&backup_path);
+            Err(SettingsEditError::Replace {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+    }
+}
+
+fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("settings.yaml");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    path.with_file_name(format!(
+        ".{file_name}.{}.{}.{}",
+        std::process::id(),
+        stamp,
+        suffix
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -714,5 +1006,151 @@ monosans: { enabled: false }
         assert!(!config.iplocate.enabled);
         assert!(!config.vpslab.enabled);
         assert!(!config.monosans.enabled);
+    }
+
+    #[test]
+    fn redact_settings_hides_sensitive_values() {
+        let settings = Settings {
+            redis: RedisSettings {
+                url: "redis://:secret@redis:6379/0".into(),
+            },
+            subscription: SubscriptionConfig {
+                github: GitHubDiscoverConfig {
+                    token: Some("github-secret".into()),
+                    ..GitHubDiscoverConfig::default()
+                },
+                ..SubscriptionConfig::default()
+            },
+            ..Settings::default()
+        };
+
+        let (redacted, fields) = redact_settings(&settings);
+
+        assert_eq!(redacted.redis.url, REDACTED_VALUE);
+        assert_eq!(
+            redacted.subscription.github.token.as_deref(),
+            Some(REDACTED_VALUE)
+        );
+        assert_eq!(
+            fields,
+            vec![
+                "redis.url".to_string(),
+                "subscription.github.token".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_redacted_settings_preserves_current_sensitive_values() {
+        let current = Settings {
+            redis: RedisSettings {
+                url: "redis://:secret@redis:6379/0".into(),
+            },
+            subscription: SubscriptionConfig {
+                github: GitHubDiscoverConfig {
+                    token: Some("github-secret".into()),
+                    ..GitHubDiscoverConfig::default()
+                },
+                ..SubscriptionConfig::default()
+            },
+            ..Settings::default()
+        };
+        let submitted = Settings {
+            redis: RedisSettings {
+                url: REDACTED_VALUE.into(),
+            },
+            subscription: SubscriptionConfig {
+                github: GitHubDiscoverConfig {
+                    token: Some(REDACTED_VALUE.into()),
+                    ..GitHubDiscoverConfig::default()
+                },
+                ..SubscriptionConfig::default()
+            },
+            pool: PoolSettings {
+                fetch_interval_sec: 123,
+                ..PoolSettings::default()
+            },
+            ..Settings::default()
+        };
+
+        let merged = merge_redacted_settings(submitted, &current);
+
+        assert_eq!(merged.redis.url, "redis://:secret@redis:6379/0");
+        assert_eq!(
+            merged.subscription.github.token.as_deref(),
+            Some("github-secret")
+        );
+        assert_eq!(merged.pool.fetch_interval_sec, 123);
+    }
+
+    #[test]
+    fn write_settings_for_edit_preserves_redacted_values() {
+        let path = temp_config_path("preserve_redacted");
+        let current = Settings {
+            redis: RedisSettings {
+                url: "redis://:secret@redis:6379/0".into(),
+            },
+            subscription: SubscriptionConfig {
+                github: GitHubDiscoverConfig {
+                    token: Some("github-secret".into()),
+                    ..GitHubDiscoverConfig::default()
+                },
+                ..SubscriptionConfig::default()
+            },
+            ..Settings::default()
+        };
+        std::fs::write(&path, serde_yaml::to_string(&current).unwrap()).unwrap();
+
+        let (mut submitted, _) = redact_settings(&current);
+        submitted.pool.fetch_interval_sec = 123;
+        let saved = write_settings_for_edit(&path, submitted).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(saved.redis.url, "redis://:secret@redis:6379/0");
+        assert_eq!(
+            saved.subscription.github.token.as_deref(),
+            Some("github-secret")
+        );
+        assert_eq!(saved.pool.fetch_interval_sec, 123);
+        assert!(raw.contains("redis://:secret@redis:6379/0"));
+        assert!(raw.contains("github-secret"));
+        assert!(!raw.contains(REDACTED_VALUE));
+    }
+
+    #[test]
+    fn write_settings_for_edit_rejects_invalid_without_overwriting() {
+        let path = temp_config_path("reject_invalid");
+        let current = Settings {
+            redis: RedisSettings {
+                url: "redis://redis:6379/0".into(),
+            },
+            ..Settings::default()
+        };
+        let original = serde_yaml::to_string(&current).unwrap();
+        std::fs::write(&path, &original).unwrap();
+
+        let submitted = Settings {
+            redis: RedisSettings { url: "".into() },
+            ..Settings::default()
+        };
+        let result = write_settings_for_edit(&path, submitted);
+        let after = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(matches!(result, Err(SettingsEditError::Validation(_))));
+        assert_eq!(after, original);
+    }
+
+    fn temp_config_path(name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "proxy_pool_rust_{name}_{}_{}.yaml",
+            std::process::id(),
+            stamp
+        ))
     }
 }

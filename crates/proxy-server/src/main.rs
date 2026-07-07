@@ -191,6 +191,7 @@ async fn main() -> anyhow::Result<()> {
         started_at,
         balancer: Some(balancer.clone()),
         route_selector: selector.clone(),
+        config_path: std::path::PathBuf::from(&config_path),
     };
     let api_app = proxy_api::create_app(api_state, Some("/app/web".to_string()));
 

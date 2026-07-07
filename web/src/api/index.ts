@@ -4,9 +4,11 @@ import type {
   FetchersResponse,
   ProxiesResponse,
   Proxy,
+  ProxyPoolSettings,
   Protocol,
   RefreshResponse,
   RouteTestResponse,
+  SettingsResponse,
   ScoredProxiesResponse,
   StatusResponse,
   WarpInstancesResponse,
@@ -28,6 +30,20 @@ export async function fetchStatus(): Promise<StatusResponse> {
 
 export async function fetchReadiness(): Promise<DependencyStatus> {
   const { data } = await api.get<DependencyStatus>('/readyz')
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+export async function fetchSettings(): Promise<SettingsResponse> {
+  const { data } = await api.get<SettingsResponse>('/settings')
+  return data
+}
+
+export async function updateSettings(settings: ProxyPoolSettings): Promise<SettingsResponse> {
+  const { data } = await api.put<SettingsResponse>('/settings', { settings })
   return data
 }
 

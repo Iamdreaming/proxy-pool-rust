@@ -8,6 +8,7 @@ use proxy_core::store::ProxyStore;
 use proxy_core::warp::WarpBalancer;
 use proxy_core::xray_status::XrayStatusRegistry;
 use proxy_sub::ops::SubscriptionOpsHandle;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
@@ -32,6 +33,8 @@ pub struct AppState {
     pub balancer: Option<Arc<WarpBalancer>>,
     /// Shared gateway route selector for route dry-run and metrics.
     pub route_selector: Arc<UpstreamSelector>,
+    /// Path to the YAML settings file used at process startup.
+    pub config_path: PathBuf,
 }
 
 /// Build the axum router with all API routes and optional web UI.

@@ -7,6 +7,9 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get, post},
 };
+use proxy_core::config::{
+    Settings, SettingsEditError, read_settings_for_edit, redact_settings, write_settings_for_edit,
+};
 use proxy_core::fetcher::base::FetcherRunReport;
 use proxy_core::models::{Protocol, Proxy, ProxyFilter, WarpInstance};
 use proxy_core::route_debug::RouteDecision;
@@ -20,6 +23,7 @@ use proxy_sub::ops::{
     SubscriptionRefreshMode, SubscriptionSourceReport, SubscriptionSourcesSnapshot,
 };
 use serde::{Deserialize, Serialize};
+use std::path::Path as FilePath;
 
 use crate::AppState;
 
@@ -158,6 +162,20 @@ pub struct RouteTestResponse {
     pub decision: Option<RouteDecision>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SettingsUpdateRequest {
+    pub settings: Settings,
+}
+
+#[derive(Serialize)]
+pub struct SettingsResponse {
+    pub status: String,
+    pub path: String,
+    pub restart_required: bool,
+    pub redacted_fields: Vec<String>,
+    pub settings: Settings,
+}
+
 // ---------------------------------------------------------------------------
 // Route builder
 // ---------------------------------------------------------------------------
@@ -167,6 +185,7 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/healthz", get(healthz))
         .route("/api/readyz", get(readyz))
         .route("/api/status", get(status))
+        .route("/api/settings", get(get_settings).put(update_settings))
         .route("/api/routes/test", get(route_test))
         .route("/api/fetchers", get(fetcher_status))
         .route("/api/fetchers/{id}/refresh", post(refresh_fetcher))
@@ -198,6 +217,43 @@ fn json_status(code: StatusCode, msg: impl Into<String>) -> axum::response::Resp
 
 fn uptime_sec(state: &AppState) -> u64 {
     state.started_at.elapsed().as_secs()
+}
+
+fn settings_response(path: &FilePath, settings: Settings) -> SettingsResponse {
+    let (settings, redacted_fields) = redact_settings(&settings);
+    SettingsResponse {
+        status: "ok".into(),
+        path: path.display().to_string(),
+        restart_required: true,
+        redacted_fields,
+        settings,
+    }
+}
+
+fn settings_error_response(
+    handler: &'static str,
+    error: SettingsEditError,
+) -> axum::response::Response {
+    match error {
+        SettingsEditError::Validation(message) => {
+            tracing::warn!(handler = handler, error = %message, "invalid settings update");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(SimpleResponse { status: message }),
+            )
+                .into_response()
+        }
+        error => {
+            tracing::error!(handler = handler, error = %error, "settings operation failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SimpleResponse {
+                    status: "settings operation failed".into(),
+                }),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn service_status(state: &AppState) -> proxy_core::status::ServiceStatus {
@@ -241,6 +297,23 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn status(State(state): State<AppState>) -> impl IntoResponse {
     Json(service_status(&state).await)
+}
+
+async fn get_settings(State(state): State<AppState>) -> impl IntoResponse {
+    match read_settings_for_edit(&state.config_path) {
+        Ok(settings) => Json(settings_response(&state.config_path, settings)).into_response(),
+        Err(error) => settings_error_response("get_settings", error),
+    }
+}
+
+async fn update_settings(
+    State(state): State<AppState>,
+    Json(request): Json<SettingsUpdateRequest>,
+) -> impl IntoResponse {
+    match write_settings_for_edit(&state.config_path, request.settings) {
+        Ok(settings) => Json(settings_response(&state.config_path, settings)).into_response(),
+        Err(error) => settings_error_response("update_settings", error),
+    }
 }
 
 async fn route_test(
@@ -729,6 +802,43 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"decision\":null"));
+    }
+
+    #[test]
+    fn test_settings_response_serialization() {
+        let resp = SettingsResponse {
+            status: "ok".into(),
+            path: "config/settings.yaml".into(),
+            restart_required: true,
+            redacted_fields: vec!["redis.url".into()],
+            settings: Settings::default(),
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"path\":\"config/settings.yaml\""));
+        assert!(json.contains("\"restart_required\":true"));
+        assert!(json.contains("\"redacted_fields\":[\"redis.url\"]"));
+        assert!(json.contains("\"settings\""));
+    }
+
+    #[test]
+    fn test_settings_update_request_deserialize() {
+        let request: SettingsUpdateRequest = serde_json::from_value(serde_json::json!({
+            "settings": {
+                "redis": {
+                    "url": "redis://localhost:6379/0"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(request.settings.redis.url, "redis://localhost:6379/0");
+        assert_eq!(
+            request.settings.pool.validate_target_url,
+            proxy_core::config::PoolSettings::default().validate_target_url
+        );
     }
 
     #[test]

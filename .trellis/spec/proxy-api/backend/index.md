@@ -18,6 +18,7 @@
 | [Error Handling](./error-handling.md) | API error response patterns and conventions |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns, testing |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels |
+| [Settings Edit API Contract](../../proxy-core/backend/config-edit-api.md) | `GET/PUT /api/settings` response/request contract owned by `proxy-core::config` |
 
 > **Note:** This crate has no database access and no database-guidelines.md.
 

@@ -91,6 +91,8 @@ docker compose logs -f proxy-pool
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/status` | 系统状态、版本、git hash、release 镜像配置、协议分布和只读质量摘要 |
+| GET | `/api/settings` | 读取当前 YAML 配置，返回脱敏后的配置对象、配置路径和重启生效标记 |
+| PUT | `/api/settings` | 校验并写回完整配置对象；保留脱敏占位符时沿用原敏感值，保存后需重启生效 |
 | GET | `/api/readyz` | 依赖 readiness |
 | GET | `/api/routes/test` | 路由 dry-run 诊断 |
 | GET | `/api/fetchers` | 抓取源状态和源级熔断状态 |
