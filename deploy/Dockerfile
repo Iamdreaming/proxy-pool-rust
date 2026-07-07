@@ -83,9 +83,27 @@ RUN cargo build --release -p proxy-server --target x86_64-unknown-linux-musl \
 # ──────────────────────────────────────────────
 FROM debian:trixie-slim
 
+ARG TARGETARCH
+ARG XRAY_VERSION=v26.3.27
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates curl unzip \
+    && case "${TARGETARCH}" in \
+         amd64) XRAY_ASSET="Xray-linux-64.zip" ;; \
+         arm64) XRAY_ASSET="Xray-linux-arm64-v8a.zip" ;; \
+         *) echo "unsupported xray arch: ${TARGETARCH}"; exit 1 ;; \
+       esac \
+    && if [ "${XRAY_VERSION}" = "latest" ]; then \
+         XRAY_URL="https://github.com/XTLS/Xray-core/releases/latest/download/${XRAY_ASSET}"; \
+       else \
+         XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${XRAY_ASSET}"; \
+       fi \
+    && curl -fsSL "${XRAY_URL}" -o /tmp/xray.zip \
+    && mkdir -p /tmp/xray \
+    && unzip -q /tmp/xray.zip -d /tmp/xray \
+    && install -m 0755 /tmp/xray/xray /usr/local/bin/xray \
+    && xray version \
+    && apt-get purge -y --auto-remove unzip \
+    && rm -rf /var/lib/apt/lists/* /tmp/xray /tmp/xray.zip
 
 # Download GeoLite2 database
 RUN mkdir -p /app/geoip \
