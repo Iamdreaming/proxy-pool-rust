@@ -50,6 +50,15 @@ Watchtower token contract:
 - `WATCHTOWER_HTTP_API_TOKEN=${PROXY_POOL_UPDATE_TOKEN:-proxy-pool-update}`
 - The app token and Watchtower token must be documented as a matched pair.
 
+Container role and label contract:
+
+- `redis` is the backing state service.
+- `proxy-pool` is the update-eligible application container.
+- `watchtower-proxy-pool` is the sidecar that owns Watchtower HTTP update.
+- `proxy-pool` has `com.centurylinklabs.watchtower.enable=true`.
+- `watchtower-proxy-pool` has `com.centurylinklabs.watchtower.enable=false`.
+- Watchtower runs with `--http-api-update --cleanup --label-enable`.
+
 Release metadata field contract:
 
 - `release.git_hash`
@@ -65,6 +74,8 @@ Operator boundary contract:
 - Direct SSH to the dev address is not part of default validation.
 - Host Docker CLI/API access is not part of default validation.
 - MCP `update_service` is a mutating operator action, not a status check.
+- Rollback/pause guidance is an explicit operator decision, not an automatic
+  smoke-runner behavior.
 - `containrrr/watchtower` may lack common shell tools such as `printenv`; do
   not recommend `docker compose exec watchtower-proxy-pool printenv` as the
   token verification path.
@@ -76,6 +87,8 @@ Operator boundary contract:
 | Compose omits a required `PROXY_POOL_UPDATE_*` env | Drift test fails on compose env assertion |
 | Watchtower token no longer derives from `PROXY_POOL_UPDATE_TOKEN` | Drift test fails on token wiring assertion |
 | Runbook omits a required update env | Drift test fails on runbook env assertion |
+| Runbook stops documenting container role or Watchtower label intent | Drift test fails on role/label assertion |
+| Runbook loses rollback/pause operator boundary wording | Drift test fails on rollback/pause assertion |
 | Runbook documents obsolete `release.update_image` | Drift test fails on operator-doc obsolete field assertion |
 | Status source renames/removes a release field without docs update | Drift test fails on status source or runbook field assertion |
 | Runbook recommends Watchtower `printenv` as the token check | Drift test fails until guidance points to compose/app env/status instead |
@@ -100,6 +113,8 @@ When changing this area, keep or update assertions for:
 - Watchtower token wiring.
 - Runbook env and token-pair documentation.
 - Runbook release field names.
+- Managed dev container roles, Watchtower labels, and Watchtower command.
+- Explicit rollback/pause boundary wording.
 - Absence of obsolete operator field names such as `release.update_image`.
 - No-SSH, no host-Docker, and no routine `update_service` wording.
 - Watchtower shell-tool limitation and recommended alternatives.

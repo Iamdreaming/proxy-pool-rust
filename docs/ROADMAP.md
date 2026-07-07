@@ -249,6 +249,24 @@
 - [x] `python -m pytest tests\integration\test_l0_release_status_public_smoke.py tests\integration\test_release_status_public_smoke.py -q` 通过。
 - [x] `python -m pytest tests\integration\test_l2_api.py::TestApiStatus::test_status_returns_version tests\integration\test_l4_mcp.py::TestMcpServiceStatus::test_service_status_structure tests\integration\test_l4_mcp.py::TestMcpServiceStatus::test_update_status_read_only_structure -q` 通过。
 
+### P0 — `dev-update-config-doc-hardening-v1`
+
+**目标**：把当前 dev compose 自更新配置沉淀为标准说明，降低后续排障时误判环境变量、token 或 Watchtower 行为的概率。
+
+**当前状态**：已完成。`docs/dev-validation.md` 现在明确记录 managed dev compose 的 `redis`、`proxy-pool`、`watchtower-proxy-pool` 职责，Watchtower HTTP API command、label-enable 语义、token 配对、GHCR latest 更新路径，以及 rollback/pause 只能由 operator 显式决定，不能由 smoke runner 或测试自动执行。
+
+**主要完成项**：
+
+- [x] 文档化 `proxy-pool`、`watchtower-proxy-pool` 和 `redis` 的 dev compose 职责。
+- [x] 明确 `proxy-pool` 使用 `com.centurylinklabs.watchtower.enable=true`，Watchtower sidecar 使用 `com.centurylinklabs.watchtower.enable=false`。
+- [x] 记录 Watchtower command：`--http-api-update --cleanup --label-enable`。
+- [x] 明确 dev 默认配置支持 `PROXY_POOL_UPDATE_ENABLED=true`、GHCR latest 镜像和 Watchtower HTTP API。
+- [x] README 的 Dev 验证段落补充 dev compose 自更新配置、Watchtower 角色、token 配对和回滚/暂停边界指向。
+- [x] 新增 drift guard 断言，覆盖容器角色、labels、Watchtower command、latest 镜像发布关系、rollback/pause operator boundary。
+- [x] 更新 `.trellis/spec/integration/testing/config-runbook-drift-check.md`，沉淀新增 runbook 契约。
+- [x] `python -m pytest tests\integration\test_l0_config_runbook_drift.py -q` 通过。
+- [x] `python -m pytest tests\integration\test_l0_config_runbook_drift.py tests\integration\test_l0_release_status_public_smoke.py -q` 通过。
+
 ### P2 — `pool-quality-metrics-v1`
 
 **目标**：把代理池质量趋势和保留风险沉淀为只读 metrics/status 字段，便于 no-SSH 环境下判断代理池是否正在变好。
@@ -527,17 +545,6 @@
 
 ## Next
 
-### P0 — `dev-update-config-doc-hardening-v1`
-
-**目标**：把当前 dev compose 自更新配置沉淀为标准说明，降低后续排障时误判环境变量、token 或 Watchtower 行为的概率。
-
-**候选功能**：
-
-- [ ] 文档化 `proxy-pool` 与 `watchtower-proxy-pool` 的容器职责、环境变量和 labels。
-- [ ] 明确 dev 默认配置已经支持 `PROXY_POOL_UPDATE_ENABLED=true`、Watchtower HTTP API 和 GHCR latest 镜像。
-- [ ] 给出只读验证方式：从 `proxy-pool` 容器环境、公开 status/update_status 和 GitHub Actions 判断，而不是直接 SSH。
-- [ ] 给出安全回滚思路：回退镜像 tag/digest 或暂停 update action，具体 apply 操作仍需人工显式执行。
-
 ### P0 — `api-readonly-contract-minimal-v1`
 
 **目标**：把当前真正用于自动验证的只读 API/MCP 字段整理成最小契约，避免重新打开已暂停的完整 `mcp-api-contract-smoke-v2` 范围。
@@ -645,7 +652,7 @@
 10. `config-runbook-drift-check-v1` — 已完成，防止 README、dev-validation、compose/env/status 字段继续漂移。
 11. `metrics-low-cardinality-audit-v1` — 系统性审计 Prometheus label 是否持续保持低基数。
 12. `release-status-public-smoke-v1` — 已完成，为公开只读发布状态补更轻的 smoke，不恢复完整 REST/MCP smoke。
-13. `dev-update-config-doc-hardening-v1` — 沉淀当前 dev compose 自更新配置和只读排障说明。
+13. `dev-update-config-doc-hardening-v1` — 已完成，沉淀当前 dev compose 自更新配置和只读排障说明。
 14. `api-readonly-contract-minimal-v1` — 定义 runner/smoke 依赖的最小只读 API/MCP 字段集合。
 15. `quality-dashboard-readonly-v1` — 用户重新确认后再恢复，只读展示质量趋势，不恢复暂停的操作按钮草稿。
 16. `revalidation-scheduler-priority-v1` — 用户重新确认后再恢复，让质量历史影响复验优先级，但不直接清理代理。

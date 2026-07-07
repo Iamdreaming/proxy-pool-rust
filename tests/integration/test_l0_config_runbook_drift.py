@@ -49,6 +49,10 @@ def test_compose_declares_canonical_update_env_wiring():
     )
     assert "image: containrrr/watchtower" in compose
     assert "command: --http-api-update --cleanup --label-enable" in compose
+    assert 'container_name: proxy-pool' in compose
+    assert 'container_name: watchtower-proxy-pool' in compose
+    assert '"com.centurylinklabs.watchtower.enable=true"' in compose
+    assert '"com.centurylinklabs.watchtower.enable=false"' in compose
 
 
 def test_runbook_documents_compose_update_env_and_token_pairing():
@@ -63,6 +67,31 @@ def test_runbook_documents_compose_update_env_and_token_pairing():
     assert "not a license for integration tests or agents to control the host directly" in squish(
         runbook
     )
+
+
+def test_runbook_documents_managed_dev_container_roles_and_labels():
+    runbook = read_text(RUNBOOK_FILE)
+    normalized = squish(runbook)
+
+    assert "Managed Dev Compose Roles" in runbook
+    assert "`redis`" in runbook
+    assert "`proxy-pool`" in runbook
+    assert "`watchtower-proxy-pool`" in runbook
+    assert "`com.centurylinklabs.watchtower.enable=true`" in runbook
+    assert "`com.centurylinklabs.watchtower.enable=false`" in runbook
+    assert "`--http-api-update --cleanup --label-enable`" in runbook
+    assert "label-scoped and HTTP-triggered" in normalized
+    assert "does not try to update itself" in normalized
+
+
+def test_runbook_documents_dev_latest_image_and_watchtower_http_update():
+    runbook = read_text(RUNBOOK_FILE)
+    normalized = squish(runbook)
+
+    assert "ghcr.io/iamdreaming/proxy-pool-rust:latest" in runbook
+    assert "GitHub Actions owns publishing that `latest` image" in runbook
+    assert "http://watchtower-proxy-pool:8080/v1/update" in runbook
+    assert "MCP status surfaces own proving which git hash is currently live" in normalized
 
 
 def test_runbook_release_fields_match_status_contract():
@@ -110,3 +139,17 @@ def test_watchtower_printenv_is_documented_as_non_recommended_check():
     assert "docker compose exec watchtower-proxy-pool printenv" in runbook
     assert "is not a recommended token check" in normalized
     assert "Prefer the compose file, app-container update env" in normalized
+
+
+def test_runbook_documents_rollback_and_pause_as_explicit_operator_decisions():
+    runbook = read_text(RUNBOOK_FILE)
+    readme = read_text(README_FILE)
+    normalized = squish(runbook)
+
+    assert "Rollback And Pause Guidance" in runbook
+    assert "explicit operator decision" in normalized
+    assert "must not change image tags, disable updates, stop containers, or call host Docker" in normalized
+    assert "`PROXY_POOL_UPDATE_ENABLED=false`" in runbook
+    assert "pin `PROXY_POOL_UPDATE_IMAGE` or the compose image to a known good tag/digest" in normalized
+    assert "approved operator path" in normalized
+    assert "回滚/暂停边界" in readme

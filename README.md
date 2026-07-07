@@ -144,7 +144,8 @@ docker compose logs -f proxy-pool
 
 推送后的 dev 验证默认走 GitHub Actions、公开 HTTP 状态接口和 MCP 只读
 `service_status` / `update_status`。不要直接 SSH 到 dev 地址；`update_service`
-只在明确选择更新时调用，不作为默认状态检查。完整清单见
+只在明确选择更新时调用，不作为默认状态检查。dev compose 自更新配置、
+Watchtower 角色、token 配对和回滚/暂停边界见
 [`docs/dev-validation.md`](docs/dev-validation.md)。
 
 常用的一条命令式只读检查：

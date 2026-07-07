@@ -112,6 +112,36 @@ The manual steps below remain useful for drilling into a failed runner result.
 7. For a narrow feature, run the matching integration test file or an HTTP/MCP
    smoke command that checks the newly changed endpoint or tool.
 
+## Managed Dev Compose Roles
+
+The managed dev compose file has three service roles:
+
+| Service | Role |
+|---------|------|
+| `redis` | Persistent proxy pool state and scheduler/status backing store. |
+| `proxy-pool` | Main application container. It exposes the gateway, REST API, MCP HTTP transport, reads `/app/config/settings.yaml`, and owns the internal MCP `update_service` operation when explicitly chosen. |
+| `watchtower-proxy-pool` | Watchtower sidecar. It exposes Watchtower's HTTP update API inside the compose network, pulls eligible labeled containers, and removes old images with cleanup enabled. |
+
+The `proxy-pool` container is update-eligible because compose labels it with
+`com.centurylinklabs.watchtower.enable=true`. The Watchtower sidecar is labeled
+`com.centurylinklabs.watchtower.enable=false` so the same Watchtower instance
+does not try to update itself.
+
+Watchtower is started with:
+
+```text
+--http-api-update --cleanup --label-enable
+```
+
+In short, the managed Watchtower command is
+`--http-api-update --cleanup --label-enable`.
+
+That means dev updates are intentionally label-scoped and HTTP-triggered:
+`update_service` pulls the configured image through the Docker socket available
+inside `proxy-pool`, then calls the Watchtower HTTP API at
+`http://watchtower-proxy-pool:8080/v1/update`. The HTTP API token in Watchtower
+must match the token used by `proxy-pool`.
+
 ## Dev Update Environment Expectations
 
 Managed dev compose wiring should keep these settings aligned:
@@ -123,6 +153,11 @@ Managed dev compose wiring should keep these settings aligned:
 - `PROXY_POOL_UPDATE_WATCHTOWER_URL=http://watchtower-proxy-pool:8080/v1/update`
 - `PROXY_POOL_UPDATE_TOKEN` in the app container matches
   `WATCHTOWER_HTTP_API_TOKEN` in the Watchtower container.
+
+With this wiring, managed dev is already configured for explicit MCP
+`update_service` updates from `ghcr.io/iamdreaming/proxy-pool-rust:latest`.
+GitHub Actions owns publishing that `latest` image; the running service and
+MCP status surfaces own proving which git hash is currently live.
 
 Verify these through deployment configuration, `/api/status.release`, MCP
 `service_status.release`, or MCP `update_status`. Do not SSH to the host just
@@ -146,6 +181,25 @@ matches the expected short hash.
 
 A dropped MCP response during container restart is acceptable only if the
 follow-up HTTP/MCP smoke checks prove the new service is healthy.
+
+## Rollback And Pause Guidance
+
+Rollback or update pause is an explicit operator decision. The default smoke
+runner and integration tests must only report public state; they must not
+change image tags, disable updates, stop containers, or call host Docker.
+
+Safe decision points:
+
+- To pause automatic eligibility, change the managed deployment configuration
+  so `PROXY_POOL_UPDATE_ENABLED=false` or the Watchtower enable label no longer
+  selects `proxy-pool`, then redeploy through the approved operator path.
+- To roll back, pin `PROXY_POOL_UPDATE_IMAGE` or the compose image to a known
+  good tag/digest, then perform an explicit update through the approved
+  operator path.
+- After any rollback or pause, verify only through GitHub Actions history,
+  `/api/status.release`, `/api/readyz`, MCP `service_status`, and MCP
+  `update_status` unless the operator has intentionally chosen a separate
+  mutating maintenance step.
 
 ## Failure Triage
 
