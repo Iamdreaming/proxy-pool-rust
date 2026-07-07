@@ -75,19 +75,19 @@ without directly SSHing to the dev host and without defaulting to
 
 ## Acceptance Criteria
 
-- [ ] The no-SSH post-push checklist exists in project documentation.
-- [ ] The checklist names the exact HTTP and MCP status surfaces to use.
-- [ ] The checklist includes a compact expected-vs-observed git hash/image
+- [x] The no-SSH post-push checklist exists in project documentation.
+- [x] The checklist names the exact HTTP and MCP status surfaces to use.
+- [x] The checklist includes a compact expected-vs-observed git hash/image
   comparison step.
-- [ ] The docs explicitly prohibit direct SSH as the default dev validation
+- [x] The docs explicitly prohibit direct SSH as the default dev validation
   path.
-- [ ] The docs explicitly state that `update_service` is not part of the
+- [x] The docs explicitly state that `update_service` is not part of the
   default read-only validation checklist.
-- [ ] The docs capture the dev compose environment expectations needed for
+- [x] The docs capture the dev compose environment expectations needed for
   update visibility.
-- [ ] The docs include failure triage for CI, image, runtime status, and update
+- [x] The docs include failure triage for CI, image, runtime status, and update
   status mismatches.
-- [ ] Roadmap is updated when the task is completed or paused.
+- [x] Roadmap is updated when the task is completed or paused.
 
 ## Verification
 

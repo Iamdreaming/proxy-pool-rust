@@ -37,7 +37,7 @@
 
 用户最新要求先不做 `mcp-api-contract-smoke-v2`，因此该契约 smoke 草稿已暂停并隔离，不作为当前 Ready/Next 主线。`dashboard-ops-polish-v2` 也继续保持暂停。`proxy-quality-history-lite` 已完成；用户随后明确“先不做” `proxy-quality-recommendations-dry-run`，因此该 dry-run 建议任务只保留暂停草稿，不进入当前主线。
 
-用户最新要求“先不做这个，规划新的 todo list”，因此 `fetcher-source-quality-ranking` 也从当前主线移出并隔离。新的 TODO 队列先回到 no-SSH 发布/运维闭环：先补 `release-validation-no-ssh-runbook-v2`，把推送后如何通过公开入口判断 dev 是否更新写成可执行清单；再补 `release-status-contract-smoke-v1`，用最小自动化防止 status/update_status 等发布状态契约漂移；然后再评估 `update-failure-hardening` 是否具备安全验证入口。质量闭环类任务仍保留，但排到这组 P0 运维闭环之后。
+用户最新要求“先不做这个，规划新的 todo list”，因此 `fetcher-source-quality-ranking` 也从当前主线移出并隔离。新的 TODO 队列先回到 no-SSH 发布/运维闭环：`release-validation-no-ssh-runbook-v2` 已完成，把推送后如何通过公开入口判断 dev 是否更新固定为默认只读清单；下一步补 `release-status-contract-smoke-v1`，用最小自动化防止 status/update_status 等发布状态契约漂移；然后再评估 `update-failure-hardening` 是否具备安全验证入口。质量闭环类任务仍保留，但排到这组 P0 运维闭环之后。
 
 **工作区注意事项**：
 
@@ -55,7 +55,7 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议从 Ready 选择 `release-validation-no-ssh-runbook-v2`。`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求暂停，不作为当前主线。
+当前无 Now 任务；下一步建议从 Ready 选择 `release-status-contract-smoke-v1`。`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求暂停，不作为当前主线。
 
 ## Paused Closeout
 
@@ -138,6 +138,21 @@
 - [ ] 覆盖 core 汇总逻辑、API/MCP shape 和旧数据兼容测试。
 
 ## Done
+
+### P0 — `release-validation-no-ssh-runbook-v2`
+
+**目标**：把推送后如何判断 dev 是否运行目标镜像、目标 git hash 和最近更新状态整理成可重复执行的 no-SSH 验证清单。
+
+**当前状态**：已完成文档型交付。`docs/dev-validation.md` 现在把默认 post-push 验证定义为只读流程：GitHub Actions、公开 HTTP status/readyz、MCP `service_status` 和 MCP `update_status`；`update_service` 被明确归类为 operator 显式选择的 mutating update action，不再是默认状态检查。README 和 CLAUDE 指令也已同步该边界。
+
+**主要完成项**：
+
+- [x] 默认 post-push checklist 不再触发 `update_service`。
+- [x] 文档列出允许入口：GitHub Actions、公开 HTTP 状态接口、MCP `service_status` / `update_status` 和 feature smoke 工具。
+- [x] 文档明确禁止直接 SSH 到 dev 地址、host Docker CLI/API 访问，以及把 `update_service` 当作 routine status check。
+- [x] 文档记录 dev compose 更新可观测性所需环境变量：update enabled、container/image、Watchtower URL 和 token 对应关系。
+- [x] 文档包含 CI、镜像、runtime git hash、release metadata 和 update status 的失败分支判断。
+- [x] README 和 CLAUDE.md 已同步 no-SSH 默认只读验证说明。
 
 ### P1 — `proxy-quality-history-lite`
 
@@ -383,18 +398,6 @@
 
 ## Ready
 
-### P0 — `release-validation-no-ssh-runbook-v2`
-
-**目标**：把推送后如何判断 dev 是否运行目标镜像、目标 git hash 和最近更新状态整理成可重复执行的 no-SSH 验证清单。
-
-**候选功能**：
-
-- [ ] 更新 `docs/dev-validation.md` 或 README，明确 post-push 验证入口：GitHub Actions、公开 HTTP status、MCP 只读 `service_status` / `update_status`。
-- [ ] 写清楚允许和禁止动作：允许查状态、查 CI、查公开接口；禁止直接 SSH 到 dev 地址，禁止默认触发 `update_service`。
-- [ ] 明确 dev compose 侧需要保持的环境变量和 watchtower token 对应关系，避免下一次排障靠登录服务器确认。
-- [ ] 给出失败分支判断：CI 未完成、镜像未更新、服务未拉取、状态接口 git hash 不一致、最近更新结果失败。
-- [ ] 保持文档型交付，不修改运行时代码，不触发真实更新。
-
 ### P0 — `release-status-contract-smoke-v1`
 
 **目标**：为 no-SSH 发布验证依赖的最小状态契约补轻量 smoke，避免 `/api/status`、MCP `service_status` 和 MCP `update_status` 的关键字段漂移。
@@ -533,8 +536,8 @@
 3. `validator-observability-multitarget` — 已完成，多目标验证矩阵和更细阶段耗时。
 4. `release-observability-no-ssh-v2` — 已完成，发布状态、镜像元数据和最近更新结果的 no-SSH 可观测性。
 5. `proxy-quality-history-lite` — 已完成，代理质量轻量趋势和只读解释字段。
-6. `release-validation-no-ssh-runbook-v2` — 下一项建议，把 post-push dev 验证清单固定为 GitHub Actions、公开 HTTP 和 MCP 只读入口。
-7. `release-status-contract-smoke-v1` — 为发布验证依赖的 status/update_status 字段补最小契约 smoke，不恢复完整 REST/MCP smoke。
+6. `release-validation-no-ssh-runbook-v2` — 已完成，把 post-push dev 验证清单固定为 GitHub Actions、公开 HTTP 和 MCP 只读入口。
+7. `release-status-contract-smoke-v1` — 下一项建议，为发布验证依赖的 status/update_status 字段补最小契约 smoke，不恢复完整 REST/MCP smoke。
 8. `update-failure-hardening` — 用户确认安全验证入口后再恢复自更新失败路径结构化错误和 no-SSH 验证。
 9. `revalidation-scheduler-priority-v1` — 让质量历史影响复验优先级，但不直接清理代理。
 10. `pool-quality-metrics-v1` — 将质量趋势、来源质量和复验效果暴露为低基数只读指标。

@@ -32,8 +32,9 @@ Rust workspace 代理池服务，包含代理获取、验证、网关路由、MC
 
 ## 修复后部署与端到端验证工作流
 
-禁止直接 SSH 到 dev 地址。部署后验证必须走 GitHub Actions、MCP `update_service`、
-HTTP 状态接口和 MCP 工具；完整检查清单见 `docs/dev-validation.md`。
+禁止直接 SSH 到 dev 地址。部署后默认验证必须走 GitHub Actions、HTTP 状态
+接口和 MCP 只读状态工具；`update_service` 是显式选择的变更动作，不是默认
+状态检查。完整检查清单见 `docs/dev-validation.md`。
 
 1. 修复/实现代码后，先在本地运行 `cargo test` 和 `cargo clippy -- -D warnings`，零失败零警告方可进入下一步。
 2. 提交并用 conventional commits 格式（如 `fix(core): ...` / `feat(api): ...`，破坏性变更加 `!`）。
@@ -41,6 +42,7 @@ HTTP 状态接口和 MCP 工具；完整检查清单见 `docs/dev-validation.md`
 4. 用 `gh` CLI 监视 GitHub Actions 构建状态，判定镜像构建完成：
    - `gh run list --workflow=docker-build.yml --branch main --limit 1` 找到刚触发的 run。
    - `gh run watch <run-id> --exit-status` 阻塞等待直到 run 完成；非零退出码即构建失败，停止后续步骤并向用户报告失败日志（`gh run view <run-id> --log-failed`）。
-5. 构建成功后，调用 MCP 工具 `mcp__proxy-pool__update_service` 拉取 GHCR 新镜像并重启容器（返回前后 digest 对比，确认镜像已更新）。
-6. 端到端验证：调用 `mcp__proxy-pool__pool_status` 确认服务存活；访问 `/api/status` 确认 `git_hash` 已更新为本次推送的 short sha；按需抽样 `mcp__proxy-pool__get_best_proxy` / `mcp__proxy-pool__check_proxy` 验证代理池可用性。
-7. 任意一步失败都不得继续后续步骤；失败时定位失败点、修复后从第 1 步重新开始。
+5. 构建成功后，先走只读验证：访问 `/api/status` / `/api/readyz`，并调用 MCP `service_status` / `update_status` 查看当前 runtime git hash、release metadata 和最近更新状态。
+6. 如果只读状态证明 dev 仍是旧镜像，且用户或 operator 明确选择更新，再调用 MCP 工具 `mcp__proxy-pool__update_service` 拉取 GHCR 新镜像并触发 Watchtower；随后通过 HTTP/MCP 只读状态确认 `git_hash` 已更新为本次推送的 short sha。
+7. 端到端验证：调用 `mcp__proxy-pool__pool_status` 确认服务存活；按需抽样 `mcp__proxy-pool__get_best_proxy` / `mcp__proxy-pool__check_proxy` 验证代理池可用性。
+8. 任意一步失败都不得继续后续步骤；失败时定位失败点、修复后从第 1 步重新开始。

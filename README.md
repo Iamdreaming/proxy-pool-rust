@@ -138,6 +138,13 @@ docker compose logs -f proxy-pool
 | `proxy_stats` | 代理池统计（协议分布） |
 | `geoip_lookup` | 查询地理位置（国家/境内外） |
 
+## Dev 验证
+
+推送后的 dev 验证默认走 GitHub Actions、公开 HTTP 状态接口和 MCP 只读
+`service_status` / `update_status`。不要直接 SSH 到 dev 地址；`update_service`
+只在明确选择更新时调用，不作为默认状态检查。完整清单见
+[`docs/dev-validation.md`](docs/dev-validation.md)。
+
 ### 配置示例 (Claude Desktop / ZCode)
 
 ```json
