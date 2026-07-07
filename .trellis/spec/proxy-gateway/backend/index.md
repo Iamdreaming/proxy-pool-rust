@@ -51,7 +51,7 @@ UpstreamSelector::select()  ← Router → GeoIP → fallback chain
     ├── Proxy(http/https) → connect_via_http_proxy(proxy, target)
     ├── Proxy(socks5)     → connect_via_socks5(proxy, target)
     ├── Proxy(socks4)     → unsupported → failure/fallback
-    ├── Warp{port}       → connect_via_socks5(127.0.0.1:port, target)
+    ├── Warp{id,port}    → connect_via_socks5(127.0.0.1:port, target)
     ├── Xray{port}       → connect_via_socks5(127.0.0.1:port, target)
     ├── WarpChain{..}    → connect_via_warp_chain(proxy, warp_port, target)
     └── NoProxy          → 502 / SOCKS5 reply 0x05

@@ -10,6 +10,7 @@ client CONNECT host:port
   -> selector.select_with_trace(host, "http")
   -> candidate Upstream::Warp / Xray / Proxy / NoProxy
   -> connect_to_upstream(candidate, target)
+  -> on candidate failure: record metrics and feed WARP failure to balancer
   -> HTTP 200 tunnel or next candidate
 ```
 
@@ -21,6 +22,7 @@ client SOCKS5 CONNECT host:port
   -> selector.select_with_trace(host, "socks5")
   -> candidate Upstream::Warp / Xray / Proxy / NoProxy
   -> connect_to_upstream(candidate, target)
+  -> on candidate failure: record metrics and feed WARP failure to balancer
   -> SOCKS5 success reply or next candidate
 ```
 
@@ -49,8 +51,17 @@ client SOCKS5 CONNECT host:port
    - Keep metrics labeled by `exit=free_pool`.
    - Use weighted random selection without replacement so repeated attempts are
      distinct proxies and still prefer higher-scored entries.
-5. Keep route ordering unchanged. This task fixes connection mechanics and
-   fallback progression only.
+5. Preserve the WARP instance id in `Upstream::Warp`.
+   - `WarpBalancer::next()` already returns the concrete instance.
+   - The selected `Upstream::Warp` should carry both `id` and `socks5_port`.
+6. Add gateway attempt feedback on concrete failure.
+   - HTTP CONNECT and SOCKS5 handlers record the failed attempt through
+     `UpstreamSelector`.
+   - For `Upstream::Warp`, the selector calls `WarpBalancer::mark_failed(id)`.
+   - The regular health checker remains responsible for marking WARP healthy
+     again.
+7. Keep route ordering unchanged. This task fixes connection mechanics,
+   fallback progression, and minimal runtime WARP failure feedback only.
 
 ## Testing
 
@@ -64,10 +75,12 @@ network dependencies:
   metrics/fallback handler tests.
 - Pure core tests for weighted random multi-candidate selection without
   replacement.
+- Pure core test for `WarpBalancer::mark_failed` removing the failed instance
+  from healthy rotation.
 
 ## Trade-Offs
 
-HTTP CONNECT upstream support is the minimal correct fix for HTTP pool proxies.
-It does not solve WARP health lying about real target reachability. That should
-be a follow-up task because it may require feedback from gateway attempt
-failures into the WARP balancer/health model.
+HTTP CONNECT upstream support fixes HTTP pool proxy compatibility. Gateway
+failure feedback is intentionally limited to in-process WARP availability; it
+does not change WARP endpoint optimization, health-check URLs, or persistent
+quality scoring.

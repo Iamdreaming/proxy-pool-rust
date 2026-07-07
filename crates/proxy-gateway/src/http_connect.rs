@@ -82,6 +82,9 @@ pub async fn handle(
                     candidate.exit,
                     GatewayAttemptStatus::Failure,
                 );
+                selector
+                    .record_upstream_attempt(&candidate.upstream, GatewayAttemptStatus::Failure)
+                    .await;
                 tracing::warn!(
                     target = %target,
                     route_group = ?selection.decision.matched_group,

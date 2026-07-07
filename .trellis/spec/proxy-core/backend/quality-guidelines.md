@@ -348,6 +348,7 @@ The scheduler owns fetcher state; API and MCP only serialize it.
 - Traceable selection: `UpstreamSelector::select_with_trace(&self, host, protocol) -> RouteSelection`.
 - Dry-run: `UpstreamSelector::dry_run(&self, host, protocol) -> RouteDecision`.
 - Metrics render: `UpstreamSelector::render_gateway_metrics(&self) -> String`.
+- Attempt feedback: `UpstreamSelector::record_upstream_attempt(&self, upstream, status)`.
 - API endpoint: `GET /api/routes/test?host=<host>&protocol=<protocol>`.
 - MCP tool: `route_test` with `{ "host": "...", "protocol": "http|https|socks4|socks5" }`.
 
@@ -393,6 +394,7 @@ proxy_gateway_route_attempts_total{protocol="<http_connect|socks5|other>",exit="
 | No router and no GeoIP | Candidate order is `free_pool -> warp -> xray -> no_proxy` |
 | Free pool has several usable proxies | The decision may include repeated `exit=free_pool` candidates with different `detail` values |
 | Gateway upstream connection fails before success response | Record `status=failure`, try later concrete candidates, and only then return HTTP 502 / SOCKS failure |
+| Concrete `Upstream::Warp` fails in a gateway attempt | Call attempt feedback and mark that WARP instance unhealthy in `WarpBalancer` |
 | No concrete upstream exists | Record `exit=no_proxy,status=unavailable` |
 
 ### 5. Good/Base/Bad Cases
@@ -405,6 +407,7 @@ proxy_gateway_route_attempts_total{protocol="<http_connect|socks5|other>",exit="
 
 - `proxy-core` tests for `RouteDecision` serialization, route suffix diagnostics, candidate order helpers, and gateway metric rendering.
 - `proxy-core` tests for weighted random multi-candidate pool selection without replacement.
+- `proxy-core` tests for WARP balancer failure marking removing failed instances from healthy rotation.
 - `proxy-gateway` tests for upstream variants and connection helper compatibility.
 - `proxy-api` tests for `RouteTestResponse` serialization and route query deserialization.
 - `proxy-mcp` tests for `RouteTestParam` required and optional fields.

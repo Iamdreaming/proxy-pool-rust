@@ -26,6 +26,11 @@ pool proxies as SOCKS5 upstreams.
   through `connect_via_socks5`, regardless of `proxy.protocol`.
 - The gateway handlers do not bound each upstream attempt, so a slow WARP
   attempt can consume the client timeout before later fallback exits are tried.
+- After HTTP proxy upstream support and bounded fallback landed, live business
+  probes improved but still showed `warp.success=0` with repeated WARP
+  failures. WARP can appear healthy to the periodic checker while failing real
+  overseas CONNECT targets, so gateway failures must feed back into WARP
+  availability.
 
 ## Requirements
 
@@ -52,7 +57,14 @@ does not change route ordering. Within the `free_pool` exit, the selector
 should provide a bounded set of concrete pool proxy candidates so one bad pool
 proxy does not immediately end the business request.
 
-### R4: Focused regression coverage
+### R4: Runtime WARP failure feedback
+
+When a concrete `Upstream::Warp` attempt fails in the HTTP CONNECT or SOCKS5
+gateway path, the selector should mark that WARP instance unhealthy in the
+in-process balancer. This lets later business requests skip WARP until the
+regular health checker marks it healthy again.
+
+### R5: Focused regression coverage
 
 Add local tests proving:
 
@@ -61,12 +73,15 @@ Add local tests proving:
 - Timeout/failure on an early candidate can fall through to a later candidate.
 - Multiple concrete `free_pool` proxy candidates can be tried under the same
   exit label.
+- WARP balancer failure marking removes a failed instance from healthy
+  rotation.
 
-### R5: No live mutation during implementation
+### R6: No host-level live mutation during implementation
 
 Implementation and validation must not SSH, refresh pools, delete proxies, or
 mutate dev state. Live checks, if run after push/update, should use public
-gateway/API/MCP surfaces only.
+gateway/API/MCP surfaces only. In-process WARP health feedback caused by normal
+gateway traffic is allowed because it is the runtime behavior being delivered.
 
 ## Acceptance Criteria
 
@@ -76,6 +91,8 @@ gateway/API/MCP surfaces only.
       candidate.
 - [x] Local core tests cover multiple weighted pool candidates without
       replacement.
+- [x] Local core tests cover WARP failure feedback removing a failed instance
+      from healthy rotation.
 - [x] `cargo test -p proxy-gateway` passes.
 - [x] Relevant route/gateway/core tests pass.
 - [x] No task changes are made to `.codex/config.toml`.
@@ -84,5 +101,5 @@ gateway/API/MCP surfaces only.
 
 - Reordering overseas route candidates.
 - WARP endpoint optimizer changes.
-- Full WARP failure hardening or balancer health feedback.
+- Full WARP endpoint optimization or persistent WARP quality scoring.
 - Mutating live dev pool contents.

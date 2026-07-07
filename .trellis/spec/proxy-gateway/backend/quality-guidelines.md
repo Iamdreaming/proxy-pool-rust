@@ -68,14 +68,15 @@ match upstream {
 match upstream {
     Upstream::Direct => { ... }
     Upstream::Proxy(proxy) => { ... }
-    Upstream::Warp { socks5_port } => { ... }
+    Upstream::Warp { id, socks5_port } => { ... }
     Upstream::Xray { local_socks5_port } => { ... }
     Upstream::WarpChain { proxy, socks5_port } => { ... }
     Upstream::NoProxy => { ... }
 }
 ```
 
-Exception: `Warp` and `Xray` may be combined with `|` since they share the same handling logic (both connect to a local SOCKS5 port).
+`Warp` and `Xray` may share a local-SOCKS5 helper internally, but keep their
+match arms explicit so WARP instance id feedback cannot be accidentally lost.
 
 ### 6. Never store connection state in `ProxyGateway`
 
@@ -98,6 +99,11 @@ Every protocol handler (`http_connect::handle`, `socks5::handle`) must:
 Handlers that use `select_with_trace()` must iterate every concrete
 `upstream_candidates` entry. Do not deduplicate by `RouteExit`: an exit such as
 `free_pool` can intentionally expand to multiple concrete proxy candidates.
+
+When a concrete candidate fails before the success response is sent, handlers
+must call `UpstreamSelector::record_upstream_attempt()` after recording metrics.
+This lets runtime business failures update shared route health, currently used
+to mark failed WARP instances unhealthy.
 
 ### 2. All public functions must have doc comments
 

@@ -1,7 +1,7 @@
 //! Traceable gateway route selection and route diagnostics.
 
 use crate::geoip::GeoIPLookup;
-use crate::models::{EncryptedProxyState, Protocol, Proxy};
+use crate::models::{EncryptedProxyState, Protocol, Proxy, WarpInstance};
 use crate::router::{RouteMatch, Router};
 use crate::store::ProxyStore;
 use crate::warp::balancer::WarpBalancer;
@@ -18,7 +18,7 @@ pub enum Upstream {
     /// Route through a pool proxy.
     Proxy(Proxy),
     /// Route through a WARP instance.
-    Warp { socks5_port: u16 },
+    Warp { id: u32, socks5_port: u16 },
     /// Route through an xray-node local SOCKS5 port.
     Xray { local_socks5_port: u16 },
     /// Chain through a pool proxy and then WARP.
@@ -226,7 +226,7 @@ impl GatewayAttemptStatus {
 }
 
 const METRIC_CELL_COUNT: usize = 3 * 5 * 3;
-const FREE_POOL_CANDIDATE_LIMIT: usize = 3;
+const FREE_POOL_CANDIDATE_LIMIT: usize = 4;
 
 /// Process-local gateway route metrics.
 pub struct GatewayRouteMetrics {
@@ -340,6 +340,24 @@ impl UpstreamSelector {
     /// Return the shared gateway metrics registry.
     pub fn metrics(&self) -> Arc<GatewayRouteMetrics> {
         self.metrics.clone()
+    }
+
+    /// Feed concrete gateway attempt outcomes back into route health.
+    pub async fn record_upstream_attempt(&self, upstream: &Upstream, status: GatewayAttemptStatus) {
+        if status != GatewayAttemptStatus::Failure {
+            return;
+        }
+
+        if let Upstream::Warp { id, socks5_port } = upstream
+            && let Some(balancer) = &self.balancer
+        {
+            balancer.mark_failed(*id).await;
+            tracing::warn!(
+                warp_id = *id,
+                socks5_port = *socks5_port,
+                "gateway marked WARP instance unhealthy after connection failure"
+            );
+        }
     }
 
     /// Select an upstream for the given host and protocol.
@@ -533,10 +551,13 @@ impl UpstreamSelector {
                 }
             }
             RouteExit::Warp => match self.try_warp().await {
-                Some(port) => ResolvedExit::Available {
+                Some(inst) => ResolvedExit::Available {
                     upstreams: vec![ResolvedUpstream {
-                        upstream: Upstream::Warp { socks5_port: port },
-                        detail: Some(format!("127.0.0.1:{port}")),
+                        upstream: Upstream::Warp {
+                            id: inst.id,
+                            socks5_port: inst.socks5_port,
+                        },
+                        detail: Some(format!("127.0.0.1:{}", inst.socks5_port)),
                     }],
                 },
                 None => ResolvedExit::Unavailable {
@@ -579,11 +600,11 @@ impl UpstreamSelector {
         }
     }
 
-    async fn try_warp(&self) -> Option<u16> {
+    async fn try_warp(&self) -> Option<WarpInstance> {
         if let Some(balancer) = &self.balancer
             && let Some(inst) = balancer.next().await
         {
-            return Some(inst.socks5_port);
+            return Some(inst);
         }
         None
     }

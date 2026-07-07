@@ -9,12 +9,17 @@
 5. [x] Add per-candidate timeout in `http_connect` and `socks5` handlers.
 6. [x] Add focused async tests for HTTP proxy upstream and SOCKS5 upstream.
 7. [x] Add fallback/timeout coverage where feasible without live network.
-8. [x] Run local verification:
+8. [x] Add runtime WARP failure feedback from gateway attempts into
+   `WarpBalancer::mark_failed(id)`.
+9. [x] Preserve WARP instance id in `Upstream::Warp`.
+10. [x] Add focused WARP balancer failure-marking coverage.
+11. [x] Run local verification:
    - `cargo fmt --all`
    - `cargo test -p proxy-gateway`
    - `cargo test -p proxy-core route_debug`
+   - `cargo test -p proxy-core warp::balancer`
    - `cargo clippy -p proxy-gateway -- -D warnings`
-9. [x] Update task PRD acceptance and gateway specs.
+12. [x] Update task PRD acceptance and gateway/core specs.
 
 ## Implementation Notes
 
@@ -29,8 +34,15 @@
 - The HTTP CONNECT upstream helper reads proxy response headers without
   consuming bytes that belong to the established tunnel.
 - `ProxyStore` now supports weighted random candidate selection without
-  replacement, and `UpstreamSelector` expands `free_pool` into up to three
+  replacement, and `UpstreamSelector` expands `free_pool` into up to four
   concrete proxy candidates while preserving the high-level route order.
+- `UpstreamSelector` now expands `free_pool` into up to four concrete proxy
+  candidates to improve live-business success probability while keeping
+  per-request fallback bounded.
+- `Upstream::Warp` now carries the WARP instance id as well as the SOCKS5 port.
+  Gateway handlers report concrete connection failures back through
+  `UpstreamSelector::record_upstream_attempt()`, which marks failed WARP
+  instances unhealthy in the in-process `WarpBalancer`.
 - Route ordering is intentionally unchanged.
 
 ## Verification Results
@@ -43,6 +55,15 @@
 - `cargo test -p proxy-mcp route_test` passed: 2 tests.
 - `cargo clippy -p proxy-gateway -- -D warnings` passed.
 - `cargo clippy -p proxy-core -p proxy-gateway -- -D warnings` passed.
+- After WARP runtime feedback changes:
+  - `cargo fmt --all --check` passed.
+  - `cargo test -p proxy-core route_debug` passed: 5 tests.
+  - `cargo test -p proxy-core warp::balancer` passed: 1 test.
+  - `cargo test -p proxy-gateway` passed: 14 tests.
+  - `cargo test -p proxy-api route_test` passed: 2 tests.
+  - `cargo test -p proxy-mcp route_test` passed: 2 tests.
+  - `cargo clippy -p proxy-core -p proxy-gateway -- -D warnings` passed.
+  - `cargo check --workspace` passed.
 
 ## Rollback Points
 
@@ -50,5 +71,6 @@
   no-auth CONNECT first and document proxy-auth as out of scope.
 - If timeout behavior needs configuration, start with a local constant and
   promote to config in a later task only if required.
-- If live E2E still fails after protocol fix, separate remaining WARP health
-  feedback into a new task rather than expanding this one.
+- If WARP runtime feedback disables WARP too aggressively, revert the
+  `Upstream::Warp { id, .. }` feedback path and keep HTTP proxy upstream plus
+  free-pool multi-candidate fallback.

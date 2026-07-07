@@ -192,8 +192,11 @@ pub async fn connect_to_upstream(
                 Protocol::Socks4 => anyhow::bail!("SOCKS4 upstream proxies are not supported"),
             }
         }
-        Upstream::Warp { socks5_port }
-        | Upstream::Xray {
+        Upstream::Warp { socks5_port, .. } => {
+            let upstream_addr = format!("127.0.0.1:{socks5_port}");
+            connect_via_socks5(&upstream_addr, target_addr).await
+        }
+        Upstream::Xray {
             local_socks5_port: socks5_port,
         } => {
             let upstream_addr = format!("127.0.0.1:{socks5_port}");
@@ -282,7 +285,10 @@ mod tests {
         // Just ensure the variants compile and have the right shape
         let _ = Upstream::Direct;
         let _ = Upstream::NoProxy;
-        let _ = Upstream::Warp { socks5_port: 40000 };
+        let _ = Upstream::Warp {
+            id: 1,
+            socks5_port: 40000,
+        };
         let _ = Upstream::Xray {
             local_socks5_port: 20000,
         };

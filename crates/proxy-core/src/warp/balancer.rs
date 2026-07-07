@@ -48,3 +48,26 @@ impl WarpBalancer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn mark_failed_removes_instance_from_healthy_rotation() {
+        let instances = Arc::new(RwLock::new(vec![
+            WarpInstance::new(1, 40000),
+            WarpInstance::new(2, 40001),
+        ]));
+        let balancer = WarpBalancer::new(instances);
+
+        balancer.mark_failed(1).await;
+
+        let healthy_ids: Vec<u32> = balancer.healthy_list().await.iter().map(|i| i.id).collect();
+        assert_eq!(healthy_ids, vec![2]);
+
+        for _ in 0..3 {
+            assert_eq!(balancer.next().await.unwrap().id, 2);
+        }
+    }
+}

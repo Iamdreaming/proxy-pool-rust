@@ -36,7 +36,7 @@ crates/proxy-gateway/
 
 ### `upstream.rs` — Upstream selection and protocol-aware connect utilities
 
-- `Upstream` enum: `Direct`, `Proxy(Proxy)`, `Warp{socks5_port}`, `Xray{local_socks5_port}`, `WarpChain{proxy, socks5_port}`, `NoProxy`
+- `Upstream` enum: `Direct`, `Proxy(Proxy)`, `Warp{id, socks5_port}`, `Xray{local_socks5_port}`, `WarpChain{proxy, socks5_port}`, `NoProxy`
 - `UpstreamSelector`: holds `ProxyStore`, `WarpBalancer`, `Router`, `GeoIPLookup`
 - `select()` method: Router match → GeoIP auto-split → generic fallback chain
 - Helper methods: `try_pool()`, `try_warp()`, `try_xray()`
