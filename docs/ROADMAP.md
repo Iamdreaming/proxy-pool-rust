@@ -37,7 +37,7 @@
 
 用户最新要求先不做 `mcp-api-contract-smoke-v2`，因此该契约 smoke 草稿已暂停并隔离，不作为当前 Ready/Next 主线。`dashboard-ops-polish-v2` 也继续保持暂停。`proxy-quality-history-lite` 已完成；用户随后明确“先不做” `proxy-quality-recommendations-dry-run`，因此该 dry-run 建议任务只保留暂停草稿，不进入当前主线。
 
-用户随后要求“先不做这个，规划新的 todo list”，因此 `revalidation-scheduler-priority-v1` 也从当前主线移出并隔离。新的 TODO 队列优先推进 no-SSH、只读、低风险的质量可观测能力：`pool-quality-metrics-v1` 已完成，`/api/status`、MCP `service_status` 和 `/api/metrics` 现在共享只读代理池质量摘要。下一项建议推进 `quality-dashboard-readonly-v1`，只消费真实后端字段，不恢复已暂停的操作按钮草稿。
+用户随后要求“先不做这个，规划新的 todo list”，因此 `revalidation-scheduler-priority-v1` 从当前主线移出并隔离。之后 `quality-dashboard-readonly-v1` 也按用户要求先不继续，当前 WIP 已隔离在 stash `wip: paused quality dashboard readonly`，不作为新的主线任务。新的 TODO 队列优先补齐 no-SSH、只读、低风险的发布验证和配置防漂移能力：先把已有 GitHub Actions、公开 HTTP 状态接口和 MCP 只读状态组合成可重复执行的本地 smoke runner，再做配置/文档漂移检查、Prometheus 低基数审计和最小只读契约 smoke。
 
 **工作区注意事项**：
 
@@ -45,6 +45,7 @@
 - 当前本地存在一组已隔离的 `mcp-api-contract-smoke-v2` WIP：`wip: paused mcp api contract smoke v2`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
 - 当前本地存在一组已隔离的 `fetcher-source-quality-ranking` WIP：`wip: paused fetcher source quality ranking`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
 - 当前本地存在一组已隔离的 `revalidation-scheduler-priority-v1` WIP：`wip: paused revalidation scheduler priority`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
+- 当前本地存在一组已隔离的 `quality-dashboard-readonly-v1` WIP：`wip: paused quality dashboard readonly`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
 - 当前 Trellis 中存在 `proxy-quality-recommendations-dry-run` 暂停草稿。按用户最新要求先不继续，不作为 Ready/Next 主线；后续只有用户重新确认后再恢复。
 - 当前本地存在一组已隔离的 `update-failure-hardening` WIP：`wip: paused update failure hardening`。按用户要求先不继续，不要默认恢复、删除或混入后续任务。
 - 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
@@ -56,9 +57,23 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议从 Next 选择 `quality-dashboard-readonly-v1`。`revalidation-scheduler-priority-v1`、`update-failure-hardening`、`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求或安全门槛暂停，不作为当前主线。
+当前无 Now 任务；下一步建议创建并推进 `readonly-dev-smoke-runner-v1`。该任务只组合已有只读入口，不直接 SSH、不访问宿主 Docker、不触发 `update_service`，用于把 post-push dev 验证变成一条本地可重复执行的命令。`quality-dashboard-readonly-v1`、`revalidation-scheduler-priority-v1`、`update-failure-hardening`、`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求或安全门槛暂停，不作为当前主线。
 
 ## Paused Closeout
+
+### P2 — `quality-dashboard-readonly-v1`
+
+**目标**：在已有真实 Dashboard 基础上展示代理质量趋势、低质候选数量和近期失败原因，但不恢复已暂停的操作按钮草稿。
+
+**当前状态**：已按用户最新要求“先不做这个”暂停。此前已创建过 Trellis 任务草稿并有少量前端类型/页面 WIP，当前已隔离在 stash `wip: paused quality dashboard readonly`；Trellis current 指针已清空。后续只有用户重新确认后再恢复，不纳入当前 Ready/Next 主线。
+
+**暂缓 TODO**：
+
+- [ ] 首页或 Proxies 页面展示质量趋势摘要、低质候选数量和近期失败原因。
+- [ ] 如 `pool-quality-metrics-v1` 已完成，首页展示只读质量指标；否则显示明确的后端字段不可用状态。
+- [ ] Proxies 页面展示 `/api/proxies/scores` 中已有的 per-proxy trend 字段。
+- [ ] 所有新增 UI 都只消费真实后端字段；字段不可用时显示明确不可用状态。
+- [ ] 不新增 apply 操作，不触发 `update_service`，不依赖直接 SSH。
 
 ### P1 — `revalidation-scheduler-priority-v1`
 
@@ -451,21 +466,74 @@
 
 ## Ready
 
-当前无 Ready 任务。下一项建议仍从 Next 中选择 `quality-dashboard-readonly-v1`，先做只读 UI 消费真实质量字段。
+### P0 — `readonly-dev-smoke-runner-v1`
 
-## Next
-
-### P2 — `quality-dashboard-readonly-v1`
-
-**目标**：在已有真实 Dashboard 基础上展示代理质量趋势、来源质量和复验调度摘要，但不恢复已暂停的操作按钮草稿。
+**目标**：把 no-SSH 的 post-push dev 验证组合成本地可重复执行的一条命令，减少每次发布后人工拼接 GitHub Actions、HTTP 和 MCP 只读状态检查的成本。
 
 **候选功能**：
 
-- [ ] 首页或 Proxies 页面展示质量趋势摘要、低质候选数量和近期失败原因。
-- [ ] Fetchers 页面展示来源质量排名、熔断状态、最近验证表现和风险标签。
-- [ ] 如 `pool-quality-metrics-v1` 已完成，首页展示只读质量指标；否则显示明确的后端字段不可用状态。
-- [ ] 所有新增 UI 都只消费真实后端字段；字段不可用时显示明确不可用状态。
-- [ ] 不新增 apply 操作，不触发 `update_service`，不依赖直接 SSH。
+- [ ] 新增本地脚本或测试入口，按顺序检查 GitHub Actions 最新构建结果、公开 HTTP `/api/status`、`/api/readyz`、MCP `service_status` 和 MCP `update_status`。
+- [ ] 默认只读：不直接 SSH、不访问宿主 Docker、不调用 `update_service`、不写入远端状态。
+- [ ] 输出结构化摘要：目标分支/commit、CI 状态、runtime git hash、release metadata、readiness、最近更新状态。
+- [ ] 任一只读入口不可达时返回非零退出码，并给出明确失败原因和下一步人工排查入口。
+- [ ] README 或 `docs/dev-validation.md` 补充命令用法。
+
+### P0 — `config-runbook-drift-check-v1`
+
+**目标**：防止 README、`docs/dev-validation.md`、dev compose/env 示例和状态接口字段继续漂移，尤其是自更新相关环境变量与 no-SSH 验证边界。
+
+**候选功能**：
+
+- [ ] 梳理 dev compose 所需 `PROXY_POOL_UPDATE_*` 与 Watchtower token 的对应关系。
+- [ ] 检查 README / dev-validation / compose 示例是否一致描述 update enabled、container/image、Watchtower URL 和 token。
+- [ ] 明确记录 Watchtower 镜像内缺少常规 shell 工具时属于预期限制，不把 `docker compose exec watchtower printenv` 作为推荐验证方式。
+- [ ] 如适合自动化，增加轻量文档/配置漂移检查；否则形成可执行清单。
+
+### P2 — `metrics-low-cardinality-audit-v1`
+
+**目标**：系统性审计 Prometheus 指标 label，确保最近新增质量、路由、fetcher、release 指标持续保持低基数。
+
+**候选功能**：
+
+- [ ] 列出当前 `/api/metrics` 中的业务指标和 label。
+- [ ] 确认没有代理地址、完整 URL、订阅内容、原始错误字符串、容器动态 ID 等高基数字段进入 label。
+- [ ] 对失败原因、协议、bucket、状态类 label 给出允许值或归一化规则。
+- [ ] 必要时补测试或文档，防止后续新增指标破坏低基数约束。
+
+### P0 — `release-status-public-smoke-v1`
+
+**目标**：在不恢复完整 REST/MCP 契约 smoke 的前提下，为公开只读发布状态补一组更轻的 smoke，覆盖发布验证真正依赖的字段。
+
+**候选功能**：
+
+- [ ] `/api/status` smoke 覆盖 `git_hash`、`release`、`quality` 和依赖状态字段。
+- [ ] `/api/readyz` smoke 覆盖 HTTP 200/503 与结构化依赖状态。
+- [ ] MCP `service_status` / `update_status` smoke 覆盖只读字段形状，不调用 `update_service`。
+- [ ] 作为 `readonly-dev-smoke-runner-v1` 的本地验证基础之一。
+
+## Next
+
+### P0 — `dev-update-config-doc-hardening-v1`
+
+**目标**：把当前 dev compose 自更新配置沉淀为标准说明，降低后续排障时误判环境变量、token 或 Watchtower 行为的概率。
+
+**候选功能**：
+
+- [ ] 文档化 `proxy-pool` 与 `watchtower-proxy-pool` 的容器职责、环境变量和 labels。
+- [ ] 明确 dev 默认配置已经支持 `PROXY_POOL_UPDATE_ENABLED=true`、Watchtower HTTP API 和 GHCR latest 镜像。
+- [ ] 给出只读验证方式：从 `proxy-pool` 容器环境、公开 status/update_status 和 GitHub Actions 判断，而不是直接 SSH。
+- [ ] 给出安全回滚思路：回退镜像 tag/digest 或暂停 update action，具体 apply 操作仍需人工显式执行。
+
+### P0 — `api-readonly-contract-minimal-v1`
+
+**目标**：把当前真正用于自动验证的只读 API/MCP 字段整理成最小契约，避免重新打开已暂停的完整 `mcp-api-contract-smoke-v2` 范围。
+
+**候选功能**：
+
+- [ ] 定义 `/api/status`、`/api/readyz`、`/api/metrics`、`/api/proxies/scores` 的最小只读字段集合。
+- [ ] 定义 MCP `service_status`、`update_status` 和 `explain_proxy_scores` 的最小只读字段集合。
+- [ ] 明确不覆盖 mutating tools、不覆盖全部运维入口、不触发 `update_service`。
+- [ ] 为后续 runner 和 smoke 任务提供稳定字段清单。
 
 ## Later
 
@@ -559,19 +627,22 @@
 6. `release-validation-no-ssh-runbook-v2` — 已完成，把 post-push dev 验证清单固定为 GitHub Actions、公开 HTTP 和 MCP 只读入口。
 7. `release-status-contract-smoke-v1` — 已完成，为发布验证依赖的 status/update_status 字段补最小契约 smoke，不恢复完整 REST/MCP smoke。
 8. `pool-quality-metrics-v1` — 已完成，将质量趋势和保留风险暴露为低基数只读指标。
-9. `quality-dashboard-readonly-v1` — 下一项建议，只读展示质量趋势，不恢复暂停的操作按钮草稿。
-10. `readonly-dev-smoke-runner-v1` — 可选后续，把 no-SSH 只读验证组合成一条本地可重复命令。
-11. `metrics-low-cardinality-audit-v1` — 可选后续，系统性审计 Prometheus label 是否持续保持低基数。
-12. `config-runbook-drift-check-v1` — 可选后续，防止 README、dev-validation、compose/env/status 字段继续漂移。
-13. `revalidation-scheduler-priority-v1` — 用户重新确认后再恢复，让质量历史影响复验优先级，但不直接清理代理。
-14. `update-failure-hardening` — 用户确认安全验证入口后再恢复自更新失败路径结构化错误和 no-SSH 验证。
-15. `fetcher-source-quality-ranking` — 用户重新确认后再恢复，来源维度质量排名和退化提示。
-16. `proxy-quality-recommendations-dry-run` — 用户重新确认后再恢复，基于趋势输出清理/降权建议，默认 dry-run。
-17. `mcp-api-contract-smoke-v2` — 用户重新确认后再恢复 REST/MCP 运维入口契约 smoke。
-18. `dashboard-ops-polish-v2` — 用户重新确认后再恢复 Dashboard 运维整合草稿。
-19. `xray-config-dry-run-and-remove` — 用户重新确认后再恢复 xray 配置 dry-run 和单节点移除。
-20. `warp-ops-enhancement` — 用户重新确认后再恢复 WARP 运维增强。
-21. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
+9. `readonly-dev-smoke-runner-v1` — 下一项建议，把 no-SSH 只读验证组合成一条本地可重复命令。
+10. `config-runbook-drift-check-v1` — 防止 README、dev-validation、compose/env/status 字段继续漂移。
+11. `metrics-low-cardinality-audit-v1` — 系统性审计 Prometheus label 是否持续保持低基数。
+12. `release-status-public-smoke-v1` — 为公开只读发布状态补更轻的 smoke，不恢复完整 REST/MCP smoke。
+13. `dev-update-config-doc-hardening-v1` — 沉淀当前 dev compose 自更新配置和只读排障说明。
+14. `api-readonly-contract-minimal-v1` — 定义 runner/smoke 依赖的最小只读 API/MCP 字段集合。
+15. `quality-dashboard-readonly-v1` — 用户重新确认后再恢复，只读展示质量趋势，不恢复暂停的操作按钮草稿。
+16. `revalidation-scheduler-priority-v1` — 用户重新确认后再恢复，让质量历史影响复验优先级，但不直接清理代理。
+17. `update-failure-hardening` — 用户确认安全验证入口后再恢复自更新失败路径结构化错误和 no-SSH 验证。
+18. `fetcher-source-quality-ranking` — 用户重新确认后再恢复，来源维度质量排名和退化提示。
+19. `proxy-quality-recommendations-dry-run` — 用户重新确认后再恢复，基于趋势输出清理/降权建议，默认 dry-run。
+20. `mcp-api-contract-smoke-v2` — 用户重新确认后再恢复 REST/MCP 运维入口契约 smoke。
+21. `dashboard-ops-polish-v2` — 用户重新确认后再恢复 Dashboard 运维整合草稿。
+22. `xray-config-dry-run-and-remove` — 用户重新确认后再恢复 xray 配置 dry-run 和单节点移除。
+23. `warp-ops-enhancement` — 用户重新确认后再恢复 WARP 运维增强。
+24. `gateway-route-debugging` — 用户确认后再做任务归档、最终文档收尾或可选 debug header。
 
 ## 任务 PRD 模板
 
