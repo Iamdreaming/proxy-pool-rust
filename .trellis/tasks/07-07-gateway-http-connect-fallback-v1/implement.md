@@ -25,7 +25,7 @@
   - SOCKS4 proxies return an unsupported-protocol error.
 - HTTP CONNECT and SOCKS5 handlers now wrap each candidate connect attempt in
   the shared upstream timeout helper. Timeout is currently a conservative
-  gateway-local constant (`8s`).
+  gateway-local constant (`5s`).
 - The HTTP CONNECT upstream helper reads proxy response headers without
   consuming bytes that belong to the established tunnel.
 - `ProxyStore` now supports weighted random candidate selection without

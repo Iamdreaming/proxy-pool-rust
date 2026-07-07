@@ -41,7 +41,7 @@ client SOCKS5 CONNECT host:port
 3. Add per-candidate timeout in both gateway handlers around
    `connect_to_upstream`.
    - Keep timeout local to gateway attempts.
-   - Use a conservative constant initially, e.g. 8 seconds.
+   - Use a conservative constant initially, e.g. 5 seconds.
    - On timeout, record the attempt as failure and continue to the next
      candidate.
 4. Expand `free_pool` into a small bounded set of concrete proxy candidates.

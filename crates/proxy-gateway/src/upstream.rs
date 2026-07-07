@@ -5,7 +5,7 @@ use proxy_core::route_debug::Upstream;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub(crate) const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+pub(crate) const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) async fn connect_to_upstream_with_timeout(
     upstream: &Upstream,
