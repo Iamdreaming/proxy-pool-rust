@@ -22,6 +22,8 @@ Useful variants:
 
 ```powershell
 python tests\integration\business_e2e_smoke.py --protocol http --candidate-limit 5
+python tests\integration\business_e2e_smoke.py --expected-git-hash 3d69e0b
+python tests\integration\business_e2e_smoke.py --skip-version-check
 python tests\integration\business_e2e_smoke.py --skip-gateway
 python tests\integration\business_e2e_smoke.py --skip-candidates
 ```
@@ -31,11 +33,13 @@ Supported environment variables come from `tests/integration/config.py`:
 - `PROXY_POOL_HOST`
 - `PROXY_POOL_API_PORT`
 - `PROXY_POOL_GW_PORT`
+- `PROXY_POOL_GIT_HASH`
 
 ### 3. Contracts
 
 Allowed public surfaces:
 
+- REST `GET /api/status` for runtime version precheck.
 - Gateway as an HTTP CONNECT proxy through `PROXY_POOL_GW_PORT`.
 - REST `GET /api/proxies/scores`.
 - REST `POST /api/proxy/check-matrix`.
@@ -64,6 +68,8 @@ rate-limit response can prove that the network path reached the target.
 
 | Condition | Expected result |
 |-----------|-----------------|
+| Runtime git hash matches expected hash | Continue with gateway and candidate checks |
+| Runtime git hash does not match expected hash | Overall result fails and the runner exits before gateway/candidate checks |
 | Gateway target returns accepted status | Gateway check is `ok` with status and elapsed time |
 | Gateway target returns unexpected status | Gateway check fails with route/fallback triage hint |
 | Gateway target raises timeout/connect error | Gateway check fails with exception type and target details |
@@ -78,7 +84,8 @@ rate-limit response can prove that the network path reached the target.
 - Good: Gateway reaches at least one business target and at least one stored
   candidate reaches at least one business target, even if another protocol has
   no candidates.
-- Base: One target fails but other targets provide usable evidence; the report
+- Base: One target fails but other targets provide usable evidence, and the
+  runtime git hash proves the deployment is the intended version; the report
   keeps every per-target result visible.
 - Bad: The runner calls `refresh_pool` to create candidates or `update_service`
   to repair deployment state.

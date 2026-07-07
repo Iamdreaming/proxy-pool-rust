@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -16,7 +17,7 @@ from typing import Any
 
 import requests
 
-from config import API_BASE, DEFAULT_TIMEOUT, GW_ADDR, HOST
+from config import API_BASE, DEFAULT_TIMEOUT, EXPECTED_GIT_HASH, GW_ADDR, HOST
 
 
 GATEWAY_PROXY_URL = f"http://{GW_ADDR}"
@@ -116,6 +117,32 @@ def result_from_exception(
     )
 
 
+def hash_matches(actual: str | None, expected: str | None) -> bool:
+    if not expected:
+        return True
+    return bool(actual) and actual.startswith(expected)
+
+
+def current_git_hash() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def resolve_expected_git_hash(configured_hash: str | None) -> str:
+    return (configured_hash or "").strip() or current_git_hash()
+
+
 def check_gateway_target(
     session: requests.Session,
     target: BusinessTarget,
@@ -165,6 +192,55 @@ def check_gateway_target(
             if ok
             else "Inspect route_test, gateway fallback metrics, and proxy candidate checks."
         ),
+    )
+
+
+def check_runtime_version(
+    session: requests.Session,
+    api_base: str,
+    expected_hash: str,
+    timeout: float,
+) -> CheckResult:
+    try:
+        response = session.get(f"{api_base}/api/status", timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return result_from_exception(
+            "runtime_version",
+            exc,
+            "Check public /api/status before interpreting business target failures.",
+        )
+
+    git_hash = payload.get("git_hash")
+    release = payload.get("release") if isinstance(payload.get("release"), dict) else {}
+    release_hash = release.get("git_hash")
+    details = {
+        "expected_hash": expected_hash,
+        "git_hash": git_hash,
+        "release_git_hash": release_hash,
+        "configured_image": release.get("configured_image"),
+    }
+    if expected_hash and (
+        not hash_matches(git_hash, expected_hash)
+        or not hash_matches(release_hash, expected_hash)
+    ):
+        return CheckResult(
+            name="runtime_version",
+            ok=False,
+            summary=f"runtime hash mismatch: expected {expected_hash}, got {git_hash}",
+            details=details,
+            triage_hint=(
+                "Deploy the latest image through CI/update flow before treating "
+                "business target failures as current-code evidence."
+            ),
+        )
+
+    return CheckResult(
+        name="runtime_version",
+        ok=True,
+        summary=f"runtime git_hash={git_hash or '(unknown)'}",
+        details=details,
     )
 
 
@@ -368,11 +444,23 @@ def candidates_have_business_signal(results: list[CheckResult]) -> bool:
 
 def build_summary(target: dict[str, Any], results: list[CheckResult]) -> dict[str, Any]:
     return {
-        "ok": component_has_signal(results, "gateway:")
+        "ok": all_required_prechecks_ok(results)
+        and component_has_signal(results, "gateway:")
         and candidates_have_business_signal(results),
         "target": target,
         "results": [result.to_dict() for result in results],
     }
+
+
+def all_required_prechecks_ok(results: list[CheckResult]) -> bool:
+    prechecks = [
+        result
+        for result in results
+        if not result.name.startswith(("gateway:", "candidate:", "candidates:"))
+        and result.name != "candidates"
+        and result.name != "gateway"
+    ]
+    return all(result.ok or result.skipped for result in prechecks)
 
 
 def format_human_report(target: dict[str, Any], results: list[CheckResult]) -> str:
@@ -380,6 +468,7 @@ def format_human_report(target: dict[str, Any], results: list[CheckResult]) -> s
         "Business availability smoke",
         f"Target: host={target['host']} api={target['api_base']} gateway={target['gateway_proxy']}",
         f"Protocols: {', '.join(target['protocols'])}",
+        f"Expected git hash: {target['expected_hash'] or '(not checked)'}",
         "",
     ]
     for result in results:
@@ -437,6 +526,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=DEFAULT_TIMEOUT,
         help="Timeout in seconds for gateway/API requests and matrix target checks.",
     )
+    parser.add_argument(
+        "--expected-git-hash",
+        default=EXPECTED_GIT_HASH,
+        help="Expected runtime git hash; defaults to PROXY_POOL_GIT_HASH or local HEAD.",
+    )
+    parser.add_argument(
+        "--skip-version-check",
+        action="store_true",
+        help="Skip /api/status git hash precheck.",
+    )
     parser.add_argument("--skip-gateway", action="store_true", help="Skip gateway checks.")
     parser.add_argument("--skip-candidates", action="store_true", help="Skip proxy candidate checks.")
     parser.add_argument("--json", action="store_true", help="Emit JSON output.")
@@ -446,16 +545,47 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     protocols = parse_protocols(args.protocol)
+    expected_hash = "" if args.skip_version_check else resolve_expected_git_hash(args.expected_git_hash)
     target = {
         "host": HOST,
         "api_base": args.api_base,
         "gateway_proxy": args.gateway_proxy,
         "protocols": protocols,
         "candidate_limit": args.candidate_limit,
+        "expected_hash": expected_hash,
         "targets": [asdict(target) for target in DEFAULT_TARGETS],
     }
 
     results: list[CheckResult] = []
+    if args.skip_version_check:
+        results.append(
+            CheckResult(
+                name="runtime_version",
+                ok=True,
+                summary="skipped by --skip-version-check",
+                skipped=True,
+            )
+        )
+    else:
+        session = make_direct_session()
+        try:
+            version_result = check_runtime_version(
+                session,
+                args.api_base,
+                expected_hash,
+                args.timeout,
+            )
+        finally:
+            session.close()
+        results.append(version_result)
+        if not version_result.ok:
+            summary = build_summary(target, results)
+            if args.json:
+                print(json.dumps(summary, indent=2, sort_keys=True))
+            else:
+                print(format_human_report(target, results))
+            return 1
+
     if args.skip_gateway:
         results.append(
             CheckResult(

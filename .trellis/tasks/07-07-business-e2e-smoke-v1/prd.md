@@ -53,7 +53,10 @@ no-SSH smoke path that answers two product questions:
    count as target reachability only when explicitly configured.
 8. The runner must print a human-readable report and support `--json` output
    for automation.
-9. The roadmap must be updated so the active P0 direction is business
+9. The runner must precheck `/api/status.git_hash` against
+   `PROXY_POOL_GIT_HASH` or local `git rev-parse --short HEAD` by default, so
+   stale dev deployments are not mistaken for current-code business failures.
+10. The roadmap must be updated so the active P0 direction is business
    availability, not generic metrics or broad contract smoke.
 
 ## Non-Goals
@@ -80,7 +83,8 @@ no-SSH smoke path that answers two product questions:
 - Existing legacy tests that pass `targets: ["https://example.com"]` continue
   to pass.
 - Local tests cover target normalization, expected-status preservation, runner
-  status classification, and no-mutation behavior by construction.
+  status classification, runtime version precheck behavior, and no-mutation
+  behavior by construction.
 - `docs/ROADMAP.md` marks `business-e2e-smoke-v1` as the current P0 and moves
   metrics/contract-only tasks behind the business availability line.
 - The task is verified without SSH or host Docker access.

@@ -61,6 +61,12 @@ For business availability checks after the basic release smoke is healthy, run:
 python tests\integration\business_e2e_smoke.py --json
 ```
 
+By default the runner first checks `/api/status.git_hash` against
+`PROXY_POOL_GIT_HASH` or the local `git rev-parse --short HEAD`. If the running
+dev service is stale, fix the release/update state before interpreting gateway
+or target failures as current-code evidence. Use `--skip-version-check` only
+when intentionally diagnosing an older deployment.
+
 This checks the public gateway and stored proxy candidates against business
 targets such as Cloudflare trace, GitHub, OpenAI API, and Reddit. It is also
 observational only: it reads `/api/proxies/scores` and calls the diagnostic

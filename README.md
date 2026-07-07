@@ -160,6 +160,11 @@ Business availability smoke:
 python tests/integration/business_e2e_smoke.py --json
 ```
 
+By default this runner checks `/api/status.git_hash` against
+`PROXY_POOL_GIT_HASH` or the local `git rev-parse --short HEAD` before
+interpreting target failures. Use `--skip-version-check` only when deliberately
+diagnosing an older deployment.
+
 它只读取 GitHub Actions、`/api/status`、`/api/readyz`、MCP `service_status`
 和 `update_status`，不会触发远端更新。
 

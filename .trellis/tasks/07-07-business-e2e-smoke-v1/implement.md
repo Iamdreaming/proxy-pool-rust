@@ -23,6 +23,8 @@
    - Run gateway checks and API check-matrix candidate checks.
    - Support `--json`, `--candidate-limit`, `--protocol`, `--timeout`, and
      skip flags for gateway or candidate checks.
+   - Precheck `/api/status.git_hash` by default and support
+     `--skip-version-check` for intentional stale-deployment diagnosis.
 
 4. Add local tests.
    - Create `tests/integration/test_l0_business_e2e_smoke.py`.
@@ -39,6 +41,7 @@
 ```bash
 python -m py_compile tests\integration\business_e2e_smoke.py tests\integration\test_l0_business_e2e_smoke.py
 python -m pytest tests\integration\test_l0_business_e2e_smoke.py -q
+python tests\integration\business_e2e_smoke.py --skip-gateway --skip-candidates --json
 cargo test -p proxy-core validator
 cargo test -p proxy-api proxy_check_matrix
 cargo test -p proxy-mcp check_proxy_matrix

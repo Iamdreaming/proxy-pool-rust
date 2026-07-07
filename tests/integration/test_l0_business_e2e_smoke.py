@@ -1,5 +1,7 @@
 """Local tests for the business availability smoke runner."""
 
+import json
+
 import business_e2e_smoke as smoke
 
 
@@ -12,6 +14,13 @@ def test_business_target_expected_statuses():
     assert github.accepts_status(200)
     assert github.accepts_status(302)
     assert not github.accepts_status(404)
+
+
+def test_hash_matches_accepts_prefix_or_empty_expected():
+    assert smoke.hash_matches("abcdef1", "abc")
+    assert smoke.hash_matches("abcdef1", "")
+    assert not smoke.hash_matches("abcdef1", "123")
+    assert not smoke.hash_matches(None, "abc")
 
 
 def test_matrix_target_serialization_preserves_expected_statuses():
@@ -131,6 +140,85 @@ def test_candidate_source_failure_fails_without_working_candidate():
     )
 
     assert smoke.build_summary(target, [good_gateway, no_http])["ok"] is False
+
+
+def test_runtime_version_failure_blocks_business_summary():
+    target = {
+        "host": "example",
+        "api_base": "http://example:8000",
+        "gateway_proxy": "http://example:9080",
+        "protocols": ("http",),
+    }
+    runtime_mismatch = smoke.CheckResult(
+        "runtime_version",
+        False,
+        "runtime hash mismatch",
+    )
+    good_gateway = smoke.CheckResult(
+        "gateway:github",
+        True,
+        "ok",
+        {"target_role": "business"},
+    )
+    good_candidate = smoke.CheckResult("candidate:http:1.2.3.4:8080", True, "ok")
+
+    assert (
+        smoke.build_summary(target, [runtime_mismatch, good_gateway, good_candidate])["ok"]
+        is False
+    )
+
+
+def test_runtime_version_skip_does_not_block_business_summary():
+    target = {
+        "host": "example",
+        "api_base": "http://example:8000",
+        "gateway_proxy": "http://example:9080",
+        "protocols": ("http",),
+    }
+    skipped_runtime = smoke.CheckResult(
+        "runtime_version",
+        True,
+        "skipped",
+        skipped=True,
+    )
+    good_gateway = smoke.CheckResult(
+        "gateway:github",
+        True,
+        "ok",
+        {"target_role": "business"},
+    )
+    good_candidate = smoke.CheckResult("candidate:http:1.2.3.4:8080", True, "ok")
+
+    assert smoke.build_summary(target, [skipped_runtime, good_gateway, good_candidate])["ok"]
+
+
+def test_main_stops_after_runtime_precheck_failure(monkeypatch, capsys):
+    class FakeSession:
+        def close(self):
+            pass
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("business checks should not run after stale runtime")
+
+    monkeypatch.setattr(smoke, "make_direct_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        smoke,
+        "check_runtime_version",
+        lambda *_args, **_kwargs: smoke.CheckResult(
+            "runtime_version",
+            False,
+            "runtime hash mismatch",
+        ),
+    )
+    monkeypatch.setattr(smoke, "run_gateway_checks", fail_if_called)
+    monkeypatch.setattr(smoke, "run_candidate_checks", fail_if_called)
+
+    exit_code = smoke.main(["--json"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert [result["name"] for result in payload["results"]] == ["runtime_version"]
 
 
 def test_gateway_baseline_success_does_not_count_as_business_signal():
