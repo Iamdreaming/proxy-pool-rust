@@ -29,10 +29,21 @@
    - `cargo test -p proxy-mcp fetcher`
    - `cargo clippy -p proxy-core -p proxy-api -p proxy-mcp -- -D warnings`
    - `cargo check --workspace`
-10. [ ] Commit and push.
-11. [ ] Wait for GitHub Actions Docker build.
-12. [ ] Update dev through MCP HTTP `update_service`.
-13. [ ] Verify dev with read-only smoke and fetcher status shape.
+10. [x] Commit and push.
+11. [x] Wait for GitHub Actions Docker build.
+12. [x] Update dev through MCP HTTP `update_service`.
+13. [x] Verify dev with read-only smoke and fetcher status shape.
+
+## Deployment Verification
+
+- Commit: `27487ad feat: add source quality admission metrics`.
+- GitHub Actions: Docker build/push run `28848733235` succeeded.
+- MCP `update_service` pulled the new GHCR digest but returned a Watchtower
+  reachability error; follow-up public MCP `service_status` showed the service
+  restarted on `git_hash=27487ad`.
+- Read-only dev smoke passed with `PROXY_POOL_GIT_HASH=27487ad`.
+- REST `/api/fetchers` and MCP `fetcher_status` both expose `unique`,
+  `validated`, and `stored` fields from the shared core report.
 
 ## Risk Points
 
