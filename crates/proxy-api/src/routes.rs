@@ -766,6 +766,68 @@ mod tests {
     }
 
     #[test]
+    fn test_subscription_sources_response_serializes_recommendation() {
+        let descriptor = proxy_sub::ops::SubscriptionSourceDescriptor {
+            id: "static-url-1".into(),
+            kind: proxy_sub::ops::SubscriptionSourceKind::StaticUrl,
+            label: "https://example.com/sub".into(),
+            enabled: true,
+        };
+        let report = SubscriptionSourceReport {
+            source: descriptor.clone(),
+            mode: SubscriptionRefreshMode::Preview,
+            started_at: chrono::Utc::now(),
+            finished_at: chrono::Utc::now(),
+            elapsed_ms: 10,
+            outcome: proxy_sub::ops::SubscriptionRefreshOutcome::Ok,
+            last_error: None,
+            discovered_urls: 1,
+            unique_urls: 1,
+            duplicate_urls: 0,
+            fetched_urls: 1,
+            failed_urls: 0,
+            parsed_nodes: 20,
+            direct_nodes: 5,
+            encrypted_nodes: 15,
+            unknown_nodes: 0,
+            duplicate_nodes: 0,
+            stored_basic: 0,
+            stored_encrypted: 0,
+            protocol_counts: Default::default(),
+            errors: vec![],
+            recommendation: proxy_sub::ops::SubscriptionApplyRecommendation {
+                decision: proxy_sub::ops::SubscriptionApplyDecision::Apply,
+                grade: 95,
+                reasons: vec!["source_meets_apply_thresholds".into()],
+                metrics: proxy_sub::ops::SubscriptionSourceQualityMetrics {
+                    fetch_success_rate: Some(1.0),
+                    supported_protocol_ratio: Some(1.0),
+                    unknown_node_ratio: Some(0.0),
+                    duplicate_node_ratio: Some(0.0),
+                    parsed_nodes_per_url: Some(20.0),
+                },
+            },
+        };
+        let resp = SubscriptionSourcesResponse {
+            status: "ok".into(),
+            subscriptions: SubscriptionSourcesSnapshot {
+                enabled: true,
+                source_count: 1,
+                sources: vec![proxy_sub::ops::SubscriptionSourceStatus {
+                    source: descriptor,
+                    latest_report: Some(report),
+                }],
+            },
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+
+        assert!(json.contains("\"recommendation\""));
+        assert!(json.contains("\"decision\":\"apply\""));
+        assert!(json.contains("\"grade\":95"));
+    }
+
+    #[test]
     fn test_subscription_refresh_query_deserialize() {
         let query: SubscriptionRefreshQuery =
             serde_json::from_value(serde_json::json!({"apply":true})).unwrap();

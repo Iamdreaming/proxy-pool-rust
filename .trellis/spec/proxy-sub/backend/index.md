@@ -19,6 +19,7 @@
 | [Error Handling](./error-handling.md) | Log-and-skip pattern in parsers and discoverers | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns, testing | Filled |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels, sensitive data | Filled |
+| [Subscription Source Report Contract](./subscription-source-report-contract.md) | Preview/apply report fields, recommendations, and write gates | Filled |
 
 ---
 

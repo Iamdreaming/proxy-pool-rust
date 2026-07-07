@@ -66,6 +66,34 @@ pub enum SubscriptionRefreshOutcome {
     Failed,
 }
 
+/// Operator-facing recommendation for whether a previewed source should be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionApplyDecision {
+    Apply,
+    Review,
+    Reject,
+}
+
+/// Source-level quality metrics derived from a subscription refresh report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubscriptionSourceQualityMetrics {
+    pub fetch_success_rate: Option<f64>,
+    pub supported_protocol_ratio: Option<f64>,
+    pub unknown_node_ratio: Option<f64>,
+    pub duplicate_node_ratio: Option<f64>,
+    pub parsed_nodes_per_url: Option<f64>,
+}
+
+/// Human-readable source recommendation attached to refresh reports.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubscriptionApplyRecommendation {
+    pub decision: SubscriptionApplyDecision,
+    pub grade: u8,
+    pub reasons: Vec<String>,
+    pub metrics: SubscriptionSourceQualityMetrics,
+}
+
 /// Sanitized per-stage error captured during a refresh attempt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscriptionSourceError {
@@ -98,6 +126,8 @@ pub struct SubscriptionSourceReport {
     pub stored_encrypted: usize,
     pub protocol_counts: BTreeMap<String, usize>,
     pub errors: Vec<SubscriptionSourceError>,
+    #[serde(default = "default_apply_recommendation")]
+    pub recommendation: SubscriptionApplyRecommendation,
 }
 
 /// Status for a configured source plus its latest report, if any.
@@ -318,6 +348,8 @@ async fn run_entry(
 
     source.evict_expired();
     let mut seen_nodes = HashSet::new();
+    let mut staged_basics = Vec::new();
+    let mut staged_encrypted = Vec::new();
 
     for url in unique_urls {
         let display_url = redact_url(&url);
@@ -361,26 +393,35 @@ async fn run_entry(
         report.encrypted_nodes += encrypted.len();
 
         if mode.applies() {
-            for proxy in &basics {
-                match store.add(proxy).await {
-                    Ok(()) => report.stored_basic += 1,
-                    Err(e) => report.errors.push(SubscriptionSourceError {
-                        stage: "store_basic".into(),
-                        url: Some(display_url.clone()),
-                        message: e.to_string(),
-                    }),
-                }
-            }
-
+            staged_basics.extend(basics.into_iter().map(|proxy| (proxy, display_url.clone())));
             if !encrypted.is_empty() {
-                match pending.store_batch(&encrypted).await {
-                    Ok(()) => report.stored_encrypted += encrypted.len(),
-                    Err(e) => report.errors.push(SubscriptionSourceError {
-                        stage: "store_encrypted".into(),
-                        url: Some(display_url),
-                        message: e.to_string(),
-                    }),
-                }
+                staged_encrypted.push((encrypted, display_url));
+            }
+        }
+    }
+
+    report.recommendation = recommend_apply(&report);
+
+    if mode.applies() && !apply_reject_policy(&mut report) {
+        for (proxy, display_url) in &staged_basics {
+            match store.add(proxy).await {
+                Ok(()) => report.stored_basic += 1,
+                Err(e) => report.errors.push(SubscriptionSourceError {
+                    stage: "store_basic".into(),
+                    url: Some(display_url.clone()),
+                    message: e.to_string(),
+                }),
+            }
+        }
+
+        for (encrypted, display_url) in &staged_encrypted {
+            match pending.store_batch(encrypted).await {
+                Ok(()) => report.stored_encrypted += encrypted.len(),
+                Err(e) => report.errors.push(SubscriptionSourceError {
+                    stage: "store_encrypted".into(),
+                    url: Some(display_url.clone()),
+                    message: e.to_string(),
+                }),
             }
         }
     }
@@ -419,6 +460,7 @@ fn empty_report(
         stored_encrypted: 0,
         protocol_counts: BTreeMap::new(),
         errors: Vec::new(),
+        recommendation: default_apply_recommendation(),
     }
 }
 
@@ -431,6 +473,166 @@ fn report_outcome(report: &SubscriptionSourceReport) -> SubscriptionRefreshOutco
         SubscriptionRefreshOutcome::Empty
     } else {
         SubscriptionRefreshOutcome::Ok
+    }
+}
+
+fn default_apply_recommendation() -> SubscriptionApplyRecommendation {
+    SubscriptionApplyRecommendation {
+        decision: SubscriptionApplyDecision::Reject,
+        grade: 0,
+        reasons: vec!["no_preview_metrics".into()],
+        metrics: SubscriptionSourceQualityMetrics {
+            fetch_success_rate: None,
+            supported_protocol_ratio: None,
+            unknown_node_ratio: None,
+            duplicate_node_ratio: None,
+            parsed_nodes_per_url: None,
+        },
+    }
+}
+
+fn recommend_apply(report: &SubscriptionSourceReport) -> SubscriptionApplyRecommendation {
+    let metrics = source_quality_metrics(report);
+    let supported_nodes = report.direct_nodes + report.encrypted_nodes;
+    let mut reasons = Vec::new();
+
+    if report.unique_urls == 0 {
+        reasons.push("no_subscription_urls_discovered".into());
+    }
+    if report.fetched_urls == 0 {
+        reasons.push("no_urls_fetched".into());
+    }
+    if supported_nodes == 0 {
+        reasons.push("no_supported_nodes".into());
+    }
+    if metrics.fetch_success_rate.is_some_and(|rate| rate < 0.10) {
+        reasons.push("fetch_success_rate_below_10_percent".into());
+    }
+    if metrics
+        .supported_protocol_ratio
+        .is_some_and(|ratio| ratio < 0.10)
+    {
+        reasons.push("supported_protocol_ratio_below_10_percent".into());
+    }
+    if metrics.unknown_node_ratio.is_some_and(|ratio| ratio > 0.80) {
+        reasons.push("unknown_node_ratio_above_80_percent".into());
+    }
+    if report.parsed_nodes >= 20
+        && metrics
+            .duplicate_node_ratio
+            .is_some_and(|ratio| ratio > 0.95)
+    {
+        reasons.push("duplicate_node_ratio_above_95_percent".into());
+    }
+
+    if !reasons.is_empty() {
+        return SubscriptionApplyRecommendation {
+            decision: SubscriptionApplyDecision::Reject,
+            grade: source_quality_grade(&metrics),
+            reasons,
+            metrics,
+        };
+    }
+
+    let mut review_reasons = Vec::new();
+    if metrics.fetch_success_rate.is_some_and(|rate| rate < 0.60) {
+        review_reasons.push("fetch_success_rate_below_60_percent".into());
+    }
+    if report.parsed_nodes < 20 {
+        review_reasons.push("parsed_nodes_below_20".into());
+    }
+    if metrics
+        .supported_protocol_ratio
+        .is_some_and(|ratio| ratio < 0.50)
+    {
+        review_reasons.push("supported_protocol_ratio_below_50_percent".into());
+    }
+    if metrics.unknown_node_ratio.is_some_and(|ratio| ratio > 0.40) {
+        review_reasons.push("unknown_node_ratio_above_40_percent".into());
+    }
+    if metrics
+        .duplicate_node_ratio
+        .is_some_and(|ratio| ratio > 0.70)
+    {
+        review_reasons.push("duplicate_node_ratio_above_70_percent".into());
+    }
+
+    let decision = if review_reasons.is_empty() {
+        reasons.push("source_meets_apply_thresholds".into());
+        SubscriptionApplyDecision::Apply
+    } else {
+        reasons.extend(review_reasons);
+        reasons.push("source_has_usable_nodes_but_needs_review".into());
+        SubscriptionApplyDecision::Review
+    };
+
+    SubscriptionApplyRecommendation {
+        decision,
+        grade: source_quality_grade(&metrics),
+        reasons,
+        metrics,
+    }
+}
+
+fn source_quality_metrics(report: &SubscriptionSourceReport) -> SubscriptionSourceQualityMetrics {
+    let attempted_urls = report.fetched_urls + report.failed_urls;
+    let supported_nodes = report.direct_nodes + report.encrypted_nodes;
+
+    SubscriptionSourceQualityMetrics {
+        fetch_success_rate: ratio(report.fetched_urls, attempted_urls),
+        supported_protocol_ratio: ratio(supported_nodes, report.parsed_nodes),
+        unknown_node_ratio: ratio(report.unknown_nodes, report.parsed_nodes),
+        duplicate_node_ratio: ratio(report.duplicate_nodes, report.parsed_nodes),
+        parsed_nodes_per_url: if report.fetched_urls == 0 {
+            None
+        } else {
+            Some(report.parsed_nodes as f64 / report.fetched_urls as f64)
+        },
+    }
+}
+
+fn source_quality_grade(metrics: &SubscriptionSourceQualityMetrics) -> u8 {
+    let fetch = metrics.fetch_success_rate.unwrap_or(0.0);
+    let supported = metrics.supported_protocol_ratio.unwrap_or(0.0);
+    let unknown_penalty = 1.0 - metrics.unknown_node_ratio.unwrap_or(1.0);
+    let duplicate_penalty = 1.0 - metrics.duplicate_node_ratio.unwrap_or(1.0);
+    let yield_score = metrics
+        .parsed_nodes_per_url
+        .map(|value| (value / 20.0).clamp(0.0, 1.0))
+        .unwrap_or(0.0);
+
+    ((fetch * 30.0)
+        + (supported * 30.0)
+        + (unknown_penalty * 20.0)
+        + (duplicate_penalty * 10.0)
+        + (yield_score * 10.0))
+        .round()
+        .clamp(0.0, 100.0) as u8
+}
+
+fn ratio(numerator: usize, denominator: usize) -> Option<f64> {
+    if denominator == 0 {
+        None
+    } else {
+        Some(numerator as f64 / denominator as f64)
+    }
+}
+
+fn apply_reject_policy(report: &mut SubscriptionSourceReport) -> bool {
+    if report.mode == SubscriptionRefreshMode::Apply
+        && report.recommendation.decision == SubscriptionApplyDecision::Reject
+    {
+        report.errors.insert(
+            0,
+            SubscriptionSourceError {
+                stage: "recommendation_policy".into(),
+                url: None,
+                message: "apply blocked because source recommendation is reject".into(),
+            },
+        );
+        true
+    } else {
+        false
     }
 }
 
@@ -639,6 +841,113 @@ mod tests {
         assert!(json.contains("\"mode\":\"preview\""));
         assert!(json.contains("\"outcome\":\"empty\""));
         assert!(json.contains("\"protocol_counts\":{\"basic\":1}"));
+        assert!(json.contains("\"recommendation\""));
+        assert!(json.contains("\"decision\":\"reject\""));
+    }
+
+    #[test]
+    fn test_recommend_apply_when_source_meets_thresholds() {
+        let descriptor = SubscriptionSourceDescriptor {
+            id: "static-url-1".into(),
+            kind: SubscriptionSourceKind::StaticUrl,
+            label: "https://example.com/sub".into(),
+            enabled: true,
+        };
+        let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
+        report.unique_urls = 4;
+        report.fetched_urls = 3;
+        report.failed_urls = 1;
+        report.parsed_nodes = 30;
+        report.direct_nodes = 8;
+        report.encrypted_nodes = 12;
+        report.unknown_nodes = 5;
+        report.duplicate_nodes = 3;
+
+        let recommendation = recommend_apply(&report);
+
+        assert_eq!(recommendation.decision, SubscriptionApplyDecision::Apply);
+        assert!(recommendation.grade >= 60);
+        assert!(
+            recommendation
+                .reasons
+                .contains(&"source_meets_apply_thresholds".into())
+        );
+        assert_eq!(recommendation.metrics.fetch_success_rate, Some(0.75));
+    }
+
+    #[test]
+    fn test_recommend_review_when_source_is_usable_but_small() {
+        let descriptor = SubscriptionSourceDescriptor {
+            id: "static-url-1".into(),
+            kind: SubscriptionSourceKind::StaticUrl,
+            label: "https://example.com/sub".into(),
+            enabled: true,
+        };
+        let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
+        report.unique_urls = 1;
+        report.fetched_urls = 1;
+        report.parsed_nodes = 5;
+        report.direct_nodes = 2;
+        report.encrypted_nodes = 3;
+
+        let recommendation = recommend_apply(&report);
+
+        assert_eq!(recommendation.decision, SubscriptionApplyDecision::Review);
+        assert!(
+            recommendation
+                .reasons
+                .contains(&"parsed_nodes_below_20".into())
+        );
+    }
+
+    #[test]
+    fn test_recommend_reject_when_no_supported_nodes() {
+        let descriptor = SubscriptionSourceDescriptor {
+            id: "static-url-1".into(),
+            kind: SubscriptionSourceKind::StaticUrl,
+            label: "https://example.com/sub".into(),
+            enabled: true,
+        };
+        let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
+        report.unique_urls = 1;
+        report.fetched_urls = 1;
+        report.parsed_nodes = 10;
+        report.unknown_nodes = 10;
+
+        let recommendation = recommend_apply(&report);
+
+        assert_eq!(recommendation.decision, SubscriptionApplyDecision::Reject);
+        assert!(
+            recommendation
+                .reasons
+                .contains(&"no_supported_nodes".into())
+        );
+        assert!(
+            recommendation
+                .reasons
+                .contains(&"unknown_node_ratio_above_80_percent".into())
+        );
+    }
+
+    #[test]
+    fn test_rejected_apply_policy_blocks_writes() {
+        let descriptor = SubscriptionSourceDescriptor {
+            id: "static-url-1".into(),
+            kind: SubscriptionSourceKind::StaticUrl,
+            label: "https://example.com/sub".into(),
+            enabled: true,
+        };
+        let mut report = empty_report(descriptor, SubscriptionRefreshMode::Apply, Utc::now());
+        report.unique_urls = 1;
+        report.fetched_urls = 1;
+        report.parsed_nodes = 10;
+        report.unknown_nodes = 10;
+        report.recommendation = recommend_apply(&report);
+
+        assert!(apply_reject_policy(&mut report));
+        assert_eq!(report.stored_basic, 0);
+        assert_eq!(report.stored_encrypted, 0);
+        assert_eq!(report.errors[0].stage, "recommendation_policy");
     }
 
     #[test]

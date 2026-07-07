@@ -30,6 +30,8 @@ pub fn to_proxy(sub: &SubscriptionProxy, source_url: &str) -> Option<Proxy> {
 /// Partition a slice of `SubscriptionProxy` into:
 /// - `(Vec<Proxy>, …)` — basic proxies converted for the pool.
 /// - `(…, Vec<SubscriptionProxy>)` — encrypted proxies that need further setup.
+///
+/// Unknown/unsupported entries are skipped here and only counted by callers.
 pub fn partition(
     subs: &[SubscriptionProxy],
     source_url: &str,
@@ -40,7 +42,12 @@ pub fn partition(
     for sub in subs {
         if let Some(proxy) = to_proxy(sub, source_url) {
             basics.push(proxy);
-        } else {
+        } else if matches!(
+            sub,
+            SubscriptionProxy::Shadowsocks { .. }
+                | SubscriptionProxy::Vmess { .. }
+                | SubscriptionProxy::Trojan { .. }
+        ) {
             encrypted.push(sub.clone());
         }
     }
@@ -123,6 +130,9 @@ mod tests {
                 password: "pw".into(),
                 sni: None,
                 network: None,
+            },
+            SubscriptionProxy::Unknown {
+                raw_config: "vless://unsupported".into(),
             },
         ];
 

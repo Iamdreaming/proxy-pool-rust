@@ -1527,6 +1527,58 @@ mod tests {
     }
 
     #[test]
+    fn test_subscription_report_serializes_recommendation_for_tools() {
+        let report: proxy_sub::ops::SubscriptionSourceReport =
+            serde_json::from_value(serde_json::json!({
+                "source": {
+                    "id": "static-url-1",
+                    "kind": "static_url",
+                    "label": "https://example.com/sub",
+                    "enabled": true
+                },
+                "mode": "preview",
+                "started_at": "2026-07-07T00:00:00Z",
+                "finished_at": "2026-07-07T00:00:01Z",
+                "elapsed_ms": 10,
+                "outcome": "ok",
+                "last_error": null,
+                "discovered_urls": 1,
+                "unique_urls": 1,
+                "duplicate_urls": 0,
+                "fetched_urls": 1,
+                "failed_urls": 0,
+                "parsed_nodes": 20,
+                "direct_nodes": 5,
+                "encrypted_nodes": 15,
+                "unknown_nodes": 0,
+                "duplicate_nodes": 0,
+                "stored_basic": 0,
+                "stored_encrypted": 0,
+                "protocol_counts": {},
+                "errors": [],
+                "recommendation": {
+                    "decision": "apply",
+                    "grade": 95,
+                    "reasons": ["source_meets_apply_thresholds"],
+                    "metrics": {
+                        "fetch_success_rate": 1.0,
+                        "supported_protocol_ratio": 1.0,
+                        "unknown_node_ratio": 0.0,
+                        "duplicate_node_ratio": 0.0,
+                        "parsed_nodes_per_url": 20.0
+                    }
+                }
+            }))
+            .unwrap();
+
+        let json = to_json(serde_json::json!({ "status": "ok", "report": report }));
+
+        assert!(json.contains("\"recommendation\""));
+        assert!(json.contains("\"decision\": \"apply\""));
+        assert!(json.contains("\"grade\": 95"));
+    }
+
+    #[test]
     fn test_route_test_param_deserialize() {
         let json = r#"{"host":"github.com","protocol":"socks5"}"#;
         let param: RouteTestParam = serde_json::from_str(json).unwrap();

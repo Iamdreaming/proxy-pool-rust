@@ -85,3 +85,24 @@ geoip:
 
 free_pool:
   max_retry: 3
+
+# Optional public subscription source pack.
+# Keep these disabled/commented until an operator previews the source quality.
+# See docs/subscription-source-packs.md for rollout and rollback guidance.
+#
+# subscription:
+#   urls:
+#     # Curated raw subscription URLs. Add only reviewed public raw URLs here.
+#     # - "https://raw.githubusercontent.com/example/repo/main/clash.yaml"
+#   github:
+#     enabled: false
+#     max_results: 5
+#     # token: "__PROXY_POOL_REDACTED__"  # optional GitHub PAT for rate limits
+#     keywords:
+#       - "clash free sub"
+#       - "v2ray free nodes"
+#       - "free vpn subscriptions clash"
+#   aggregators:
+#     # Aggregator list URL. Supported formats: text, json, yaml.
+#     # - url: "https://raw.githubusercontent.com/example/repo/main/subscriptions.txt"
+#     #   format: "text"
