@@ -367,6 +367,12 @@ The scheduler owns fetcher state; API and MCP only serialize it.
 | `selected` | enum | First available exit: `direct`, `free_pool`, `warp`, `xray`, `no_proxy` |
 | `unavailable` | array | Unavailable exits and skip reasons |
 
+`candidates` is an ordered concrete-attempt list, not strictly a unique-exit
+list. The same `exit` may appear more than once when an exit expands to several
+runtime candidates. In particular, `free_pool` should expand to a small bounded
+set of distinct weighted-random proxy candidates so a single bad pool proxy does
+not terminate fallback for that exit.
+
 Gateway route metrics use:
 
 ```text
@@ -385,6 +391,7 @@ proxy_gateway_route_attempts_total{protocol="<http_connect|socks5|other>",exit="
 | No router but GeoIP available and domestic | Candidate order is `direct` |
 | No router but GeoIP available and overseas | Candidate order is `warp -> xray -> free_pool -> no_proxy` |
 | No router and no GeoIP | Candidate order is `free_pool -> warp -> xray -> no_proxy` |
+| Free pool has several usable proxies | The decision may include repeated `exit=free_pool` candidates with different `detail` values |
 | Gateway upstream connection fails before success response | Record `status=failure`, try later concrete candidates, and only then return HTTP 502 / SOCKS failure |
 | No concrete upstream exists | Record `exit=no_proxy,status=unavailable` |
 
@@ -397,6 +404,7 @@ proxy_gateway_route_attempts_total{protocol="<http_connect|socks5|other>",exit="
 ### 6. Tests Required
 
 - `proxy-core` tests for `RouteDecision` serialization, route suffix diagnostics, candidate order helpers, and gateway metric rendering.
+- `proxy-core` tests for weighted random multi-candidate pool selection without replacement.
 - `proxy-gateway` tests for upstream variants and connection helper compatibility.
 - `proxy-api` tests for `RouteTestResponse` serialization and route query deserialization.
 - `proxy-mcp` tests for `RouteTestParam` required and optional fields.

@@ -28,6 +28,9 @@
   gateway-local constant (`8s`).
 - The HTTP CONNECT upstream helper reads proxy response headers without
   consuming bytes that belong to the established tunnel.
+- `ProxyStore` now supports weighted random candidate selection without
+  replacement, and `UpstreamSelector` expands `free_pool` into up to three
+  concrete proxy candidates while preserving the high-level route order.
 - Route ordering is intentionally unchanged.
 
 ## Verification Results
@@ -35,7 +38,11 @@
 - `cargo fmt --all` passed.
 - `cargo test -p proxy-gateway` passed: 14 tests.
 - `cargo test -p proxy-core route_debug` passed: 5 tests.
+- `cargo test -p proxy-core weighted_random_choices` passed: 2 tests.
+- `cargo test -p proxy-api route_test` passed: 2 tests.
+- `cargo test -p proxy-mcp route_test` passed: 2 tests.
 - `cargo clippy -p proxy-gateway -- -D warnings` passed.
+- `cargo clippy -p proxy-core -p proxy-gateway -- -D warnings` passed.
 
 ## Rollback Points
 

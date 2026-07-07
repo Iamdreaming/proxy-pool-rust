@@ -44,7 +44,12 @@ client SOCKS5 CONNECT host:port
    - Use a conservative constant initially, e.g. 8 seconds.
    - On timeout, record the attempt as failure and continue to the next
      candidate.
-4. Keep route ordering unchanged. This task fixes connection mechanics and
+4. Expand `free_pool` into a small bounded set of concrete proxy candidates.
+   - Keep the high-level route order unchanged.
+   - Keep metrics labeled by `exit=free_pool`.
+   - Use weighted random selection without replacement so repeated attempts are
+     distinct proxies and still prefer higher-scored entries.
+5. Keep route ordering unchanged. This task fixes connection mechanics and
    fallback progression only.
 
 ## Testing
@@ -57,6 +62,8 @@ network dependencies:
 - Fake slow upstream candidate for timeout/fallback behavior if practical at
   handler level; otherwise unit-test timeout wrapper and rely on existing
   metrics/fallback handler tests.
+- Pure core tests for weighted random multi-candidate selection without
+  replacement.
 
 ## Trade-Offs
 

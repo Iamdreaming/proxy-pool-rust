@@ -48,7 +48,9 @@ fallback for the full client timeout.
 
 When WARP fails or times out for overseas routes, the gateway should continue
 to xray/free_pool/no_proxy according to the existing candidate order. This task
-does not change route ordering.
+does not change route ordering. Within the `free_pool` exit, the selector
+should provide a bounded set of concrete pool proxy candidates so one bad pool
+proxy does not immediately end the business request.
 
 ### R4: Focused regression coverage
 
@@ -57,6 +59,8 @@ Add local tests proving:
 - HTTP pool proxies receive HTTP CONNECT handshakes.
 - SOCKS5 pool proxies still receive SOCKS5 handshakes.
 - Timeout/failure on an early candidate can fall through to a later candidate.
+- Multiple concrete `free_pool` proxy candidates can be tried under the same
+  exit label.
 
 ### R5: No live mutation during implementation
 
@@ -70,6 +74,8 @@ gateway/API/MCP surfaces only.
 - [x] Local gateway tests cover SOCKS5 upstream behavior remains intact.
 - [x] Local gateway or core tests cover bounded fallback after a failed/slow
       candidate.
+- [x] Local core tests cover multiple weighted pool candidates without
+      replacement.
 - [x] `cargo test -p proxy-gateway` passes.
 - [x] Relevant route/gateway/core tests pass.
 - [x] No task changes are made to `.codex/config.toml`.

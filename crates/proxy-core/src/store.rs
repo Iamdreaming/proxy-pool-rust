@@ -192,6 +192,31 @@ pub fn weighted_random_choice(
     proxies: &[Proxy],
     score_fn: impl Fn(&Proxy) -> f64,
 ) -> Option<Proxy> {
+    weighted_random_index(proxies, &score_fn).map(|idx| proxies[idx].clone())
+}
+
+/// Weighted random choices without replacement: prefer higher-scored proxies.
+pub fn weighted_random_choices(
+    proxies: &[Proxy],
+    limit: usize,
+    score_fn: impl Fn(&Proxy) -> f64,
+) -> Vec<Proxy> {
+    if limit == 0 || proxies.is_empty() {
+        return Vec::new();
+    }
+
+    let mut remaining = proxies.to_vec();
+    let mut selected = Vec::with_capacity(limit.min(proxies.len()));
+    while selected.len() < limit && !remaining.is_empty() {
+        let Some(idx) = weighted_random_index(&remaining, &score_fn) else {
+            break;
+        };
+        selected.push(remaining.swap_remove(idx));
+    }
+    selected
+}
+
+fn weighted_random_index(proxies: &[Proxy], score_fn: &impl Fn(&Proxy) -> f64) -> Option<usize> {
     if proxies.is_empty() {
         return None;
     }
@@ -200,16 +225,16 @@ pub fn weighted_random_choice(
     if total <= 0.0 {
         // All zero scores: uniform random
         let idx = (rand::random::<u64>() as usize) % proxies.len();
-        return Some(proxies[idx].clone());
+        return Some(idx);
     }
     let mut r = rand::random::<f64>() * total;
     for (i, s) in scores.iter().enumerate() {
         r -= s;
         if r <= 0.0 {
-            return Some(proxies[i].clone());
+            return Some(i);
         }
     }
-    Some(proxies.last().unwrap().clone())
+    Some(proxies.len() - 1)
 }
 
 fn redis_key(protocol: &Protocol) -> String {
@@ -300,6 +325,33 @@ impl ProxyStore {
         }
         let score_fn = |p: &Proxy| score(p, &self.weights);
         Ok(weighted_random_choice(&proxies, score_fn))
+    }
+
+    /// Get multiple weighted-random proxies without replacement.
+    pub async fn get_random_candidates(
+        &self,
+        protocol: Protocol,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Proxy>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let key = redis_key(&protocol);
+        let mut conn = self.conn();
+        let members: Vec<String> = conn.zrevrange(&key, 0, -1).await?;
+        if members.is_empty() {
+            return Ok(Vec::new());
+        }
+        let proxies: Vec<Proxy> = members
+            .iter()
+            .filter_map(|m| serde_json::from_str::<Proxy>(m).ok())
+            .filter(|p| !circuit::is_circuit_open(p))
+            .collect();
+        if proxies.is_empty() {
+            return Ok(Vec::new());
+        }
+        let score_fn = |p: &Proxy| score(p, &self.weights);
+        Ok(weighted_random_choices(&proxies, limit, score_fn))
     }
 
     /// Get overseas proxies (is_overseas == true).
@@ -646,6 +698,29 @@ mod tests {
 
     fn make_proxy(host: &str, port: u16) -> Proxy {
         Proxy::new(host, port, Protocol::Http)
+    }
+
+    #[test]
+    fn weighted_random_choices_respects_limit_and_no_replacement() {
+        let proxies = vec![
+            make_proxy("1.1.1.1", 80),
+            make_proxy("2.2.2.2", 8080),
+            make_proxy("3.3.3.3", 9090),
+        ];
+
+        let selected = weighted_random_choices(&proxies, 2, |_| 1.0);
+
+        assert_eq!(selected.len(), 2);
+        assert_ne!(selected[0].dedup_key(), selected[1].dedup_key());
+    }
+
+    #[test]
+    fn weighted_random_choices_zero_limit_returns_empty() {
+        let proxies = vec![make_proxy("1.1.1.1", 80)];
+
+        let selected = weighted_random_choices(&proxies, 0, |_| 1.0);
+
+        assert!(selected.is_empty());
     }
 
     // -- apply_filter: empty filter passes all --

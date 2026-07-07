@@ -95,6 +95,10 @@ Every protocol handler (`http_connect::handle`, `socks5::handle`) must:
 5. Relay bidirectionally
 6. On any failure: log + send error reply + return `Ok(())`
 
+Handlers that use `select_with_trace()` must iterate every concrete
+`upstream_candidates` entry. Do not deduplicate by `RouteExit`: an exit such as
+`free_pool` can intentionally expand to multiple concrete proxy candidates.
+
 ### 2. All public functions must have doc comments
 
 ```rust
@@ -198,6 +202,8 @@ cargo clippy -p proxy-gateway -- -D warnings
 - [ ] Error replies sent to client before returning `Ok(())`
 - [ ] `Upstream::Proxy(proxy)` dispatches by `proxy.protocol`
 - [ ] Per-candidate upstream connect attempts are bounded by a timeout
+- [ ] All concrete `upstream_candidates` are attempted in order, even when the
+      same exit label appears more than once
 - [ ] `bidirectional_copy` uses `tokio::select!`
 - [ ] SOCKS5 address types (IPv4/IPv6/domain) all handled
 - [ ] Doc comments on all public items

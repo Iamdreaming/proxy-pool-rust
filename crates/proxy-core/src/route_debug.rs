@@ -226,6 +226,7 @@ impl GatewayAttemptStatus {
 }
 
 const METRIC_CELL_COUNT: usize = 3 * 5 * 3;
+const FREE_POOL_CANDIDATE_LIMIT: usize = 3;
 
 /// Process-local gateway route metrics.
 pub struct GatewayRouteMetrics {
@@ -354,32 +355,34 @@ impl UpstreamSelector {
         let mut upstream_candidates = Vec::new();
         let mut selected = None;
 
-        for (priority, exit) in plan.exits.iter().copied().enumerate() {
+        for exit in plan.exits.iter().copied() {
             let resolved = self.resolve_exit(exit, &protocol).await;
             let source = plan.matched_reason.clone();
             match resolved {
-                ResolvedExit::Available { upstream, detail } => {
-                    if selected.is_none() {
-                        selected = Some(exit);
+                ResolvedExit::Available { upstreams } => {
+                    for resolved_upstream in upstreams {
+                        if selected.is_none() {
+                            selected = Some(exit);
+                        }
+                        upstream_candidates.push(RouteUpstreamCandidate {
+                            exit,
+                            upstream: resolved_upstream.upstream,
+                            detail: resolved_upstream.detail.clone(),
+                        });
+                        candidates.push(RouteCandidate {
+                            exit,
+                            priority: candidates.len(),
+                            source: source.clone(),
+                            available: true,
+                            reason: None,
+                            detail: resolved_upstream.detail,
+                        });
                     }
-                    upstream_candidates.push(RouteUpstreamCandidate {
-                        exit,
-                        upstream: *upstream,
-                        detail: detail.clone(),
-                    });
-                    candidates.push(RouteCandidate {
-                        exit,
-                        priority,
-                        source,
-                        available: true,
-                        reason: None,
-                        detail,
-                    });
                 }
                 ResolvedExit::Unavailable { reason } => {
                     candidates.push(RouteCandidate {
                         exit,
-                        priority,
+                        priority: candidates.len(),
                         source,
                         available: false,
                         reason: Some(reason),
@@ -504,22 +507,37 @@ impl UpstreamSelector {
     async fn resolve_exit(&self, exit: RouteExit, protocol: &str) -> ResolvedExit {
         match exit {
             RouteExit::Direct => ResolvedExit::Available {
-                upstream: Box::new(Upstream::Direct),
-                detail: None,
+                upstreams: vec![ResolvedUpstream {
+                    upstream: Upstream::Direct,
+                    detail: None,
+                }],
             },
-            RouteExit::FreePool => match self.try_pool(protocol).await {
-                Some(proxy) => ResolvedExit::Available {
-                    detail: Some(proxy.dedup_key()),
-                    upstream: Box::new(Upstream::Proxy(proxy)),
-                },
-                None => ResolvedExit::Unavailable {
-                    reason: "no pool proxy available".into(),
-                },
-            },
+            RouteExit::FreePool => {
+                let proxies = self
+                    .try_pool_candidates(protocol, FREE_POOL_CANDIDATE_LIMIT)
+                    .await;
+                if proxies.is_empty() {
+                    ResolvedExit::Unavailable {
+                        reason: "no pool proxy available".into(),
+                    }
+                } else {
+                    ResolvedExit::Available {
+                        upstreams: proxies
+                            .into_iter()
+                            .map(|proxy| ResolvedUpstream {
+                                detail: Some(proxy.dedup_key()),
+                                upstream: Upstream::Proxy(proxy),
+                            })
+                            .collect(),
+                    }
+                }
+            }
             RouteExit::Warp => match self.try_warp().await {
                 Some(port) => ResolvedExit::Available {
-                    upstream: Box::new(Upstream::Warp { socks5_port: port }),
-                    detail: Some(format!("127.0.0.1:{port}")),
+                    upstreams: vec![ResolvedUpstream {
+                        upstream: Upstream::Warp { socks5_port: port },
+                        detail: Some(format!("127.0.0.1:{port}")),
+                    }],
                 },
                 None => ResolvedExit::Unavailable {
                     reason: "no healthy WARP instance available".into(),
@@ -527,32 +545,37 @@ impl UpstreamSelector {
             },
             RouteExit::Xray => match self.try_xray().await {
                 Some(port) => ResolvedExit::Available {
-                    upstream: Box::new(Upstream::Xray {
-                        local_socks5_port: port,
-                    }),
-                    detail: Some(format!("127.0.0.1:{port}")),
+                    upstreams: vec![ResolvedUpstream {
+                        upstream: Upstream::Xray {
+                            local_socks5_port: port,
+                        },
+                        detail: Some(format!("127.0.0.1:{port}")),
+                    }],
                 },
                 None => ResolvedExit::Unavailable {
                     reason: "no active xray node available".into(),
                 },
             },
             RouteExit::NoProxy => ResolvedExit::Available {
-                upstream: Box::new(Upstream::NoProxy),
-                detail: None,
+                upstreams: vec![ResolvedUpstream {
+                    upstream: Upstream::NoProxy,
+                    detail: None,
+                }],
             },
         }
     }
 
-    async fn try_pool(&self, protocol: &str) -> Option<Proxy> {
+    async fn try_pool_candidates(&self, protocol: &str, limit: usize) -> Vec<Proxy> {
         let proto = Protocol::from_str_loose(protocol).unwrap_or(Protocol::Http);
-        match self.store.get_random(proto).await {
-            Ok(Some(proxy)) => {
-                if proxy.circuit_open || proxy.encrypted_state.is_some() {
-                    return None;
-                }
-                Some(proxy)
+        match self.store.get_random_candidates(proto, limit).await {
+            Ok(proxies) => proxies
+                .into_iter()
+                .filter(|proxy| !proxy.circuit_open && proxy.encrypted_state.is_none())
+                .collect(),
+            Err(e) => {
+                tracing::debug!("try_pool_candidates: failed to query store: {e}");
+                Vec::new()
             }
-            _ => None,
         }
     }
 
@@ -602,13 +625,13 @@ struct RoutePlan {
 }
 
 enum ResolvedExit {
-    Available {
-        upstream: Box<Upstream>,
-        detail: Option<String>,
-    },
-    Unavailable {
-        reason: String,
-    },
+    Available { upstreams: Vec<ResolvedUpstream> },
+    Unavailable { reason: String },
+}
+
+struct ResolvedUpstream {
+    upstream: Upstream,
+    detail: Option<String>,
 }
 
 fn exits_for_known_group(group: &str) -> Option<Vec<RouteExit>> {
