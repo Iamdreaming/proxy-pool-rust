@@ -37,7 +37,7 @@
 
 用户最新要求先不做 `mcp-api-contract-smoke-v2`，因此该契约 smoke 草稿已暂停并隔离，不作为当前 Ready/Next 主线。`dashboard-ops-polish-v2` 也继续保持暂停。`proxy-quality-history-lite` 已完成；用户随后明确“先不做” `proxy-quality-recommendations-dry-run`，因此该 dry-run 建议任务只保留暂停草稿，不进入当前主线。
 
-用户最新要求“先不做这个，规划新的 todo list”，因此 `fetcher-source-quality-ranking` 也从当前主线移出并隔离。新的 TODO 队列先回到 no-SSH 发布/运维闭环：`release-validation-no-ssh-runbook-v2` 已完成，把推送后如何通过公开入口判断 dev 是否更新固定为默认只读清单；下一步补 `release-status-contract-smoke-v1`，用最小自动化防止 status/update_status 等发布状态契约漂移；然后再评估 `update-failure-hardening` 是否具备安全验证入口。质量闭环类任务仍保留，但排到这组 P0 运维闭环之后。
+用户最新要求“先不做这个，规划新的 todo list”，因此 `fetcher-source-quality-ranking` 也从当前主线移出并隔离。新的 TODO 队列先回到 no-SSH 发布/运维闭环：`release-validation-no-ssh-runbook-v2` 已完成，把推送后如何通过公开入口判断 dev 是否更新固定为默认只读清单；`release-status-contract-smoke-v1` 也已完成，用最小自动化防止 status/update_status 等发布状态契约漂移。`update-failure-hardening` 仍需用户确认安全验证入口后再恢复；如果不恢复它，下一项可直接推进 `revalidation-scheduler-priority-v1`。
 
 **工作区注意事项**：
 
@@ -55,7 +55,7 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议从 Ready 选择 `release-status-contract-smoke-v1`。`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求暂停，不作为当前主线。
+当前无 Now 任务；下一步建议从 Ready 选择 `revalidation-scheduler-priority-v1`。`update-failure-hardening`、`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求或安全门槛暂停，不作为当前主线。
 
 ## Paused Closeout
 
@@ -153,6 +153,23 @@
 - [x] 文档记录 dev compose 更新可观测性所需环境变量：update enabled、container/image、Watchtower URL 和 token 对应关系。
 - [x] 文档包含 CI、镜像、runtime git hash、release metadata 和 update status 的失败分支判断。
 - [x] README 和 CLAUDE.md 已同步 no-SSH 默认只读验证说明。
+
+### P0 — `release-status-contract-smoke-v1`
+
+**目标**：为 no-SSH 发布验证依赖的最小状态契约补轻量 smoke，避免 `/api/status`、MCP `service_status` 和 MCP `update_status` 的关键字段漂移。
+
+**当前状态**：已完成最小契约 smoke。REST `/api/status` integration shape 断言覆盖 `release` metadata；MCP `service_status` 覆盖同一 release metadata；MCP 工具列表包含 `update_status`，并新增只读 `update_status` shape smoke。测试没有调用 `update_service`，也不依赖 SSH、Docker socket、Watchtower 或 live dev mutation。
+
+**主要完成项**：
+
+- [x] `/api/status` shape 断言覆盖 top-level `version` / `git_hash` 与 `release.app_version` / `release.git_hash` 的对应关系。
+- [x] `/api/status` shape 断言覆盖 `release.update_enabled`、`update_container`、`configured_image`、`image_repo`、`image_tag` 和 `watchtower_url`。
+- [x] MCP `service_status` shape 断言覆盖同一组 release metadata。
+- [x] MCP `update_status` 只读 smoke 覆盖 `never_triggered`、`disabled`、`already_current`、`updated` 和 `failed` 状态集合。
+- [x] 已有 `proxy-mcp` 单测继续覆盖 disabled/failed/already_current/updated 等 recorded update status shape。
+- [x] `python -m py_compile tests\integration\test_l2_api.py tests\integration\test_l4_mcp.py` 通过。
+- [x] `cargo test -p proxy-api` 通过。
+- [x] `cargo test -p proxy-mcp` 通过。
 
 ### P1 — `proxy-quality-history-lite`
 
@@ -398,18 +415,6 @@
 
 ## Ready
 
-### P0 — `release-status-contract-smoke-v1`
-
-**目标**：为 no-SSH 发布验证依赖的最小状态契约补轻量 smoke，避免 `/api/status`、MCP `service_status` 和 MCP `update_status` 的关键字段漂移。
-
-**候选功能**：
-
-- [ ] 只覆盖发布验证所需字段：version、git_hash、release image metadata、update enabled/container/image/watchtower URL、latest update status。
-- [ ] REST 与 MCP 使用已有共享模型或现有返回结构，不在测试里复制业务推导。
-- [ ] 测试默认不触发 `update_service`、不访问 Docker socket、不依赖直接 SSH。
-- [ ] 如 full REST/MCP contract smoke 仍处于暂停状态，本任务只做发布状态最小子集，不恢复 `mcp-api-contract-smoke-v2`。
-- [ ] 覆盖空/never-triggered update status 和已记录 update status 的序列化 shape。
-
 ### P1 — `revalidation-scheduler-priority-v1`
 
 **目标**：让已有质量历史影响复验顺序，优先复查长期未检查、近期退化、失败压力高或来源风险高的代理，同时避免单一来源长期占满复验预算。
@@ -537,9 +542,9 @@
 4. `release-observability-no-ssh-v2` — 已完成，发布状态、镜像元数据和最近更新结果的 no-SSH 可观测性。
 5. `proxy-quality-history-lite` — 已完成，代理质量轻量趋势和只读解释字段。
 6. `release-validation-no-ssh-runbook-v2` — 已完成，把 post-push dev 验证清单固定为 GitHub Actions、公开 HTTP 和 MCP 只读入口。
-7. `release-status-contract-smoke-v1` — 下一项建议，为发布验证依赖的 status/update_status 字段补最小契约 smoke，不恢复完整 REST/MCP smoke。
+7. `release-status-contract-smoke-v1` — 已完成，为发布验证依赖的 status/update_status 字段补最小契约 smoke，不恢复完整 REST/MCP smoke。
 8. `update-failure-hardening` — 用户确认安全验证入口后再恢复自更新失败路径结构化错误和 no-SSH 验证。
-9. `revalidation-scheduler-priority-v1` — 让质量历史影响复验优先级，但不直接清理代理。
+9. `revalidation-scheduler-priority-v1` — 下一项建议，让质量历史影响复验优先级，但不直接清理代理。
 10. `pool-quality-metrics-v1` — 将质量趋势、来源质量和复验效果暴露为低基数只读指标。
 11. `quality-dashboard-readonly-v1` — 只读展示质量趋势，不恢复暂停的操作按钮草稿。
 12. `fetcher-source-quality-ranking` — 用户重新确认后再恢复，来源维度质量排名和退化提示。

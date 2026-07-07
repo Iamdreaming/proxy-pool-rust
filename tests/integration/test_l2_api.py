@@ -22,6 +22,15 @@ class TestApiStatus:
         assert isinstance(data["warp"]["healthy"], int)
         assert isinstance(data["xray"]["active_nodes"], int)
         assert isinstance(data["xray"]["failed_nodes"], int)
+        release = data["release"]
+        assert release["app_version"] == data["version"]
+        assert release["git_hash"] == data["git_hash"]
+        assert isinstance(release["update_enabled"], bool)
+        assert release["update_container"]
+        assert release["configured_image"]
+        assert release["image_repo"]
+        assert release["image_tag"]
+        assert release["watchtower_url"]
 
 
 class TestApiProxies:

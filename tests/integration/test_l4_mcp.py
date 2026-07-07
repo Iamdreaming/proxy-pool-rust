@@ -34,7 +34,7 @@ class TestMcpConnection:
             "geoip_lookup", "remove_proxy", "refresh_pool",
             "fetcher_status", "refresh_fetcher", "route_test",
             "explain_proxy_scores", "cleanup_low_score_proxies",
-            "proxy_stats", "update_service", "xray_status",
+            "proxy_stats", "update_status", "update_service", "xray_status",
             "subscription_sources", "refresh_subscription_source",
         }
         missing = expected - tool_names
@@ -89,6 +89,36 @@ class TestMcpServiceStatus:
         assert isinstance(data["warp"]["healthy"], int)
         assert isinstance(data["xray"]["active_nodes"], int)
         assert isinstance(data["xray"]["failed_nodes"], int)
+        release = data["release"]
+        assert release["app_version"] == data["version"]
+        assert release["git_hash"] == data["git_hash"]
+        assert isinstance(release["update_enabled"], bool)
+        assert release["update_container"]
+        assert release["configured_image"]
+        assert release["image_repo"]
+        assert release["image_tag"]
+        assert release["watchtower_url"]
+
+    def test_update_status_read_only_structure(self, mcp_client):
+        """update_status reports the latest update snapshot without mutating."""
+        result = mcp_client.call_tool("update_status")
+        text = _extract_text(result)
+        data = json.loads(text)
+
+        assert data["status"] in (
+            "never_triggered",
+            "disabled",
+            "already_current",
+            "updated",
+            "failed",
+        )
+        if data["status"] != "never_triggered":
+            assert isinstance(data["update_enabled"], bool)
+            assert data["container_name"]
+            assert data["image"]
+            assert data["image_repo"]
+            assert data["image_tag"]
+            assert data["watchtower_url"]
 
     def test_xray_status_structure(self, mcp_client):
         """xray_status returns lifecycle counts and recent node records."""
