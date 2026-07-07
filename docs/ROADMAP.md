@@ -57,7 +57,7 @@
 
 ## Now
 
-当前无 Now 任务；下一步建议创建并推进 `readonly-dev-smoke-runner-v1`。该任务只组合已有只读入口，不直接 SSH、不访问宿主 Docker、不触发 `update_service`，用于把 post-push dev 验证变成一条本地可重复执行的命令。`quality-dashboard-readonly-v1`、`revalidation-scheduler-priority-v1`、`update-failure-hardening`、`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求或安全门槛暂停，不作为当前主线。
+当前无 Now 任务；下一步建议推进 `config-runbook-drift-check-v1`。`readonly-dev-smoke-runner-v1` 已完成，只组合已有只读入口，不直接 SSH、不访问宿主 Docker、不触发 `update_service`，用于把 post-push dev 验证变成一条本地可重复执行的命令。`quality-dashboard-readonly-v1`、`revalidation-scheduler-priority-v1`、`update-failure-hardening`、`fetcher-source-quality-ranking`、`proxy-quality-recommendations-dry-run`、`mcp-api-contract-smoke-v2` 与 `dashboard-ops-polish-v2` 均按用户最新要求或安全门槛暂停，不作为当前主线。
 
 ## Paused Closeout
 
@@ -168,6 +168,22 @@
 - [ ] 覆盖 core 汇总逻辑、API/MCP shape 和旧数据兼容测试。
 
 ## Done
+
+### P0 — `readonly-dev-smoke-runner-v1`
+
+**目标**：把 no-SSH 的 post-push dev 验证组合成本地可重复执行的一条命令，减少每次发布后人工拼接 GitHub Actions、HTTP 和 MCP 只读状态检查的成本。
+
+**当前状态**：已完成本地 runner。`tests/integration/readonly_dev_smoke.py` 现在可以从仓库根目录运行，默认检查最新 `docker-build.yml`、公开 HTTP `/api/status` / `/api/readyz`、MCP `service_status` / `update_status`，并支持 `--skip-ci`、`--wait-ci` 和 `--json`。runner 不直接 SSH、不访问宿主 Docker、不调用 `update_service`，也不触发任何刷新、清理、删除或 apply 动作。
+
+**主要完成项**：
+
+- [x] 新增 `tests/integration/readonly_dev_smoke.py`，复用现有 `PROXY_POOL_*` 环境变量和 MCP HTTP helper。
+- [x] 新增本地 L0 测试覆盖 hash 比对、状态 payload 判断、只读 MCP tool 集合和结果聚合。
+- [x] `docs/dev-validation.md` 增加 runner 快捷命令，同时保留 manual triage 步骤。
+- [x] README 的 Dev 验证段落增加 runner 示例。
+- [x] `python -m py_compile tests\integration\readonly_dev_smoke.py tests\integration\test_l0_readonly_dev_smoke.py tests\integration\conftest.py tests\integration\helpers\mcp_client.py tests\integration\config.py` 通过。
+- [x] `python -m pytest tests\integration\test_l0_readonly_dev_smoke.py -q` 通过。
+- [x] live read-only smoke 已运行：GitHub Actions 检查成功，HTTP/MCP 检查正确发现当前 dev runtime 仍缺少 release fields 和 MCP `update_status`。
 
 ### P0 — `release-validation-no-ssh-runbook-v2`
 
@@ -466,18 +482,6 @@
 
 ## Ready
 
-### P0 — `readonly-dev-smoke-runner-v1`
-
-**目标**：把 no-SSH 的 post-push dev 验证组合成本地可重复执行的一条命令，减少每次发布后人工拼接 GitHub Actions、HTTP 和 MCP 只读状态检查的成本。
-
-**候选功能**：
-
-- [ ] 新增本地脚本或测试入口，按顺序检查 GitHub Actions 最新构建结果、公开 HTTP `/api/status`、`/api/readyz`、MCP `service_status` 和 MCP `update_status`。
-- [ ] 默认只读：不直接 SSH、不访问宿主 Docker、不调用 `update_service`、不写入远端状态。
-- [ ] 输出结构化摘要：目标分支/commit、CI 状态、runtime git hash、release metadata、readiness、最近更新状态。
-- [ ] 任一只读入口不可达时返回非零退出码，并给出明确失败原因和下一步人工排查入口。
-- [ ] README 或 `docs/dev-validation.md` 补充命令用法。
-
 ### P0 — `config-runbook-drift-check-v1`
 
 **目标**：防止 README、`docs/dev-validation.md`、dev compose/env 示例和状态接口字段继续漂移，尤其是自更新相关环境变量与 no-SSH 验证边界。
@@ -627,8 +631,8 @@
 6. `release-validation-no-ssh-runbook-v2` — 已完成，把 post-push dev 验证清单固定为 GitHub Actions、公开 HTTP 和 MCP 只读入口。
 7. `release-status-contract-smoke-v1` — 已完成，为发布验证依赖的 status/update_status 字段补最小契约 smoke，不恢复完整 REST/MCP smoke。
 8. `pool-quality-metrics-v1` — 已完成，将质量趋势和保留风险暴露为低基数只读指标。
-9. `readonly-dev-smoke-runner-v1` — 下一项建议，把 no-SSH 只读验证组合成一条本地可重复命令。
-10. `config-runbook-drift-check-v1` — 防止 README、dev-validation、compose/env/status 字段继续漂移。
+9. `readonly-dev-smoke-runner-v1` — 已完成，把 no-SSH 只读验证组合成一条本地可重复命令。
+10. `config-runbook-drift-check-v1` — 下一项建议，防止 README、dev-validation、compose/env/status 字段继续漂移。
 11. `metrics-low-cardinality-audit-v1` — 系统性审计 Prometheus label 是否持续保持低基数。
 12. `release-status-public-smoke-v1` — 为公开只读发布状态补更轻的 smoke，不恢复完整 REST/MCP smoke。
 13. `dev-update-config-doc-hardening-v1` — 沉淀当前 dev compose 自更新配置和只读排障说明。

@@ -37,6 +37,26 @@ This default checklist is read-only after the push. It tells you whether dev is
 already running the expected image/git hash. If it is not, decide explicitly
 whether to trigger an update; do not treat `update_service` as a status check.
 
+### Shortcut
+
+The preferred shortcut is the read-only smoke runner:
+
+```powershell
+$env:PROXY_POOL_HOST = "100.64.0.2"
+$env:PROXY_POOL_GIT_HASH = (git rev-parse --short HEAD)
+python tests\integration\readonly_dev_smoke.py --branch main --wait-ci
+```
+
+Use `--skip-ci` when you only want HTTP/MCP public-surface checks, for example
+while iterating locally or when GitHub CLI authentication is unavailable.
+
+The runner checks GitHub Actions, `/api/status`, `/api/readyz`, MCP
+`service_status`, and MCP `update_status`. It does not SSH, access host Docker,
+call `update_service`, refresh the pool, delete proxies, or apply any remote
+mutation.
+
+The manual steps below remain useful for drilling into a failed runner result.
+
 1. Run local checks relevant to the change.
 
    ```powershell

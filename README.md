@@ -145,6 +145,15 @@ docker compose logs -f proxy-pool
 只在明确选择更新时调用，不作为默认状态检查。完整清单见
 [`docs/dev-validation.md`](docs/dev-validation.md)。
 
+常用的一条命令式只读检查：
+
+```bash
+python tests/integration/readonly_dev_smoke.py --branch main --wait-ci
+```
+
+它只读取 GitHub Actions、`/api/status`、`/api/readyz`、MCP `service_status`
+和 `update_status`，不会触发远端更新。
+
 ### 配置示例 (Claude Desktop / ZCode)
 
 ```json

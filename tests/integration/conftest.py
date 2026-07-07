@@ -1,8 +1,13 @@
 """Shared pytest fixtures for integration tests."""
 
+import sys
+from pathlib import Path
+
 import pytest
 import requests
 import httpx
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import HOST, API_PORT, GW_PORT, MCP_PORT, EXPECTED_GIT_HASH, API_BASE, MCP_BASE
 from helpers.mcp_client import McpClient
