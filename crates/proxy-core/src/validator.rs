@@ -43,6 +43,12 @@ impl ValidationTarget {
     }
 }
 
+impl From<crate::config::ValidationTargetConfig> for ValidationTarget {
+    fn from(config: crate::config::ValidationTargetConfig) -> Self {
+        Self::with_expected_statuses(config.url, config.expected_statuses)
+    }
+}
+
 /// Stable validation failure category for API/MCP clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

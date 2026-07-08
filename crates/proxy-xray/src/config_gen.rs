@@ -214,6 +214,51 @@ pub fn generate_outbound_json(node: &SubscriptionProxy, tag: &str) -> Option<Val
                 "streamSettings": stream_settings
             }))
         }
+        SubscriptionProxy::Vless {
+            host,
+            port,
+            uuid,
+            encryption,
+            flow,
+            network,
+            security,
+            sni,
+            host_header,
+            path,
+            service_name,
+            fingerprint,
+            public_key,
+            short_id,
+            spider_x,
+        } => {
+            let stream_settings = build_stream_settings(StreamSettingsInput {
+                network,
+                path,
+                host_header,
+                service_name,
+                security,
+                sni,
+                fingerprint,
+                public_key,
+                short_id,
+                spider_x,
+            });
+            let mut settings = json!({
+                "address": host,
+                "port": port,
+                "id": uuid,
+                "encryption": encryption
+            });
+            if let Some(flow_value) = flow {
+                settings["flow"] = json!(flow_value);
+            }
+            Some(json!({
+                "tag": tag,
+                "protocol": "vless",
+                "settings": settings,
+                "streamSettings": stream_settings
+            }))
+        }
         SubscriptionProxy::Trojan {
             host,
             port,
@@ -265,21 +310,54 @@ fn build_vmess_stream_settings(
     host_header: &Option<String>,
     sni: &Option<String>,
 ) -> Value {
-    let mut stream = json!({ "network": network });
+    let grpc_service_name = if network == "grpc" {
+        path.clone()
+    } else {
+        None
+    };
+    build_stream_settings(StreamSettingsInput {
+        network,
+        path,
+        host_header,
+        service_name: &grpc_service_name,
+        security: &None,
+        sni,
+        fingerprint: &None,
+        public_key: &None,
+        short_id: &None,
+        spider_x: &None,
+    })
+}
 
-    match network {
+struct StreamSettingsInput<'a> {
+    network: &'a str,
+    path: &'a Option<String>,
+    host_header: &'a Option<String>,
+    service_name: &'a Option<String>,
+    security: &'a Option<String>,
+    sni: &'a Option<String>,
+    fingerprint: &'a Option<String>,
+    public_key: &'a Option<String>,
+    short_id: &'a Option<String>,
+    spider_x: &'a Option<String>,
+}
+
+fn build_stream_settings(input: StreamSettingsInput<'_>) -> Value {
+    let mut stream = json!({ "network": input.network });
+
+    match input.network {
         "ws" => {
             let mut ws = json!({});
-            if let Some(p) = path {
+            if let Some(p) = input.path {
                 ws["path"] = json!(p);
             }
-            if let Some(h) = host_header {
+            if let Some(h) = input.host_header {
                 ws["headers"] = json!({ "Host": h });
             }
             stream["wsSettings"] = ws;
         }
         "grpc" => {
-            if let Some(p) = path {
+            if let Some(p) = input.service_name.as_ref().or(input.path.as_ref()) {
                 stream["grpcSettings"] = json!({
                     "serviceName": p
                 });
@@ -290,11 +368,48 @@ fn build_vmess_stream_settings(
         }
     }
 
-    if let Some(sni_val) = sni {
-        stream["security"] = json!("tls");
-        stream["tlsSettings"] = json!({
-            "serverName": sni_val
-        });
+    let security_value = input
+        .security
+        .as_deref()
+        .filter(|value| !value.is_empty() && *value != "none")
+        .or_else(|| input.sni.as_ref().map(|_| "tls"));
+
+    match security_value {
+        Some("tls") => {
+            stream["security"] = json!("tls");
+            let mut tls = json!({});
+            if let Some(sni_val) = input.sni {
+                tls["serverName"] = json!(sni_val);
+            }
+            if let Some(fp) = input.fingerprint {
+                tls["fingerprint"] = json!(fp);
+            }
+            stream["tlsSettings"] = tls;
+        }
+        Some("reality") => {
+            stream["security"] = json!("reality");
+            let mut reality = json!({});
+            if let Some(sni_val) = input.sni {
+                reality["serverName"] = json!(sni_val);
+            }
+            if let Some(fp) = input.fingerprint {
+                reality["fingerprint"] = json!(fp);
+            }
+            if let Some(pk) = input.public_key {
+                reality["password"] = json!(pk);
+            }
+            if let Some(sid) = input.short_id {
+                reality["shortId"] = json!(sid);
+            }
+            if let Some(spx) = input.spider_x {
+                reality["spiderX"] = json!(spx);
+            }
+            stream["realitySettings"] = reality;
+        }
+        Some(other) => {
+            stream["security"] = json!(other);
+        }
+        None => {}
     }
 
     stream
@@ -403,6 +518,90 @@ mod tests {
             ob["streamSettings"]["grpcSettings"]["serviceName"],
             "grpc-service"
         );
+    }
+
+    #[test]
+    fn test_generate_vless_ws_tls() {
+        let vless = SubscriptionProxy::Vless {
+            host: "vless.example.com".into(),
+            port: 443,
+            uuid: "550e8400-e29b-41d4-a716-446655440000".into(),
+            encryption: "none".into(),
+            flow: None,
+            network: "ws".into(),
+            security: Some("tls".into()),
+            sni: Some("sni.example.com".into()),
+            host_header: Some("cdn.example.com".into()),
+            path: Some("/ws".into()),
+            service_name: None,
+            fingerprint: Some("chrome".into()),
+            public_key: None,
+            short_id: None,
+            spider_x: None,
+        };
+        let config = ConfigGenerator::generate(&vless, 20005).unwrap();
+        assert_eq!(config.tag, "vless-vless.example.com-443");
+
+        let ob = &config.outbound_json;
+        assert_eq!(ob["protocol"], "vless");
+        assert_eq!(ob["settings"]["address"], "vless.example.com");
+        assert_eq!(ob["settings"]["port"], 443);
+        assert_eq!(ob["settings"]["id"], "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(ob["settings"]["encryption"], "none");
+        assert_eq!(ob["streamSettings"]["network"], "ws");
+        assert_eq!(ob["streamSettings"]["wsSettings"]["path"], "/ws");
+        assert_eq!(
+            ob["streamSettings"]["wsSettings"]["headers"]["Host"],
+            "cdn.example.com"
+        );
+        assert_eq!(ob["streamSettings"]["security"], "tls");
+        assert_eq!(
+            ob["streamSettings"]["tlsSettings"]["serverName"],
+            "sni.example.com"
+        );
+        assert_eq!(ob["streamSettings"]["tlsSettings"]["fingerprint"], "chrome");
+    }
+
+    #[test]
+    fn test_generate_vless_reality() {
+        let vless = SubscriptionProxy::Vless {
+            host: "reality.example.com".into(),
+            port: 443,
+            uuid: "uid".into(),
+            encryption: "none".into(),
+            flow: Some("xtls-rprx-vision".into()),
+            network: "tcp".into(),
+            security: Some("reality".into()),
+            sni: Some("www.microsoft.com".into()),
+            host_header: None,
+            path: None,
+            service_name: None,
+            fingerprint: Some("chrome".into()),
+            public_key: Some("pub-key".into()),
+            short_id: Some("abcd".into()),
+            spider_x: Some("/".into()),
+        };
+        let config = ConfigGenerator::generate(&vless, 20006).unwrap();
+        let ob = &config.outbound_json;
+
+        assert_eq!(ob["protocol"], "vless");
+        assert_eq!(ob["settings"]["flow"], "xtls-rprx-vision");
+        assert_eq!(ob["streamSettings"]["network"], "tcp");
+        assert_eq!(ob["streamSettings"]["security"], "reality");
+        assert_eq!(
+            ob["streamSettings"]["realitySettings"]["serverName"],
+            "www.microsoft.com"
+        );
+        assert_eq!(
+            ob["streamSettings"]["realitySettings"]["fingerprint"],
+            "chrome"
+        );
+        assert_eq!(
+            ob["streamSettings"]["realitySettings"]["password"],
+            "pub-key"
+        );
+        assert_eq!(ob["streamSettings"]["realitySettings"]["shortId"], "abcd");
+        assert_eq!(ob["streamSettings"]["realitySettings"]["spiderX"], "/");
     }
 
     #[test]

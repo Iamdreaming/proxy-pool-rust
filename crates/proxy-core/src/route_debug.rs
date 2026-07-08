@@ -241,6 +241,7 @@ impl GatewayAttemptStatus {
 const METRIC_CELL_COUNT: usize = 3 * 5 * 3;
 const FREE_POOL_CANDIDATE_LIMIT: usize = 4;
 const POOL_PROXY_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
+const XRAY_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 
 /// Process-local gateway route metrics.
 pub struct GatewayRouteMetrics {
@@ -316,6 +317,7 @@ pub struct UpstreamSelector {
     geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     metrics: Arc<GatewayRouteMetrics>,
     pool_proxy_failed_until: Arc<RwLock<HashMap<String, Instant>>>,
+    xray_failed_until: Arc<RwLock<HashMap<u16, Instant>>>,
 }
 
 impl UpstreamSelector {
@@ -350,6 +352,7 @@ impl UpstreamSelector {
             geoip,
             metrics,
             pool_proxy_failed_until: Arc::new(RwLock::new(HashMap::new())),
+            xray_failed_until: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -386,22 +389,34 @@ impl UpstreamSelector {
                 let key = proxy.dedup_key();
                 self.pool_proxy_failed_until.write().await.remove(&key);
             }
+            (Upstream::Xray { local_socks5_port }, GatewayAttemptStatus::Failure) => {
+                self.xray_failed_until
+                    .write()
+                    .await
+                    .insert(*local_socks5_port, Instant::now() + XRAY_FAILURE_COOLDOWN);
+                tracing::debug!(
+                    local_socks5_port = *local_socks5_port,
+                    "gateway put xray node into failure cooldown"
+                );
+            }
+            (Upstream::Xray { local_socks5_port }, GatewayAttemptStatus::Success) => {
+                self.xray_failed_until
+                    .write()
+                    .await
+                    .remove(local_socks5_port);
+            }
             (
-                Upstream::Direct
-                | Upstream::Xray { .. }
-                | Upstream::WarpChain { .. }
-                | Upstream::NoProxy,
+                Upstream::Direct | Upstream::WarpChain { .. } | Upstream::NoProxy,
                 GatewayAttemptStatus::Failure,
             ) => {}
             (
                 Upstream::Direct
-                | Upstream::Xray { .. }
                 | Upstream::WarpChain { .. }
                 | Upstream::NoProxy
                 | Upstream::Warp { .. },
                 GatewayAttemptStatus::Success | GatewayAttemptStatus::Unavailable,
             ) => {}
-            (Upstream::Proxy(_), GatewayAttemptStatus::Unavailable) => {}
+            (Upstream::Xray { .. } | Upstream::Proxy(_), GatewayAttemptStatus::Unavailable) => {}
         }
     }
 
@@ -670,10 +685,14 @@ impl UpstreamSelector {
     async fn try_xray(&self) -> Option<u16> {
         match self.store.all(Protocol::Socks5).await {
             Ok(proxies) => {
+                let failed_until = self.xray_failed_until.read().await;
+                let now = Instant::now();
                 let active_xray: Vec<&Proxy> = proxies
                     .iter()
                     .filter(|p| {
                         matches!(p.encrypted_state, Some(EncryptedProxyState::Active { .. }))
+                            && xray_has_validation_evidence(p)
+                            && !xray_cooldown_active(p, &failed_until, now)
                     })
                     .collect();
                 if active_xray.is_empty() {
@@ -855,6 +874,19 @@ fn pool_proxy_cooldown_active(
     now: Instant,
 ) -> bool {
     matches!(cooldowns.get(key), Some(until) if *until > now)
+}
+
+fn xray_has_validation_evidence(proxy: &Proxy) -> bool {
+    proxy.last_check.is_some() && proxy.success_count > 0
+}
+
+fn xray_cooldown_active(proxy: &Proxy, cooldowns: &HashMap<u16, Instant>, now: Instant) -> bool {
+    match proxy.encrypted_state {
+        Some(EncryptedProxyState::Active { local_socks5_port }) => {
+            matches!(cooldowns.get(&local_socks5_port), Some(until) if *until > now)
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1105,5 +1137,40 @@ mod tests {
             "http:9.9.9.9:8080",
             now
         ));
+    }
+
+    #[test]
+    fn xray_validation_evidence_requires_successful_check() {
+        let mut proxy = Proxy::new("127.0.0.1", 20000, Protocol::Socks5);
+        proxy.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20000,
+        });
+
+        assert!(!xray_has_validation_evidence(&proxy));
+
+        proxy.last_check = Some(chrono::Utc::now());
+        assert!(!xray_has_validation_evidence(&proxy));
+
+        proxy.success_count = 1;
+        assert!(xray_has_validation_evidence(&proxy));
+    }
+
+    #[test]
+    fn xray_cooldown_active_only_before_deadline() {
+        let now = Instant::now();
+        let mut proxy = Proxy::new("127.0.0.1", 20000, Protocol::Socks5);
+        proxy.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20000,
+        });
+        let mut cooldowns = HashMap::new();
+        cooldowns.insert(20000, now + Duration::from_secs(60));
+
+        assert!(xray_cooldown_active(&proxy, &cooldowns, now));
+
+        cooldowns.insert(20000, now - Duration::from_secs(1));
+        assert!(!xray_cooldown_active(&proxy, &cooldowns, now));
+
+        proxy.encrypted_state = None;
+        assert!(!xray_cooldown_active(&proxy, &cooldowns, now));
     }
 }

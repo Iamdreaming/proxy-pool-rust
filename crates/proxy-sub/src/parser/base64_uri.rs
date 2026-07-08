@@ -169,10 +169,7 @@ fn parse_uri(uri: &str) -> SubscriptionProxy {
     } else if let Some(rest) = uri.strip_prefix("trojan://") {
         parse_trojan(rest)
     } else if let Some(rest) = uri.strip_prefix("vless://") {
-        // VLESS is not a pool-directly-usable protocol; map to Unknown for now
-        SubscriptionProxy::Unknown {
-            raw_config: format!("vless://{rest}"),
-        }
+        parse_vless(rest)
     } else if let Some(rest) = uri.strip_prefix("socks5://") {
         parse_basic(rest, Protocol::Socks5)
     } else if let Some(rest) = uri.strip_prefix("http://") {
@@ -459,6 +456,103 @@ fn parse_trojan_query(query: &str) -> (Option<String>, Option<String>) {
         }
     }
     (sni, network)
+}
+
+/// Parse `vless://uuid@host:port?...` URI.
+fn parse_vless(rest: &str) -> SubscriptionProxy {
+    let rest = match rest.find('#') {
+        Some(i) => &rest[..i],
+        None => rest,
+    };
+
+    let (uuid, hostport_and_query) = match rest.find('@') {
+        Some(i) => (&rest[..i], &rest[i + 1..]),
+        None => {
+            tracing::warn!("Base64 URI: vless URI missing '@': {rest}");
+            return SubscriptionProxy::Unknown {
+                raw_config: format!("vless://{rest}"),
+            };
+        }
+    };
+
+    let (hostport, query) = match hostport_and_query.find('?') {
+        Some(i) => (&hostport_and_query[..i], &hostport_and_query[i + 1..]),
+        None => (hostport_and_query, ""),
+    };
+
+    let (host, port) = match split_host_port(hostport) {
+        Some(pair) => pair,
+        None => {
+            tracing::warn!("Base64 URI: vless invalid host:port: {hostport}");
+            return SubscriptionProxy::Unknown {
+                raw_config: format!("vless://{rest}"),
+            };
+        }
+    };
+
+    let params = QueryParams::parse(query);
+    let network = params
+        .get("type")
+        .or_else(|| params.get("network"))
+        .unwrap_or_else(|| "tcp".to_string());
+    let security = params.get_non_empty("security").filter(|v| v != "none");
+    let encryption = params
+        .get("encryption")
+        .unwrap_or_else(|| "none".to_string());
+
+    SubscriptionProxy::Vless {
+        host,
+        port,
+        uuid: percent_decode(uuid),
+        encryption,
+        flow: params.get_non_empty("flow"),
+        network,
+        security,
+        sni: params
+            .get_non_empty("sni")
+            .or_else(|| params.get_non_empty("servername")),
+        host_header: params.get_non_empty("host"),
+        path: params.get_non_empty("path"),
+        service_name: params
+            .get_non_empty("serviceName")
+            .or_else(|| params.get_non_empty("service_name")),
+        fingerprint: params
+            .get_non_empty("fp")
+            .or_else(|| params.get_non_empty("fingerprint")),
+        public_key: params
+            .get_non_empty("pbk")
+            .or_else(|| params.get_non_empty("publicKey"))
+            .or_else(|| params.get_non_empty("public-key")),
+        short_id: params
+            .get_non_empty("sid")
+            .or_else(|| params.get_non_empty("shortId"))
+            .or_else(|| params.get_non_empty("short-id")),
+        spider_x: params
+            .get_non_empty("spx")
+            .or_else(|| params.get_non_empty("spiderX"))
+            .or_else(|| params.get_non_empty("spider-x")),
+    }
+}
+
+struct QueryParams {
+    map: std::collections::HashMap<String, String>,
+}
+
+impl QueryParams {
+    fn parse(query: &str) -> Self {
+        let map = url::form_urlencoded::parse(query.as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+        Self { map }
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        self.map.get(key).cloned()
+    }
+
+    fn get_non_empty(&self, key: &str) -> Option<String> {
+        self.get(key).filter(|value| !value.trim().is_empty())
+    }
 }
 
 /// Split `host:port` into `(host, port)`.
@@ -818,14 +912,73 @@ mod tests {
         }
     }
 
-    // -- vless → Unknown --
+    // -- parse vless --
     #[test]
-    fn test_parse_vless_unknown() {
-        let result = parse_uri("vless://uuid@host:443?type=tcp");
-        assert!(matches!(result, SubscriptionProxy::Unknown { .. }));
-        if let SubscriptionProxy::Unknown { raw_config } = &result {
-            assert!(raw_config.starts_with("vless://"));
+    fn test_parse_vless_ws_tls() {
+        let result = parse_uri(
+            "vless://uuid@host.example.com:443?type=ws&security=tls&sni=sni.example.com&host=cdn.example.com&path=%2Fws&flow=xtls-rprx-vision&fp=chrome",
+        );
+        if let SubscriptionProxy::Vless {
+            host,
+            port,
+            uuid,
+            encryption,
+            flow,
+            network,
+            security,
+            sni,
+            host_header,
+            path,
+            fingerprint,
+            ..
+        } = &result
+        {
+            assert_eq!(host, "host.example.com");
+            assert_eq!(*port, 443);
+            assert_eq!(uuid, "uuid");
+            assert_eq!(encryption, "none");
+            assert_eq!(flow.as_deref(), Some("xtls-rprx-vision"));
+            assert_eq!(network, "ws");
+            assert_eq!(security.as_deref(), Some("tls"));
+            assert_eq!(sni.as_deref(), Some("sni.example.com"));
+            assert_eq!(host_header.as_deref(), Some("cdn.example.com"));
+            assert_eq!(path.as_deref(), Some("/ws"));
+            assert_eq!(fingerprint.as_deref(), Some("chrome"));
+        } else {
+            panic!("Expected Vless, got {result:?}");
         }
+    }
+
+    #[test]
+    fn test_parse_vless_reality() {
+        let result = parse_uri(
+            "vless://uuid@reality.example.com:443?type=tcp&security=reality&sni=www.microsoft.com&pbk=public-key&sid=abcd&spx=%2F&fp=chrome",
+        );
+        if let SubscriptionProxy::Vless {
+            security,
+            sni,
+            public_key,
+            short_id,
+            spider_x,
+            fingerprint,
+            ..
+        } = &result
+        {
+            assert_eq!(security.as_deref(), Some("reality"));
+            assert_eq!(sni.as_deref(), Some("www.microsoft.com"));
+            assert_eq!(public_key.as_deref(), Some("public-key"));
+            assert_eq!(short_id.as_deref(), Some("abcd"));
+            assert_eq!(spider_x.as_deref(), Some("/"));
+            assert_eq!(fingerprint.as_deref(), Some("chrome"));
+        } else {
+            panic!("Expected Vless, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_vless_malformed_unknown() {
+        let result = parse_uri("vless://uuid-without-host");
+        assert!(matches!(result, SubscriptionProxy::Unknown { .. }));
     }
 
     // -- Unknown scheme --

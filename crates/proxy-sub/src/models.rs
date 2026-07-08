@@ -41,6 +41,24 @@ pub enum SubscriptionProxy {
         sni: Option<String>,
         network: Option<String>,
     },
+    /// VLESS node.
+    Vless {
+        host: String,
+        port: u16,
+        uuid: String,
+        encryption: String,
+        flow: Option<String>,
+        network: String,
+        security: Option<String>,
+        sni: Option<String>,
+        host_header: Option<String>,
+        path: Option<String>,
+        service_name: Option<String>,
+        fingerprint: Option<String>,
+        public_key: Option<String>,
+        short_id: Option<String>,
+        spider_x: Option<String>,
+    },
     /// Unknown or unsupported protocol.
     Unknown { raw_config: String },
 }
@@ -58,6 +76,7 @@ impl SubscriptionProxy {
             Self::Shadowsocks { host, .. } => Some(host),
             Self::Vmess { host, .. } => Some(host),
             Self::Trojan { host, .. } => Some(host),
+            Self::Vless { host, .. } => Some(host),
             Self::Unknown { .. } => None,
         }
     }
@@ -69,6 +88,7 @@ impl SubscriptionProxy {
             Self::Shadowsocks { port, .. } => Some(*port),
             Self::Vmess { port, .. } => Some(*port),
             Self::Trojan { port, .. } => Some(*port),
+            Self::Vless { port, .. } => Some(*port),
             Self::Unknown { .. } => None,
         }
     }
@@ -80,6 +100,7 @@ impl SubscriptionProxy {
             Self::Shadowsocks { .. } => "ss",
             Self::Vmess { .. } => "vmess",
             Self::Trojan { .. } => "trojan",
+            Self::Vless { .. } => "vless",
             Self::Unknown { .. } => "unknown",
         }
     }
@@ -148,5 +169,25 @@ mod tests {
             sni: None,
         };
         assert_eq!(vmess.dedup_key(), "5.6.7.8:443:vmess");
+
+        let vless = SubscriptionProxy::Vless {
+            host: "8.8.8.8".into(),
+            port: 443,
+            uuid: "uid".into(),
+            encryption: "none".into(),
+            flow: Some("xtls-rprx-vision".into()),
+            network: "tcp".into(),
+            security: Some("reality".into()),
+            sni: Some("example.com".into()),
+            host_header: None,
+            path: None,
+            service_name: None,
+            fingerprint: Some("chrome".into()),
+            public_key: Some("public-key".into()),
+            short_id: Some("abcd".into()),
+            spider_x: Some("/".into()),
+        };
+        assert_eq!(vless.protocol_label(), "vless");
+        assert_eq!(vless.dedup_key(), "8.8.8.8:443:vless");
     }
 }

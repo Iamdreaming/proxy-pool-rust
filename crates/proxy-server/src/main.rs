@@ -34,7 +34,7 @@ use proxy_mcp::{ProxyPoolMcp, ProxyPoolMcpConfig};
 use proxy_sub::ops::{SubscriptionOpsHandle, subscription_ops_loop};
 use proxy_sub::pending::PendingStore;
 use proxy_xray::config_gen::ConfigGenerator;
-use proxy_xray::outbound_sync::OutboundSync;
+use proxy_xray::outbound_sync::{OutboundSync, OutboundSyncOptions, XrayValidationPlan};
 use proxy_xray::port_manager::PortManager;
 use proxy_xray::process::XrayProcess;
 use proxy_xray::xray_client::XrayClient;
@@ -287,6 +287,7 @@ async fn main() -> anyhow::Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("Redis connection for xray failed: {e}"))?;
         let pending_for_xray = PendingStore::new(redis_for_xray);
+        let xray_validation = XrayValidationPlan::from_settings(&settings.xray, &settings.pool);
 
         // 6. Create outbound sync
         let outbound_sync = Arc::new(OutboundSync::new(
@@ -294,9 +295,12 @@ async fn main() -> anyhow::Result<()> {
             store.clone(),
             xray_client,
             port_manager,
-            settings.xray.clone(),
-            connected_rx,
-            xray_status.clone().unwrap_or_else(XrayStatusRegistry::new),
+            OutboundSyncOptions {
+                config: settings.xray.clone(),
+                validation: xray_validation,
+                connected_rx,
+                status_registry: xray_status.clone().unwrap_or_else(XrayStatusRegistry::new),
+            },
         ));
 
         // 7. Spawn reconnect loop

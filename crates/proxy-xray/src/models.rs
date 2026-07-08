@@ -9,7 +9,7 @@ pub struct XrayNode {
     pub tag: String,
     /// Local SOCKS5 port that xray listens on for this node.
     pub local_socks5_port: u16,
-    /// Protocol label: "ss", "vmess", "trojan"
+    /// Protocol label: "ss", "vmess", "trojan", "vless"
     pub protocol_label: String,
     /// Original remote host.
     pub remote_host: String,

@@ -86,6 +86,26 @@ geoip:
 free_pool:
   max_retry: 3
 
+xray:
+  enabled: false
+  binary_path: "xray"
+  api_port: 10085
+  port_range_start: 20000
+  port_range_end: 29999
+  sync_interval_sec: 30
+  max_active_nodes: 5000
+  # Optional xray admission filtering. When validate_targets is empty, xray
+  # reuses pool.effective_validate_targets().
+  validate_timeout_sec: 5
+  validation_attempt_limit_per_cycle: 50
+  validation_failure_cooldown_sec: 3600
+  # validate_targets:
+  #   - url: "https://www.youtube.com/generate_204"
+  #     expected_statuses: [204]
+  #   - url: "https://www.google.com/generate_204"
+  #     expected_statuses: [204]
+  #   - url: "https://www.cloudflare.com/cdn-cgi/trace"
+
 # Optional public subscription source pack.
 # Keep these disabled/commented until an operator previews the source quality.
 # See docs/subscription-source-packs.md for rollout and rollback guidance.

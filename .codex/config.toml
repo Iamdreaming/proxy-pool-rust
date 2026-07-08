@@ -1,3 +1,4 @@
+sandbox_mode = "workspace-write"
 [shell_environment_policy]
 inherit = "core"
 
@@ -12,3 +13,6 @@ args = [
     "http://100.64.0.2:9000/mcp",
     "--allow-http",
 ]
+
+[sandbox_workspace_write]
+network_access = true

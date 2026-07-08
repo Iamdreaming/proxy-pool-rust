@@ -8,17 +8,68 @@ use crate::config_gen::{ConfigGenerator, XrayNodeConfig};
 use crate::models::{SyncStats, XrayNode};
 use crate::port_manager::PortManager;
 use crate::xray_client::XrayClient;
-use proxy_core::config::XraySettings;
+use proxy_core::config::{PoolSettings, XraySettings};
 use proxy_core::models::{EncryptedProxyState, Protocol, Proxy};
 use proxy_core::store::ProxyStore;
+use proxy_core::validator::{ValidationTarget, Validator};
 use proxy_core::xray_status::{XrayNodeIdentity, XrayStatusRegistry};
 use proxy_sub::models::SubscriptionProxy;
 use proxy_sub::pending::PendingStore;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::sync::watch;
+
+/// Admission-validation plan for xray nodes before they become routeable.
+#[derive(Debug, Clone)]
+pub struct XrayValidationPlan {
+    /// Targets that every candidate must pass.
+    pub targets: Vec<ValidationTarget>,
+    /// Request timeout for each validation target.
+    pub timeout_secs: u64,
+    /// Maximum candidate validation attempts per sync cycle.
+    pub attempt_limit_per_cycle: usize,
+    /// Cooldown applied after a candidate fails validation.
+    pub failure_cooldown: Duration,
+}
+
+impl XrayValidationPlan {
+    /// Build a validation plan from xray settings, falling back to pool targets.
+    pub fn from_settings(xray: &XraySettings, pool: &PoolSettings) -> Self {
+        let target_configs = if xray.validate_targets.is_empty() {
+            pool.effective_validate_targets()
+        } else {
+            xray.validate_targets.clone()
+        };
+        let targets = target_configs
+            .into_iter()
+            .map(ValidationTarget::from)
+            .collect();
+
+        Self {
+            targets,
+            timeout_secs: xray
+                .validate_timeout_sec
+                .unwrap_or(pool.validate_timeout_sec),
+            attempt_limit_per_cycle: xray.validation_attempt_limit_per_cycle,
+            failure_cooldown: Duration::from_secs(xray.validation_failure_cooldown_sec),
+        }
+    }
+}
+
+/// Runtime options for `OutboundSync`.
+pub struct OutboundSyncOptions {
+    /// Xray sync settings from service configuration.
+    pub config: XraySettings,
+    /// Admission-validation plan for candidate nodes.
+    pub validation: XrayValidationPlan,
+    /// Watch receiver for xray gRPC connection state.
+    pub connected_rx: watch::Receiver<bool>,
+    /// Shared lifecycle status registry.
+    pub status_registry: XrayStatusRegistry,
+}
 
 /// Background sync: pending encrypted nodes -> active xray outbounds.
 ///
@@ -34,8 +85,10 @@ pub struct OutboundSync {
     xray_client: Arc<RwLock<XrayClient>>,
     port_manager: Arc<PortManager>,
     active_nodes: Arc<RwLock<HashMap<String, XrayNode>>>,
+    validation_failed_until: Arc<RwLock<HashMap<String, Instant>>>,
     status_registry: XrayStatusRegistry,
     config: XraySettings,
+    validation: XrayValidationPlan,
     /// Watch receiver for xray gRPC connection state.
     connected_rx: watch::Receiver<bool>,
 }
@@ -50,9 +103,7 @@ impl OutboundSync {
         proxy_store: Arc<ProxyStore>,
         xray_client: Arc<RwLock<XrayClient>>,
         port_manager: Arc<PortManager>,
-        config: XraySettings,
-        connected_rx: watch::Receiver<bool>,
-        status_registry: XrayStatusRegistry,
+        options: OutboundSyncOptions,
     ) -> Self {
         Self {
             pending_store,
@@ -60,22 +111,25 @@ impl OutboundSync {
             xray_client,
             port_manager,
             active_nodes: Arc::new(RwLock::new(HashMap::new())),
-            status_registry,
-            config,
-            connected_rx,
+            validation_failed_until: Arc::new(RwLock::new(HashMap::new())),
+            status_registry: options.status_registry,
+            config: options.config,
+            validation: options.validation,
+            connected_rx: options.connected_rx,
         }
     }
 
     /// Run a single sync cycle.
     ///
-    /// Iterates over encrypted protocol labels (ss, vmess, trojan), reads
+    /// Iterates over encrypted protocol labels (ss, vmess, trojan, vless), reads
     /// pending nodes from Redis, and activates any that are not yet in the
     /// active set.
     pub async fn sync_once(&self) -> SyncStats {
         let mut stats = SyncStats::default();
-        let labels = ["ss", "vmess", "trojan"];
+        let labels = ["ss", "vmess", "trojan", "vless"];
+        let mut validation_attempts = 0usize;
 
-        for label in labels {
+        'labels: for label in labels {
             let pending = match self
                 .pending_store
                 .get_pending(label, self.config.max_active_nodes)
@@ -105,6 +159,10 @@ impl OutboundSync {
                     }
                 }
 
+                if self.validation_cooldown_active(&tag).await {
+                    continue;
+                }
+
                 // Check capacity.
                 let active_count = {
                     let active = self.active_nodes.read().await;
@@ -126,9 +184,19 @@ impl OutboundSync {
                     SubscriptionProxy::Shadowsocks { .. }
                         | SubscriptionProxy::Vmess { .. }
                         | SubscriptionProxy::Trojan { .. }
+                        | SubscriptionProxy::Vless { .. }
                 ) {
                     continue;
                 }
+
+                if validation_attempts >= self.validation.attempt_limit_per_cycle {
+                    tracing::warn!(
+                        "outbound_sync: validation_attempt_limit_per_cycle ({}) reached",
+                        self.validation.attempt_limit_per_cycle
+                    );
+                    break 'labels;
+                }
+                validation_attempts += 1;
 
                 self.status_registry.mark_pending(&identity).await;
 
@@ -180,12 +248,6 @@ impl OutboundSync {
                     continue;
                 }
 
-                tracing::info!(
-                    "outbound_sync: activated {} -> local port {}",
-                    node_config.tag,
-                    local_port
-                );
-
                 // Build XrayNode record.
                 let xray_node = XrayNode::new(
                     tag.clone(),
@@ -209,7 +271,32 @@ impl OutboundSync {
                     xray_node.remote_host
                 ));
 
-                if let Err(e) = self.proxy_store.add(&proxy).await {
+                let validated_proxy = match self.validate_candidate(&proxy).await {
+                    Some(proxy) => proxy,
+                    None => {
+                        tracing::warn!(
+                            "outbound_sync: validation failed for {} -> local port {}",
+                            node_config.tag,
+                            local_port
+                        );
+                        self.cleanup_xray_config(&node_config).await;
+                        self.port_manager.release(local_port).await;
+                        self.status_registry
+                            .mark_failed(&identity, Some(local_port), "xray validation failed")
+                            .await;
+                        self.mark_validation_failed(tag.clone()).await;
+                        stats.failed += 1;
+                        continue;
+                    }
+                };
+
+                tracing::info!(
+                    "outbound_sync: activated {} -> local port {} after validation",
+                    node_config.tag,
+                    local_port
+                );
+
+                if let Err(e) = self.proxy_store.add(&validated_proxy).await {
                     tracing::warn!("outbound_sync: failed to store proxy: {e}");
                     self.cleanup_xray_config(&node_config).await;
                     self.port_manager.release(local_port).await;
@@ -418,6 +505,29 @@ impl OutboundSync {
             tracing::warn!("outbound_sync: cleanup remove_inbound failed: {e}");
         }
     }
+
+    async fn validate_candidate(&self, proxy: &Proxy) -> Option<Proxy> {
+        let Some(first_target) = self.validation.targets.first() else {
+            tracing::warn!("outbound_sync: no xray validation targets configured");
+            return None;
+        };
+        Validator::new(&first_target.url, self.validation.timeout_secs)
+            .validate_one_against_targets(proxy, &self.validation.targets)
+            .await
+    }
+
+    async fn validation_cooldown_active(&self, tag: &str) -> bool {
+        let now = Instant::now();
+        let cooldowns = self.validation_failed_until.read().await;
+        matches!(cooldowns.get(tag), Some(until) if *until > now)
+    }
+
+    async fn mark_validation_failed(&self, tag: String) {
+        self.validation_failed_until
+            .write()
+            .await
+            .insert(tag, Instant::now() + self.validation.failure_cooldown);
+    }
 }
 
 fn xray_identity(tag: String, node: &SubscriptionProxy) -> XrayNodeIdentity {
@@ -451,6 +561,7 @@ impl XrayNodeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proxy_core::config::ValidationTargetConfig;
 
     #[test]
     fn test_sync_stats_default() {
@@ -459,5 +570,53 @@ mod tests {
         assert_eq!(stats.removed, 0);
         assert_eq!(stats.failed, 0);
         assert_eq!(stats.total_active, 0);
+    }
+
+    #[test]
+    fn validation_plan_falls_back_to_pool_targets() {
+        let xray = XraySettings::default();
+        let pool = PoolSettings {
+            validate_timeout_sec: 11,
+            validate_targets: vec![ValidationTargetConfig {
+                url: "https://pool.example/check".into(),
+                expected_statuses: vec![204],
+            }],
+            ..PoolSettings::default()
+        };
+
+        let plan = XrayValidationPlan::from_settings(&xray, &pool);
+
+        assert_eq!(plan.timeout_secs, 11);
+        assert_eq!(plan.attempt_limit_per_cycle, 50);
+        assert_eq!(plan.failure_cooldown, Duration::from_secs(3600));
+        assert_eq!(plan.targets.len(), 1);
+        assert_eq!(plan.targets[0].url, "https://pool.example/check");
+        assert_eq!(plan.targets[0].expected_statuses, vec![204]);
+    }
+
+    #[test]
+    fn validation_plan_prefers_xray_targets_and_timeout() {
+        let xray = XraySettings {
+            validate_timeout_sec: Some(5),
+            validate_targets: vec![ValidationTargetConfig {
+                url: "https://xray.example/check".into(),
+                expected_statuses: vec![200, 204],
+            }],
+            ..XraySettings::default()
+        };
+        let pool = PoolSettings {
+            validate_timeout_sec: 11,
+            validate_targets: vec![ValidationTargetConfig::from_url(
+                "https://pool.example/check",
+            )],
+            ..PoolSettings::default()
+        };
+
+        let plan = XrayValidationPlan::from_settings(&xray, &pool);
+
+        assert_eq!(plan.timeout_secs, 5);
+        assert_eq!(plan.targets.len(), 1);
+        assert_eq!(plan.targets[0].url, "https://xray.example/check");
+        assert_eq!(plan.targets[0].expected_statuses, vec![200, 204]);
     }
 }

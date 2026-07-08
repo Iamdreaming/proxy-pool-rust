@@ -301,9 +301,7 @@ impl Scheduler {
             .settings
             .effective_validate_targets()
             .into_iter()
-            .map(|target| {
-                ValidationTarget::with_expected_statuses(target.url, target.expected_statuses)
-            })
+            .map(ValidationTarget::from)
             .collect();
         self.validator
             .validate_many_against_targets(candidates, &targets, self.settings.validate_concurrency)

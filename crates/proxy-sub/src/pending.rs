@@ -103,5 +103,28 @@ mod tests {
         assert_eq!(decoded.protocol_label(), "basic");
         assert_eq!(decoded.host(), Some("1.2.3.4"));
         assert_eq!(decoded.port(), Some(1080));
+
+        let vless = SubscriptionProxy::Vless {
+            host: "vless.example.com".into(),
+            port: 443,
+            uuid: "550e8400-e29b-41d4-a716-446655440000".into(),
+            encryption: "none".into(),
+            flow: Some("xtls-rprx-vision".into()),
+            network: "tcp".into(),
+            security: Some("reality".into()),
+            sni: Some("www.microsoft.com".into()),
+            host_header: None,
+            path: None,
+            service_name: None,
+            fingerprint: Some("chrome".into()),
+            public_key: Some("pub-key".into()),
+            short_id: Some("abcd".into()),
+            spider_x: Some("/".into()),
+        };
+        let json = serde_json::to_string(&vless).unwrap();
+        let decoded: SubscriptionProxy = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.protocol_label(), "vless");
+        assert_eq!(decoded.host(), Some("vless.example.com"));
+        assert_eq!(decoded.port(), Some(443));
     }
 }

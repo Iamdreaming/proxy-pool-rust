@@ -6,7 +6,8 @@ use proxy_core::models::Proxy;
 /// Convert a `SubscriptionProxy` into a pool-usable `Proxy`.
 ///
 /// Only `SubscriptionProxy::Basic` variants are convertible — they represent
-/// plain socks5/http/https proxies. Encrypted variants (SS, VMess, Trojan)
+/// plain socks5/http/https proxies. Encrypted variants (SS, VMess, Trojan,
+/// VLESS)
 /// return `None` because they require local relay setup before they can join
 /// the pool.
 ///
@@ -47,6 +48,7 @@ pub fn partition(
             SubscriptionProxy::Shadowsocks { .. }
                 | SubscriptionProxy::Vmess { .. }
                 | SubscriptionProxy::Trojan { .. }
+                | SubscriptionProxy::Vless { .. }
         ) {
             encrypted.push(sub.clone());
         }
@@ -134,6 +136,23 @@ mod tests {
             SubscriptionProxy::Unknown {
                 raw_config: "vless://unsupported".into(),
             },
+            SubscriptionProxy::Vless {
+                host: "5.5.5.5".into(),
+                port: 443,
+                uuid: "uid".into(),
+                encryption: "none".into(),
+                flow: None,
+                network: "tcp".into(),
+                security: None,
+                sni: None,
+                host_header: None,
+                path: None,
+                service_name: None,
+                fingerprint: None,
+                public_key: None,
+                short_id: None,
+                spider_x: None,
+            },
         ];
 
         let (basics, encrypted) = partition(&subs, "https://sub.example.com");
@@ -146,11 +165,12 @@ mod tests {
             Some("subscription:https://sub.example.com")
         );
 
-        assert_eq!(encrypted.len(), 2);
+        assert_eq!(encrypted.len(), 3);
         assert!(matches!(
             encrypted[0],
             SubscriptionProxy::Shadowsocks { .. }
         ));
         assert!(matches!(encrypted[1], SubscriptionProxy::Trojan { .. }));
+        assert!(matches!(encrypted[2], SubscriptionProxy::Vless { .. }));
     }
 }

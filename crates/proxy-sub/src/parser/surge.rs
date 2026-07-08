@@ -3,7 +3,7 @@
 //! Parses the Surge proxy list format:
 //! `Name = type, server, port, key1=value1, key2=value2, ...`
 //!
-//! Supported types: socks5, http, ss, vmess, trojan.
+//! Supported types: socks5, http, ss, vmess, trojan, vless.
 //! Unsupported types map to `Unknown`.
 
 use crate::models::SubscriptionProxy;
@@ -154,6 +154,39 @@ fn parse_line(line: &str) -> SubscriptionProxy {
             sni: params.get("sni"),
             network: params.get("network"),
         },
+        "vless" => {
+            let network = if params.is("ws", "true") {
+                "ws".to_string()
+            } else if params.is("grpc", "true") {
+                "grpc".to_string()
+            } else {
+                params.get("network").unwrap_or_else(|| "tcp".to_string())
+            };
+            let security = if params.is("reality", "true") {
+                Some("reality".to_string())
+            } else if params.is("tls", "true") {
+                Some("tls".to_string())
+            } else {
+                params.get("security").filter(|value| value != "none")
+            };
+            SubscriptionProxy::Vless {
+                host: server,
+                port,
+                uuid: params.get_any(&["uuid", "username"]).unwrap_or_default(),
+                encryption: params.get_or("encryption", "none"),
+                flow: params.get("flow"),
+                network,
+                security,
+                sni: params.get_any(&["sni", "servername"]),
+                host_header: params.get_any(&["ws-host", "host"]),
+                path: params.get("ws-path"),
+                service_name: params.get_any(&["grpc-service-name", "serviceName"]),
+                fingerprint: params.get_any(&["client-fingerprint", "fp", "fingerprint"]),
+                public_key: params.get_any(&["public-key", "pbk", "reality-public-key"]),
+                short_id: params.get_any(&["short-id", "sid"]),
+                spider_x: params.get_any(&["spider-x", "spx"]),
+            }
+        }
         _ => SubscriptionProxy::Unknown {
             raw_config: line.to_string(),
         },
@@ -193,6 +226,11 @@ impl Params {
             .get(key)
             .cloned()
             .unwrap_or_else(|| default.to_string())
+    }
+
+    /// Get the first present parameter from a list of aliases.
+    fn get_any(&self, keys: &[&str]) -> Option<String> {
+        keys.iter().find_map(|key| self.get(key))
     }
 
     /// Check if a parameter equals a specific value.
@@ -397,6 +435,46 @@ mod tests {
             assert!(network.is_none());
         } else {
             panic!("Expected Trojan, got {:?}", proxies[0]);
+        }
+    }
+
+    #[test]
+    fn test_parse_vless_reality() {
+        let parser = SurgeParser;
+        let proxies = parser.parse(
+            "vless-proxy = vless, reality.example.com, 443, username=550e8400-e29b-41d4-a716-446655440000, reality=true, sni=www.microsoft.com, flow=xtls-rprx-vision, public-key=pub-key, short-id=abcd, client-fingerprint=chrome, grpc=true, grpc-service-name=grpc-service",
+        );
+        assert_eq!(proxies.len(), 1);
+        if let SubscriptionProxy::Vless {
+            host,
+            port,
+            uuid,
+            encryption,
+            flow,
+            network,
+            security,
+            sni,
+            service_name,
+            fingerprint,
+            public_key,
+            short_id,
+            ..
+        } = &proxies[0]
+        {
+            assert_eq!(host, "reality.example.com");
+            assert_eq!(*port, 443);
+            assert_eq!(uuid, "550e8400-e29b-41d4-a716-446655440000");
+            assert_eq!(encryption, "none");
+            assert_eq!(flow.as_deref(), Some("xtls-rprx-vision"));
+            assert_eq!(network, "grpc");
+            assert_eq!(security.as_deref(), Some("reality"));
+            assert_eq!(sni.as_deref(), Some("www.microsoft.com"));
+            assert_eq!(service_name.as_deref(), Some("grpc-service"));
+            assert_eq!(fingerprint.as_deref(), Some("chrome"));
+            assert_eq!(public_key.as_deref(), Some("pub-key"));
+            assert_eq!(short_id.as_deref(), Some("abcd"));
+        } else {
+            panic!("Expected Vless, got {:?}", proxies[0]);
         }
     }
 

@@ -1,7 +1,7 @@
 //! Clash YAML subscription parser.
 //!
 //! Extracts the `proxies:` array from Clash/Mihomo YAML config.
-//! Supported types: socks5, http, ss, vmess, trojan.
+//! Supported types: socks5, http, ss, vmess, trojan, vless.
 //! Unsupported types (hysteria2, wireguard, etc.) map to `Unknown`.
 
 use crate::models::SubscriptionProxy;
@@ -37,12 +37,24 @@ struct ClashProxyEntry {
     #[serde(default, rename = "alterId")]
     alter_id: u32,
     #[serde(default)]
+    encryption: Option<String>,
+    #[serde(default)]
+    flow: Option<String>,
+    #[serde(default)]
     network: String,
     #[serde(default)]
     sni: Option<String>,
+    #[serde(default)]
+    servername: Option<String>,
+    #[serde(default, rename = "client-fingerprint")]
+    client_fingerprint: Option<String>,
     // WS opts
     #[serde(default, rename = "ws-opts")]
     ws_opts: Option<WsOpts>,
+    #[serde(default, rename = "grpc-opts")]
+    grpc_opts: Option<GrpcOpts>,
+    #[serde(default, rename = "reality-opts")]
+    reality_opts: Option<RealityOpts>,
     // HTTP fields
     #[serde(default)]
     tls: Option<bool>,
@@ -54,6 +66,20 @@ struct WsOpts {
     path: Option<String>,
     #[serde(default)]
     headers: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrpcOpts {
+    #[serde(default, rename = "grpc-service-name")]
+    grpc_service_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RealityOpts {
+    #[serde(default, rename = "public-key")]
+    public_key: Option<String>,
+    #[serde(default, rename = "short-id")]
+    short_id: Option<String>,
 }
 
 /// Top-level Clash YAML with `proxies` key.
@@ -150,6 +176,53 @@ impl Parser for ClashParser {
                             Some(entry.network.clone())
                         },
                     },
+                    "vless" => {
+                        let (path, host_header) = match &entry.ws_opts {
+                            Some(ws) => (
+                                ws.path.clone(),
+                                ws.headers.as_ref().and_then(|h| h.get("Host").cloned()),
+                            ),
+                            None => (None, None),
+                        };
+                        let network = if entry.network.is_empty() {
+                            "tcp".into()
+                        } else {
+                            entry.network.clone()
+                        };
+                        let security = if entry.reality_opts.is_some() {
+                            Some("reality".into())
+                        } else if entry.tls == Some(true) {
+                            Some("tls".into())
+                        } else {
+                            None
+                        };
+                        SubscriptionProxy::Vless {
+                            host: entry.server.clone(),
+                            port: entry.port,
+                            uuid: entry.uuid.clone(),
+                            encryption: entry.encryption.clone().unwrap_or_else(|| "none".into()),
+                            flow: entry.flow.clone(),
+                            network,
+                            security,
+                            sni: entry.servername.clone().or_else(|| entry.sni.clone()),
+                            host_header,
+                            path,
+                            service_name: entry
+                                .grpc_opts
+                                .as_ref()
+                                .and_then(|opts| opts.grpc_service_name.clone()),
+                            fingerprint: entry.client_fingerprint.clone(),
+                            public_key: entry
+                                .reality_opts
+                                .as_ref()
+                                .and_then(|opts| opts.public_key.clone()),
+                            short_id: entry
+                                .reality_opts
+                                .as_ref()
+                                .and_then(|opts| opts.short_id.clone()),
+                            spider_x: None,
+                        }
+                    }
                     _ => SubscriptionProxy::Unknown {
                         raw_config: format!(
                             "type={}, server={}, port={}",
@@ -216,5 +289,60 @@ mod tests {
 
         // hysteria2 -> Unknown
         assert!(matches!(&proxies[5], SubscriptionProxy::Unknown { .. }));
+    }
+
+    #[test]
+    fn test_clash_parse_vless_reality() {
+        let parser = ClashParser;
+        let content = r#"
+proxies:
+  - name: vless-reality
+    type: vless
+    server: reality.example.com
+    port: 443
+    uuid: 550e8400-e29b-41d4-a716-446655440000
+    network: grpc
+    flow: xtls-rprx-vision
+    servername: www.microsoft.com
+    client-fingerprint: chrome
+    grpc-opts:
+      grpc-service-name: grpc-service
+    reality-opts:
+      public-key: pub-key
+      short-id: abcd
+"#;
+        let proxies = parser.parse(content);
+        assert_eq!(proxies.len(), 1);
+        if let SubscriptionProxy::Vless {
+            host,
+            port,
+            uuid,
+            encryption,
+            flow,
+            network,
+            security,
+            sni,
+            service_name,
+            fingerprint,
+            public_key,
+            short_id,
+            ..
+        } = &proxies[0]
+        {
+            assert_eq!(host, "reality.example.com");
+            assert_eq!(*port, 443);
+            assert_eq!(uuid, "550e8400-e29b-41d4-a716-446655440000");
+            assert_eq!(encryption, "none");
+            assert_eq!(flow.as_deref(), Some("xtls-rprx-vision"));
+            assert_eq!(network, "grpc");
+            assert_eq!(security.as_deref(), Some("reality"));
+            assert_eq!(sni.as_deref(), Some("www.microsoft.com"));
+            assert_eq!(service_name.as_deref(), Some("grpc-service"));
+            assert_eq!(fingerprint.as_deref(), Some("chrome"));
+            assert_eq!(public_key.as_deref(), Some("pub-key"));
+            assert_eq!(short_id.as_deref(), Some("abcd"));
+        } else {
+            panic!("Expected Vless, got {:?}", proxies[0]);
+        }
     }
 }

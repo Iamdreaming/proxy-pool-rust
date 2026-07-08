@@ -1,8 +1,8 @@
 //! V2Ray JSON subscription parser.
 //!
 //! Extracts the `outbounds` array from V2Ray/Xray JSON config.
-//! Supported protocols: socks, http, vmess, shadowsocks, trojan.
-//! Unsupported protocols (vless, etc.) map to `Unknown`.
+//! Supported protocols: socks, http, vmess, shadowsocks, trojan, vless.
+//! Unsupported protocols map to `Unknown`.
 
 use crate::models::SubscriptionProxy;
 use crate::parser::Parser;
@@ -87,12 +87,7 @@ fn parse_outbound(ob: &Value) -> Option<SubscriptionProxy> {
         "vmess" => parse_vmess(&settings, stream_settings),
         "shadowsocks" => parse_shadowsocks(&settings),
         "trojan" => parse_trojan(&settings, stream_settings),
-        "vless" => Some(SubscriptionProxy::Unknown {
-            raw_config: format!(
-                "vless: {}",
-                ob.get("tag").and_then(|v| v.as_str()).unwrap_or("unknown")
-            ),
-        }),
+        "vless" => parse_vless(&settings, stream_settings),
         _ => Some(SubscriptionProxy::Unknown {
             raw_config: format!(
                 "{}: {}",
@@ -113,6 +108,81 @@ fn parse_socks(settings: &Value) -> Option<SubscriptionProxy> {
         host,
         port,
         protocol: Protocol::Socks5,
+    })
+}
+
+/// Parse a VLESS outbound into `SubscriptionProxy::Vless`.
+fn parse_vless(settings: &Value, stream_settings: Option<&Value>) -> Option<SubscriptionProxy> {
+    let (host, port, user) = if let Some(vnext) = settings
+        .get("vnext")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_object())
+    {
+        let host = vnext.get("address").and_then(|v| v.as_str())?.to_string();
+        let port = value_as_u16(vnext.get("port")?)?;
+        let user = vnext
+            .get("users")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_object());
+        (host, port, user)
+    } else {
+        let host = settings
+            .get("address")
+            .and_then(|v| v.as_str())?
+            .to_string();
+        let port = value_as_u16(settings.get("port")?)?;
+        (host, port, settings.as_object())
+    };
+
+    let uuid = user
+        .and_then(|u| u.get("id"))
+        .or_else(|| settings.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let encryption = user
+        .and_then(|u| u.get("encryption"))
+        .or_else(|| settings.get("encryption"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("none")
+        .to_string();
+    let flow = user
+        .and_then(|u| u.get("flow"))
+        .or_else(|| settings.get("flow"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+
+    let (network, path_or_service, host_header, tls_sni) = extract_stream_settings(stream_settings);
+    let (path, service_name) = if network == "grpc" {
+        (None, path_or_service)
+    } else {
+        (
+            path_or_service,
+            stream_string(stream_settings, "grpcSettings", "serviceName"),
+        )
+    };
+
+    Some(SubscriptionProxy::Vless {
+        host,
+        port,
+        uuid,
+        encryption,
+        flow,
+        network,
+        security: stream_security(stream_settings),
+        sni: stream_server_name(stream_settings).or(tls_sni),
+        host_header,
+        path,
+        service_name,
+        fingerprint: stream_string(stream_settings, "tlsSettings", "fingerprint")
+            .or_else(|| stream_string(stream_settings, "realitySettings", "fingerprint")),
+        public_key: stream_string(stream_settings, "realitySettings", "publicKey")
+            .or_else(|| stream_string(stream_settings, "realitySettings", "password")),
+        short_id: stream_string(stream_settings, "realitySettings", "shortId"),
+        spider_x: stream_string(stream_settings, "realitySettings", "spiderX"),
     })
 }
 
@@ -276,6 +346,33 @@ fn extract_stream_settings(
         .map(|s| s.to_string());
 
     (network, path, host_header, sni)
+}
+
+fn value_as_u16(value: &Value) -> Option<u16> {
+    value
+        .as_u64()
+        .and_then(|n| u16::try_from(n).ok())
+        .or_else(|| value.as_str().and_then(|s| s.parse::<u16>().ok()))
+}
+
+fn stream_security(ss: Option<&Value>) -> Option<String> {
+    ss.and_then(|v| v.get("security"))
+        .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty() && *value != "none")
+        .map(ToString::to_string)
+}
+
+fn stream_server_name(ss: Option<&Value>) -> Option<String> {
+    stream_string(ss, "tlsSettings", "serverName")
+        .or_else(|| stream_string(ss, "realitySettings", "serverName"))
+}
+
+fn stream_string(ss: Option<&Value>, section: &str, key: &str) -> Option<String> {
+    ss.and_then(|v| v.get(section))
+        .and_then(|v| v.get(key))
+        .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 #[cfg(test)]
@@ -501,14 +598,66 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_vless_unknown() {
+    fn test_parse_vless() {
         let parser = V2rayJsonParser;
-        let json = r#"{"outbounds": [{"protocol": "vless", "settings": {"vnext": [{"address": "10.0.0.9", "port": 443}]}, "tag": "vless-proxy"}]}"#;
+        let json = r#"{"outbounds": [{"protocol": "vless", "settings": {"vnext": [{"address": "10.0.0.9", "port": 443, "users": [{"id": "550e8400-e29b-41d4-a716-446655440000", "encryption": "none", "flow": "xtls-rprx-vision"}]}]}, "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {"serverName": "vless.example.com", "fingerprint": "chrome"}, "wsSettings": {"path": "/vless", "headers": {"Host": "cdn.example.com"}}}, "tag": "vless-proxy"}]}"#;
         let proxies = parser.parse(json);
         assert_eq!(proxies.len(), 1);
-        assert!(matches!(&proxies[0], SubscriptionProxy::Unknown { .. }));
-        if let SubscriptionProxy::Unknown { raw_config } = &proxies[0] {
-            assert!(raw_config.starts_with("vless:"));
+        if let SubscriptionProxy::Vless {
+            host,
+            port,
+            uuid,
+            encryption,
+            flow,
+            network,
+            security,
+            sni,
+            host_header,
+            path,
+            fingerprint,
+            ..
+        } = &proxies[0]
+        {
+            assert_eq!(host, "10.0.0.9");
+            assert_eq!(*port, 443);
+            assert_eq!(uuid, "550e8400-e29b-41d4-a716-446655440000");
+            assert_eq!(encryption, "none");
+            assert_eq!(flow.as_deref(), Some("xtls-rprx-vision"));
+            assert_eq!(network, "ws");
+            assert_eq!(security.as_deref(), Some("tls"));
+            assert_eq!(sni.as_deref(), Some("vless.example.com"));
+            assert_eq!(host_header.as_deref(), Some("cdn.example.com"));
+            assert_eq!(path.as_deref(), Some("/vless"));
+            assert_eq!(fingerprint.as_deref(), Some("chrome"));
+        } else {
+            panic!("Expected Vless, got {:?}", proxies[0]);
+        }
+    }
+
+    #[test]
+    fn test_parse_vless_reality_direct_settings() {
+        let parser = V2rayJsonParser;
+        let json = r#"{"outbounds": [{"protocol": "vless", "settings": {"address": "reality.example.com", "port": "443", "id": "uid", "encryption": "none"}, "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {"serverName": "www.microsoft.com", "fingerprint": "chrome", "publicKey": "pub-key", "shortId": "abcd", "spiderX": "/"}}}]}"#;
+        let proxies = parser.parse(json);
+        assert_eq!(proxies.len(), 1);
+        if let SubscriptionProxy::Vless {
+            host,
+            security,
+            sni,
+            public_key,
+            short_id,
+            spider_x,
+            ..
+        } = &proxies[0]
+        {
+            assert_eq!(host, "reality.example.com");
+            assert_eq!(security.as_deref(), Some("reality"));
+            assert_eq!(sni.as_deref(), Some("www.microsoft.com"));
+            assert_eq!(public_key.as_deref(), Some("pub-key"));
+            assert_eq!(short_id.as_deref(), Some("abcd"));
+            assert_eq!(spider_x.as_deref(), Some("/"));
+        } else {
+            panic!("Expected Vless, got {:?}", proxies[0]);
         }
     }
 

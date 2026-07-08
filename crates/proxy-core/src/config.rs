@@ -64,6 +64,18 @@ pub struct XraySettings {
     /// Maximum number of active encrypted nodes.
     #[serde(default = "default_xray_max_nodes")]
     pub max_active_nodes: usize,
+    /// Optional timeout for xray node admission validation. Defaults to pool timeout.
+    #[serde(default)]
+    pub validate_timeout_sec: Option<u64>,
+    /// Maximum xray admission-validation attempts per sync cycle.
+    #[serde(default = "default_xray_validation_attempt_limit")]
+    pub validation_attempt_limit_per_cycle: usize,
+    /// Cooldown before retrying an xray node that failed validation.
+    #[serde(default = "default_xray_validation_failure_cooldown")]
+    pub validation_failure_cooldown_sec: u64,
+    /// Optional xray-specific validation targets. Empty means use pool targets.
+    #[serde(default)]
+    pub validate_targets: Vec<ValidationTargetConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -466,6 +478,9 @@ pub fn validate_settings(settings: &Settings) -> Result<(), SettingsEditError> {
     for (idx, target) in settings.pool.validate_targets.iter().enumerate() {
         validate_non_empty(&format!("pool.validate_targets[{idx}].url"), &target.url)?;
     }
+    for (idx, target) in settings.xray.validate_targets.iter().enumerate() {
+        validate_non_empty(&format!("xray.validate_targets[{idx}].url"), &target.url)?;
+    }
     for (idx, url) in settings.subscription.urls.iter().enumerate() {
         validate_non_empty(&format!("subscription.urls[{idx}]"), url)?;
     }
@@ -513,6 +528,21 @@ pub fn validate_settings(settings: &Settings) -> Result<(), SettingsEditError> {
     if settings.pool.validate_timeout_sec == 0 {
         return Err(SettingsEditError::Validation(
             "pool.validate_timeout_sec must be greater than 0".into(),
+        ));
+    }
+    if settings.xray.validate_timeout_sec == Some(0) {
+        return Err(SettingsEditError::Validation(
+            "xray.validate_timeout_sec must be greater than 0 when set".into(),
+        ));
+    }
+    if settings.xray.validation_attempt_limit_per_cycle == 0 {
+        return Err(SettingsEditError::Validation(
+            "xray.validation_attempt_limit_per_cycle must be greater than 0".into(),
+        ));
+    }
+    if settings.xray.validation_failure_cooldown_sec == 0 {
+        return Err(SettingsEditError::Validation(
+            "xray.validation_failure_cooldown_sec must be greater than 0".into(),
         ));
     }
     if settings.subscription.fetch_timeout_sec == 0 {
@@ -794,6 +824,12 @@ fn default_xray_sync_interval() -> u64 {
 fn default_xray_max_nodes() -> usize {
     5000
 }
+fn default_xray_validation_attempt_limit() -> usize {
+    50
+}
+fn default_xray_validation_failure_cooldown() -> u64 {
+    3600
+}
 
 // Default impls for sub-configs that need explicit Default
 impl Default for GatewaySettings {
@@ -970,6 +1006,47 @@ mod tests {
                 expected_statuses: vec![401],
             }]
         );
+    }
+
+    #[test]
+    fn xray_settings_validation_fields_have_safe_defaults() {
+        let settings = XraySettings::default();
+
+        assert_eq!(settings.validate_timeout_sec, None);
+        assert_eq!(settings.validation_attempt_limit_per_cycle, 50);
+        assert_eq!(settings.validation_failure_cooldown_sec, 3600);
+        assert!(settings.validate_targets.is_empty());
+    }
+
+    #[test]
+    fn validate_settings_rejects_invalid_xray_validation_fields() {
+        let mut settings = Settings::default();
+        settings.xray.validate_timeout_sec = Some(0);
+        let error = validate_settings(&settings).unwrap_err();
+        assert!(error.to_string().contains("xray.validate_timeout_sec"));
+
+        let mut settings = Settings::default();
+        settings.xray.validation_attempt_limit_per_cycle = 0;
+        let error = validate_settings(&settings).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("xray.validation_attempt_limit_per_cycle")
+        );
+
+        let mut settings = Settings::default();
+        settings.xray.validation_failure_cooldown_sec = 0;
+        let error = validate_settings(&settings).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("xray.validation_failure_cooldown_sec")
+        );
+
+        let mut settings = Settings::default();
+        settings.xray.validate_targets = vec![ValidationTargetConfig::from_url("   ")];
+        let error = validate_settings(&settings).unwrap_err();
+        assert!(error.to_string().contains("xray.validate_targets[0].url"));
     }
 
     #[test]

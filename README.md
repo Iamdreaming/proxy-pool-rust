@@ -11,7 +11,7 @@
 - 🌐 **代理网关**：纯 Rust 实现 HTTP CONNECT + SOCKS5 代理网关
 - 🔗 **链式代理**：WarpChain 池代理 → WARP → 目标，双重跳转出口
 - 🛡️ **Circuit Breaker**：三态熔断器自动剔除不可用代理
-- 🔐 **xray 集成**：SS/VMess/Trojan 加密节点自动激活，gRPC 自动重连
+- 🔐 **xray 集成**：SS/VMess/Trojan/VLESS 加密节点自动激活，gRPC 自动重连
 - 📡 **订阅管理**：GitHub 自动发现 + URL 聚合 + Base64/YAML/Clash 解析
 - 🔌 **MCP Server**：内置 MCP 服务，供 LLM 直接调试代理池
 - ☁️ **WARP 集成**：Cloudflare WARP 端点优选 + 健康检查 + 负载均衡
@@ -186,7 +186,7 @@ diagnosing an older deployment.
 
 ## xray 加密代理集成
 
-启用 xray 集成后，系统自动管理 SS/VMess/Trojan 加密节点：
+启用 xray 集成后，系统自动管理 SS/VMess/Trojan/VLESS 加密节点：
 
 1. 订阅源拉取加密节点 → 写入 Redis 待入池队列
 2. OutboundSync 循环读取待入池节点 → 分配本地 SOCKS5 端口 → 配置 xray-core
