@@ -343,7 +343,20 @@ fn parse_vmess(rest: &str) -> SubscriptionProxy {
     };
 
     let host = get_str("add", "hnb");
-    let port_str = get_str("port", "pnt");
+    // vmess share links use either a string or a numeric port.
+    let port: u16 = match obj.get("port").or_else(|| obj.get("pnt")).and_then(|v| {
+        v.as_str()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| v.as_u64().and_then(|n| u16::try_from(n).ok()))
+    }) {
+        Some(p) => p,
+        None => {
+            tracing::warn!("Base64 URI: vmess invalid or missing port");
+            return SubscriptionProxy::Unknown {
+                raw_config: format!("vmess://{rest}"),
+            };
+        }
+    };
     let uuid = get_str("id", "uid");
     let alter_id: u32 = obj
         .get("aid")
@@ -369,16 +382,6 @@ fn parse_vmess(rest: &str) -> SubscriptionProxy {
     let path = get_str_opt("path", "path");
     let host_header = get_str_opt("host", "host");
     let sni = get_str_opt("sni", "sni");
-
-    let port: u16 = match port_str.parse() {
-        Ok(p) => p,
-        Err(_) => {
-            tracing::warn!("Base64 URI: vmess invalid port: {port_str}");
-            return SubscriptionProxy::Unknown {
-                raw_config: format!("vmess://{rest}"),
-            };
-        }
-    };
 
     SubscriptionProxy::Vmess {
         host,
@@ -573,23 +576,32 @@ fn split_host_port(s: &str) -> Option<(String, u16)> {
 }
 
 /// Minimal percent-decode for trojan passwords.
+///
+/// Decodes `%XX` escapes into bytes and interprets the result as UTF-8
+/// (lossy), so multi-byte credentials such as `%E4%B8%AD` round-trip
+/// correctly instead of being split into per-byte Latin-1 chars.
 fn percent_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let hex: String = chars.by_ref().take(2).collect();
-            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                result.push(byte as char);
-            } else {
-                result.push('%');
-                result.push_str(&hex);
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            // Parse the two hex bytes directly instead of slicing `s`: a bare
+            // '%' followed by a multi-byte UTF-8 char (e.g. `%中`) would make
+            // `&s[i + 1..i + 3]` land mid-character and panic on the non-char
+            // boundary. ASCII hex digits round-trip through `u8 as char`.
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
             }
-        } else {
-            result.push(c);
         }
+        out.push(bytes[i]);
+        i += 1;
     }
-    result
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -796,6 +808,29 @@ mod tests {
             assert_eq!(path.as_deref(), Some("/v2ray"));
             assert_eq!(host_header.as_deref(), Some("vmess.example.com"));
             assert_eq!(sni.as_deref(), Some("sni.example.com"));
+        } else {
+            panic!("Expected Vmess, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_vmess_numeric_port() {
+        // Many real-world vmess links encode port as a JSON number, not a string.
+        let json = serde_json::json!({
+            "v": "2",
+            "ps": "numeric-port",
+            "add": "10.0.0.5",
+            "port": 443,
+            "id": "a3482e88-686a-4a58-8126-99c9df64b7bf",
+            "aid": 0,
+            "net": "tcp"
+        });
+        let encoded = STANDARD.encode(json.to_string());
+        let uri = format!("vmess://{encoded}");
+        let result = parse_uri(&uri);
+        if let SubscriptionProxy::Vmess { host, port, .. } = &result {
+            assert_eq!(host, "10.0.0.5");
+            assert_eq!(*port, 443);
         } else {
             panic!("Expected Vmess, got {result:?}");
         }
@@ -1087,6 +1122,13 @@ mod tests {
         assert_eq!(percent_decode("no%2Fencode"), "no/encode");
         assert_eq!(percent_decode("plain"), "plain");
         assert_eq!(percent_decode("%ZZinvalid"), "%ZZinvalid");
+        // Multi-byte UTF-8 must round-trip (中 = %E4%B8%AD).
+        assert_eq!(percent_decode("%E4%B8%AD"), "中");
+        assert_eq!(percent_decode("p%40ss"), "p@ss");
+        // A bare '%' before a multi-byte UTF-8 char must not panic on a
+        // non-char-boundary slice; it is passed through unchanged.
+        assert_eq!(percent_decode("%中"), "%中");
+        assert_eq!(percent_decode("a%🌐b"), "a%🌐b");
     }
 
     // -- SS with plugin query --

@@ -51,7 +51,7 @@ impl XrayNode {
 
     /// Routing rule tag matching inbound to outbound.
     pub fn routing_rule_tag(&self) -> String {
-        self.inbound_tag()
+        crate::config_gen::routing_rule_tag(&self.inbound_tag())
     }
 }
 

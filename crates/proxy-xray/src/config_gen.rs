@@ -52,7 +52,7 @@ impl ConfigGenerator {
         let config = json!({
             "api": {
                 "tag": "api",
-                "services": ["HandlerService"]
+                "services": ["HandlerService", "RoutingService"]
             },
             "inbounds": [
                 {
@@ -154,9 +154,15 @@ pub fn generate_inbound_json(tag: &str, local_port: u16) -> Value {
 pub fn generate_routing_rule_json(inbound_tag: &str, outbound_tag: &str) -> Value {
     json!({
         "type": "field",
+        "ruleTag": routing_rule_tag(inbound_tag),
         "inboundTag": [inbound_tag],
         "outboundTag": outbound_tag
     })
+}
+
+/// The `ruleTag` used to identify (and later remove) a node's routing rule.
+pub fn routing_rule_tag(inbound_tag: &str) -> String {
+    format!("rule-{inbound_tag}")
 }
 
 /// Generate an outbound JSON config for the given `SubscriptionProxy`.
@@ -687,5 +693,20 @@ mod tests {
         assert_eq!(rr["type"], "field");
         assert_eq!(rr["inboundTag"], json!(["in-tag"]));
         assert_eq!(rr["outboundTag"], "out-tag");
+        // ruleTag must be present so the rule can later be removed by tag.
+        assert_eq!(rr["ruleTag"], "rule-in-tag");
+        assert_eq!(routing_rule_tag("in-tag"), "rule-in-tag");
+    }
+
+    #[test]
+    fn test_bootstrap_config_enables_routing_service() {
+        let config = ConfigGenerator::generate_bootstrap_config(10085);
+        let value: Value = serde_json::from_str(&config).unwrap();
+        let services = value["api"]["services"].as_array().unwrap();
+        // RoutingService is required for runtime `adrules`/`rmrules`; without it
+        // per-node routing rules cannot be installed and encrypted nodes egress
+        // through the bootstrap `direct` outbound.
+        assert!(services.iter().any(|s| s == "HandlerService"));
+        assert!(services.iter().any(|s| s == "RoutingService"));
     }
 }

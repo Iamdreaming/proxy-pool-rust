@@ -120,6 +120,40 @@ fn record_failure_sample(proxy: &mut Proxy, error: &'static str) {
         .record_failure(chrono::Utc::now(), error);
 }
 
+/// Merge accumulated validation history from an existing pool record into an
+/// incoming proxy when the incoming one carries no history of its own.
+///
+/// Subscription/fetch refresh re-adds already-known proxies with zeroed
+/// counters; without this carry-forward every refresh cycle would wipe scores,
+/// quality history, and circuit state (B3). A genuinely-validated incoming
+/// proxy (non-zero counts or a `last_check`) keeps its own fresh stats.
+fn carry_forward_history(incoming: &Proxy, existing: Option<&Proxy>) -> Proxy {
+    let mut merged = incoming.clone();
+    let incoming_has_history =
+        incoming.last_check.is_some() || incoming.success_count > 0 || incoming.fail_count > 0;
+    if incoming_has_history {
+        return merged;
+    }
+    let Some(prev) = existing else {
+        return merged;
+    };
+    merged.success_count = prev.success_count;
+    merged.fail_count = prev.fail_count;
+    merged.last_check = prev.last_check;
+    merged.latency_ms = prev.latency_ms;
+    merged.anonymity = merged.anonymity.or(prev.anonymity);
+    merged.quality_history = prev.quality_history.clone();
+    merged.circuit_open = prev.circuit_open;
+    merged.circuit_open_until = prev.circuit_open_until;
+    merged.country = merged.country.or_else(|| prev.country.clone());
+    merged.country_name = merged.country_name.or_else(|| prev.country_name.clone());
+    merged.is_overseas = prev.is_overseas || merged.is_overseas;
+    merged.warp_chain_ok = prev.warp_chain_ok;
+    merged.warp_chain_latency_ms = prev.warp_chain_latency_ms;
+    merged.warp_chain_last_test = prev.warp_chain_last_test;
+    merged
+}
+
 fn retention_decision(proxy: &Proxy, score: f64, min_score: f64) -> RetentionDecision {
     if hard_failure_evict(proxy) {
         RetentionDecision::HardFailureEvict
@@ -237,6 +271,22 @@ fn weighted_random_index(proxies: &[Proxy], score_fn: &impl Fn(&Proxy) -> f64) -
     Some(proxies.len() - 1)
 }
 
+/// Restrict a score-descending candidate list to its top slice, then draw
+/// `limit` weighted-random picks from that slice.
+///
+/// `sorted_desc` must already be ordered by descending score (as returned by a
+/// Redis `ZREVRANGE`). At least `limit` candidates are retained even when
+/// `top_k` is smaller.
+fn top_candidates(
+    mut sorted_desc: Vec<Proxy>,
+    top_k: usize,
+    limit: usize,
+    score_fn: impl Fn(&Proxy) -> f64,
+) -> Vec<Proxy> {
+    sorted_desc.truncate(top_k.max(limit));
+    weighted_random_choices(&sorted_desc, limit, score_fn)
+}
+
 fn redis_key(protocol: &Protocol) -> String {
     format!("proxies:{protocol}")
 }
@@ -278,14 +328,18 @@ impl ProxyStore {
     /// Removes any existing entry for the same logical proxy (host:port:protocol)
     /// before inserting, so that stale stats don't create duplicate ZSET members.
     pub async fn add(&self, proxy: &Proxy) -> anyhow::Result<()> {
-        self.remove_existing(&proxy.protocol, proxy).await?;
-        let mut proxy = proxy.clone();
+        let existing = self.take_existing(&proxy.protocol, proxy).await?;
+        let mut merged = carry_forward_history(proxy, existing.as_ref());
+
+        // Only record a sample for a genuinely-validated incoming proxy; keying
+        // this on the original input (not `merged`) avoids adding a spurious
+        // sample when a carried-forward `last_check` is present.
         if proxy.last_check.is_some() {
-            record_success_sample(&mut proxy);
+            record_success_sample(&mut merged);
         }
-        let s = score(&proxy, &self.weights);
-        let member = serde_json::to_string(&proxy)?;
-        let key = redis_key(&proxy.protocol);
+        let s = score(&merged, &self.weights);
+        let member = serde_json::to_string(&merged)?;
+        let key = redis_key(&merged.protocol);
         let mut conn = self.conn();
         let _: () = conn.zadd(&key, &member, s).await?;
         Ok(())
@@ -352,6 +406,38 @@ impl ProxyStore {
         }
         let score_fn = |p: &Proxy| score(p, &self.weights);
         Ok(weighted_random_choices(&proxies, limit, score_fn))
+    }
+
+    /// Get weighted-random proxies drawn only from the top-`top_k` highest-scored
+    /// (non-circuit-open) entries.
+    ///
+    /// Selecting from the whole pool lets a large mass of low-score proxies
+    /// dominate the weighted draw; restricting to the top slice keeps the
+    /// gateway biased toward proxies that actually work while still spreading
+    /// load across several of them.
+    pub async fn get_top_candidates(
+        &self,
+        protocol: Protocol,
+        top_k: usize,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Proxy>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let key = redis_key(&protocol);
+        let mut conn = self.conn();
+        // zrevrange returns members in descending stored-score order.
+        let members: Vec<String> = conn.zrevrange(&key, 0, -1).await?;
+        let proxies: Vec<Proxy> = members
+            .iter()
+            .filter_map(|m| serde_json::from_str::<Proxy>(m).ok())
+            .filter(|p| !circuit::is_circuit_open(p))
+            .collect();
+        if proxies.is_empty() {
+            return Ok(Vec::new());
+        }
+        let score_fn = |p: &Proxy| score(p, &self.weights);
+        Ok(top_candidates(proxies, top_k, limit, score_fn))
     }
 
     /// Get overseas proxies (is_overseas == true).
@@ -578,6 +664,39 @@ impl ProxyStore {
         Ok(found)
     }
 
+    /// Remove all stored members matching this proxy's host:port:protocol and
+    /// return the richest matched record (most validation samples), if any.
+    ///
+    /// Used by `add` to carry accumulated history forward across re-adds.
+    async fn take_existing(
+        &self,
+        protocol: &Protocol,
+        proxy: &Proxy,
+    ) -> anyhow::Result<Option<Proxy>> {
+        let key = redis_key(protocol);
+        let mut conn = self.conn();
+        let members: Vec<String> = conn.zrange(&key, 0, -1).await?;
+        let mut richest: Option<Proxy> = None;
+        for m in members {
+            if let Ok(stored) = serde_json::from_str::<Proxy>(&m)
+                && stored.host == proxy.host
+                && stored.port == proxy.port
+                && stored.protocol == *protocol
+            {
+                let _: () = conn.zrem(&key, &m).await?;
+                let samples = stored.success_count + stored.fail_count;
+                let keep = match &richest {
+                    Some(cur) => samples >= cur.success_count + cur.fail_count,
+                    None => true,
+                };
+                if keep {
+                    richest = Some(stored);
+                }
+            }
+        }
+        Ok(richest)
+    }
+
     // -----------------------------------------------------------------------
     // Filtered query methods
     // -----------------------------------------------------------------------
@@ -701,6 +820,54 @@ mod tests {
     }
 
     #[test]
+    fn carry_forward_history_preserves_stats_on_fresh_readd() {
+        // Simulate a subscription refresh re-adding an already-validated proxy
+        // with a fresh, zeroed record.
+        let mut existing = make_proxy("1.1.1.1", 80);
+        existing.success_count = 12;
+        existing.fail_count = 3;
+        existing.latency_ms = Some(150.0);
+        existing.last_check = Some(chrono::Utc::now());
+        existing.circuit_open = true;
+        existing
+            .quality_history
+            .record_success(chrono::Utc::now(), Some(150.0));
+
+        let mut incoming = make_proxy("1.1.1.1", 80);
+        incoming.source = Some("subscription:https://sub.example".into());
+
+        let merged = carry_forward_history(&incoming, Some(&existing));
+        assert_eq!(merged.success_count, 12);
+        assert_eq!(merged.fail_count, 3);
+        assert_eq!(merged.latency_ms, Some(150.0));
+        assert!(merged.last_check.is_some());
+        assert!(merged.circuit_open);
+        assert!(!merged.quality_history.is_empty());
+        // Incoming identity/source is kept.
+        assert_eq!(
+            merged.source.as_deref(),
+            Some("subscription:https://sub.example")
+        );
+    }
+
+    #[test]
+    fn carry_forward_history_keeps_validated_incoming_stats() {
+        let mut existing = make_proxy("1.1.1.1", 80);
+        existing.success_count = 12;
+        existing.fail_count = 0;
+
+        // A freshly-validated incoming proxy carries its own history and must win.
+        let mut incoming = make_proxy("1.1.1.1", 80);
+        incoming.success_count = 1;
+        incoming.fail_count = 4;
+        incoming.last_check = Some(chrono::Utc::now());
+
+        let merged = carry_forward_history(&incoming, Some(&existing));
+        assert_eq!(merged.success_count, 1);
+        assert_eq!(merged.fail_count, 4);
+    }
+
+    #[test]
     fn weighted_random_choices_respects_limit_and_no_replacement() {
         let proxies = vec![
             make_proxy("1.1.1.1", 80),
@@ -712,6 +879,35 @@ mod tests {
 
         assert_eq!(selected.len(), 2);
         assert_ne!(selected[0].dedup_key(), selected[1].dedup_key());
+    }
+
+    #[test]
+    fn top_candidates_only_draws_from_top_slice() {
+        // 10 proxies in descending-score order; only the first 3 are eligible
+        // when top_k = 3. Every draw must come from that slice.
+        let sorted_desc: Vec<Proxy> = (0..10).map(|i| make_proxy("10.0.0.1", 1000 + i)).collect();
+        let allowed: std::collections::HashSet<String> =
+            sorted_desc[..3].iter().map(|p| p.dedup_key()).collect();
+
+        for _ in 0..50 {
+            let picked = top_candidates(sorted_desc.clone(), 3, 2, |_| 1.0);
+            assert_eq!(picked.len(), 2);
+            for p in &picked {
+                assert!(
+                    allowed.contains(&p.dedup_key()),
+                    "picked {} outside top-3 slice",
+                    p.dedup_key()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn top_candidates_keeps_at_least_limit() {
+        // top_k smaller than limit must still yield `limit` picks.
+        let sorted_desc: Vec<Proxy> = (0..5).map(|i| make_proxy("10.0.0.2", 2000 + i)).collect();
+        let picked = top_candidates(sorted_desc, 1, 3, |_| 1.0);
+        assert_eq!(picked.len(), 3);
     }
 
     #[test]

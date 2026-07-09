@@ -239,7 +239,10 @@ impl GatewayAttemptStatus {
 }
 
 const METRIC_CELL_COUNT: usize = 3 * 5 * 3;
-const FREE_POOL_CANDIDATE_LIMIT: usize = 4;
+const FREE_POOL_CANDIDATE_LIMIT: usize = 8;
+/// Gateway pool candidates are drawn from this many highest-scored proxies so a
+/// large mass of low-score entries cannot dominate the weighted selection.
+const POOL_TOP_CANDIDATE_POOL: usize = 50;
 const POOL_PROXY_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 const XRAY_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 
@@ -653,7 +656,11 @@ impl UpstreamSelector {
 
     async fn try_pool_candidates(&self, protocol: &str, limit: usize) -> Vec<Proxy> {
         let proto = Protocol::from_str_loose(protocol).unwrap_or(Protocol::Http);
-        match self.store.get_random_candidates(proto, limit).await {
+        match self
+            .store
+            .get_top_candidates(proto, POOL_TOP_CANDIDATE_POOL, limit)
+            .await
+        {
             Ok(proxies) => {
                 let failed_until = self.pool_proxy_failed_until.read().await;
                 let now = Instant::now();

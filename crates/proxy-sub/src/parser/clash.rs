@@ -20,7 +20,7 @@ struct ClashProxyEntry {
     proxy_type: String,
     #[serde(default)]
     server: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_port")]
     port: u16,
     // SS fields
     #[serde(default)]
@@ -29,8 +29,9 @@ struct ClashProxyEntry {
     password: String,
     #[serde(default)]
     plugin: Option<String>,
+    // Clash emits plugin-opts as a map, not a string; accept any YAML value.
     #[serde(default, rename = "plugin-opts")]
-    plugin_opts: Option<String>,
+    plugin_opts: Option<serde_yaml::Value>,
     // VMess fields
     #[serde(default)]
     uuid: String,
@@ -89,6 +90,57 @@ struct ClashConfig {
     proxies: Vec<ClashProxyEntry>,
 }
 
+/// Deserialize a port that may be a YAML integer or a quoted string.
+fn de_port<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    match serde_yaml::Value::deserialize(deserializer)? {
+        serde_yaml::Value::Number(n) => n
+            .as_u64()
+            .and_then(|v| u16::try_from(v).ok())
+            .ok_or_else(|| serde::de::Error::custom("port out of range")),
+        serde_yaml::Value::String(s) => s.trim().parse().map_err(serde::de::Error::custom),
+        serde_yaml::Value::Null => Ok(0),
+        other => Err(serde::de::Error::custom(format!(
+            "invalid port value: {other:?}"
+        ))),
+    }
+}
+
+/// Flatten a Clash `plugin-opts` map into the SIP003 `k=v;k=v` string form.
+///
+/// Clash represents plugin options as a YAML map (e.g. `{mode: websocket,
+/// host: a.com}`); the pool model stores the standard semicolon-delimited
+/// string. A plain string value is passed through unchanged.
+fn flatten_plugin_opts(value: Option<&serde_yaml::Value>) -> Option<String> {
+    match value? {
+        serde_yaml::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_yaml::Value::Mapping(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .filter_map(|(k, v)| {
+                    let key = k.as_str()?;
+                    let val = match v {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        serde_yaml::Value::Bool(b) => b.to_string(),
+                        serde_yaml::Value::Number(n) => n.to_string(),
+                        _ => return None,
+                    };
+                    Some(format!("{key}={val}"))
+                })
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(";"))
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Clash YAML format parser.
 pub struct ClashParser;
 
@@ -139,7 +191,7 @@ impl Parser for ClashParser {
                         method: entry.cipher.clone(),
                         password: entry.password.clone(),
                         plugin: entry.plugin.clone(),
-                        plugin_opts: entry.plugin_opts.clone(),
+                        plugin_opts: flatten_plugin_opts(entry.plugin_opts.as_ref()),
                     },
                     "vmess" => {
                         let (path, host_header) = match &entry.ws_opts {
@@ -343,6 +395,45 @@ proxies:
             assert_eq!(short_id.as_deref(), Some("abcd"));
         } else {
             panic!("Expected Vless, got {:?}", proxies[0]);
+        }
+    }
+
+    #[test]
+    fn test_clash_ss_map_plugin_opts_and_quoted_port() {
+        let parser = ClashParser;
+        // plugin-opts is a map and port is quoted — both previously failed the
+        // whole-document deserialization, yielding zero proxies.
+        let content = r#"
+proxies:
+  - name: ss-plugin
+    type: ss
+    server: 10.0.0.9
+    port: "8443"
+    cipher: aes-256-gcm
+    password: secret
+    plugin: obfs
+    plugin-opts:
+      mode: websocket
+      host: cdn.example.com
+"#;
+        let proxies = parser.parse(content);
+        assert_eq!(proxies.len(), 1);
+        if let SubscriptionProxy::Shadowsocks {
+            host,
+            port,
+            plugin,
+            plugin_opts,
+            ..
+        } = &proxies[0]
+        {
+            assert_eq!(host, "10.0.0.9");
+            assert_eq!(*port, 8443);
+            assert_eq!(plugin.as_deref(), Some("obfs"));
+            let opts = plugin_opts.as_deref().unwrap();
+            assert!(opts.contains("mode=websocket"));
+            assert!(opts.contains("host=cdn.example.com"));
+        } else {
+            panic!("Expected Shadowsocks, got {:?}", proxies[0]);
         }
     }
 }

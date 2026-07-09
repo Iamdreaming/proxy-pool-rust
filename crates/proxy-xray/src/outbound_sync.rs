@@ -353,10 +353,25 @@ impl OutboundSync {
                 if let Some(node) = node {
                     self.port_manager.release(node.local_socks5_port).await;
 
+                    // Remove the pool Proxy entry for this node's local port so a
+                    // later port reuse cannot route traffic through the wrong
+                    // (torn-down) node (B2).
+                    let pool_entry =
+                        Proxy::new("127.0.0.1", node.local_socks5_port, Protocol::Socks5);
+                    if let Err(e) = self.proxy_store.remove(&pool_entry).await {
+                        tracing::warn!(
+                            "outbound_sync: failed to remove stale pool entry for port {}: {e}",
+                            node.local_socks5_port
+                        );
+                    }
+
                     // Remove from xray via gRPC.
                     // Use write lock because remove_inbound takes &mut self.
                     let mut client = self.xray_client.write().await;
                     if client.is_connected() {
+                        if let Err(e) = client.remove_routing_rule(&node.routing_rule_tag()).await {
+                            tracing::warn!("outbound_sync: remove_routing_rule failed: {e}");
+                        }
                         if let Err(e) = client.remove_inbound(&node.inbound_tag()).await {
                             tracing::warn!("outbound_sync: remove_inbound failed: {e}");
                         }
@@ -472,14 +487,42 @@ impl OutboundSync {
         };
 
         match outbound_result {
-            Some(Ok(())) => Ok(()),
+            Some(Ok(())) => {}
             Some(Err(e)) => {
                 self.cleanup_inbound(&node_config.inbound_tag()).await;
-                Err(format!("add_outbound failed: {e}"))
+                return Err(format!("add_outbound failed: {e}"));
             }
             None => {
                 self.cleanup_inbound(&node_config.inbound_tag()).await;
-                Err("xray gRPC client disconnected after add_inbound".into())
+                return Err("xray gRPC client disconnected after add_inbound".into());
+            }
+        }
+
+        // Install the routing rule that binds this node's inbound to its
+        // outbound. Without it, xray routes the inbound to the first outbound
+        // (bootstrap `direct`) and the encrypted node is bypassed entirely.
+        let routing_result = {
+            let client = self.xray_client.read().await;
+            if !client.is_connected() {
+                None
+            } else {
+                Some(
+                    client
+                        .add_routing_rule(&node_config.routing_rule_json)
+                        .await,
+                )
+            }
+        };
+
+        match routing_result {
+            Some(Ok(())) => Ok(()),
+            Some(Err(e)) => {
+                self.cleanup_xray_config(node_config).await;
+                Err(format!("add_routing_rule failed: {e}"))
+            }
+            None => {
+                self.cleanup_xray_config(node_config).await;
+                Err("xray gRPC client disconnected after add_outbound".into())
             }
         }
     }
@@ -488,6 +531,12 @@ impl OutboundSync {
         let mut client = self.xray_client.write().await;
         if !client.is_connected() {
             return;
+        }
+        if let Err(e) = client
+            .remove_routing_rule(&node_config.routing_rule_tag())
+            .await
+        {
+            tracing::warn!("outbound_sync: cleanup remove_routing_rule failed: {e}");
         }
         if let Err(e) = client.remove_outbound(&node_config.outbound_tag()).await {
             tracing::warn!("outbound_sync: cleanup remove_outbound failed: {e}");
@@ -555,6 +604,10 @@ impl XrayNodeConfig {
 
     fn outbound_tag(&self) -> String {
         format!("out-{}", self.tag)
+    }
+
+    fn routing_rule_tag(&self) -> String {
+        crate::config_gen::routing_rule_tag(&self.inbound_tag())
     }
 }
 

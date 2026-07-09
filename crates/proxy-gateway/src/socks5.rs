@@ -154,16 +154,15 @@ pub async fn handle(
 }
 
 /// Bidirectional copy between client stream and remote stream.
+///
+/// Uses `copy_bidirectional` for correct half-close handling; a single `copy`
+/// finishing no longer aborts the opposite direction mid-transfer.
 async fn bidirectional_copy(mut stream: TcpStream, remote: &mut TcpStream) {
-    let (mut ri, mut wi) = stream.split();
-    let (mut ro, mut wo) = remote.split();
-
-    let client_to_server = tokio::io::copy(&mut ri, &mut wo);
-    let server_to_client = tokio::io::copy(&mut ro, &mut wi);
-
-    tokio::select! {
-        r = client_to_server => { if let Err(e) = r { tracing::debug!("SOCKS5 client→server: {e}"); } }
-        r = server_to_client => { if let Err(e) = r { tracing::debug!("SOCKS5 server→client: {e}"); } }
+    match tokio::io::copy_bidirectional(&mut stream, remote).await {
+        Ok((c2s, s2c)) => {
+            tracing::debug!("SOCKS5 tunnel closed: client→server {c2s}B, server→client {s2c}B");
+        }
+        Err(e) => tracing::debug!("SOCKS5 tunnel copy error: {e}"),
     }
 }
 

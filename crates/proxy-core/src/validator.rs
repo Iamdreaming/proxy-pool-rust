@@ -8,9 +8,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Default targets used by the multi-target validation matrix.
+///
+/// Both are highly-available generate_204/trace endpoints; httpbin.org was
+/// dropped because its frequent rate-limiting produced false negatives.
 pub const DEFAULT_MATRIX_TARGETS: &[&str] = &[
     "https://www.cloudflare.com/cdn-cgi/trace",
-    "https://httpbin.org/ip",
+    "https://www.gstatic.com/generate_204",
 ];
 
 const DEFAULT_MATRIX_TIMEOUT_SECS: u64 = 10;
@@ -434,6 +437,21 @@ impl Validator {
         proxy: &Proxy,
         targets: &[ValidationTarget],
     ) -> Option<Proxy> {
+        self.validate_one_with_admission(proxy, targets, TargetAdmission::Strict)
+            .await
+    }
+
+    /// Validate a single proxy against every target URL under an admission mode.
+    ///
+    /// - `Strict`: every target must pass (short-circuits on first failure).
+    /// - `Quorum`: the proxy is alive if at least one target passes; the
+    ///   remaining targets are still probed so a partial result is possible.
+    pub async fn validate_one_with_admission(
+        &self,
+        proxy: &Proxy,
+        targets: &[ValidationTarget],
+        mode: TargetAdmission,
+    ) -> Option<Proxy> {
         if targets.is_empty() {
             return self.validate_one(proxy).await;
         }
@@ -447,12 +465,19 @@ impl Validator {
                 real_ip: self.real_ip.clone(),
                 pacer: self.pacer.clone(),
             };
-            checks.push(validator.validate_one(proxy).await);
-            if checks.last().is_some_and(Option::is_none) {
+            let result = validator.validate_one(proxy).await;
+            let failed = result.is_none();
+            checks.push(result);
+            // Strict mode can stop at the first failure; quorum needs every
+            // probe to know whether any target passed.
+            if failed && mode == TargetAdmission::Strict {
                 break;
             }
         }
-        strict_target_admission_result(proxy, checks)
+        match mode {
+            TargetAdmission::Strict => strict_target_admission_result(proxy, checks),
+            TargetAdmission::Quorum => quorum_target_admission_result(proxy, checks),
+        }
     }
 
     /// Check a single proxy and return a structured validation result.
@@ -466,7 +491,7 @@ impl Validator {
         let diagnostics = ProxyCheckDiagnostics::new(&self.target_url);
 
         let client = reqwest::Client::builder()
-            .proxy(match reqwest::Proxy::all(proxy.url()) {
+            .proxy(match reqwest::Proxy::all(proxy.proxy_connect_url()) {
                 Ok(proxy) => proxy,
                 Err(e) => {
                     return ProxyCheckResult::failure(
@@ -600,11 +625,14 @@ impl Validator {
     }
 
     /// Validate many proxies against every target URL with bounded proxy concurrency.
+    ///
+    /// `mode` selects strict (all targets) or quorum (any target) admission.
     pub async fn validate_many_against_targets(
         &self,
         proxies: &[Proxy],
         targets: &[ValidationTarget],
         concurrency: usize,
+        mode: TargetAdmission,
     ) -> Vec<Proxy> {
         if targets.is_empty() {
             return self.validate_many(proxies, concurrency).await;
@@ -620,7 +648,7 @@ impl Validator {
             let proxy = proxy.clone();
             handles.push(tokio::spawn(async move {
                 let result = validator
-                    .validate_one_against_targets(&proxy, &targets)
+                    .validate_one_with_admission(&proxy, &targets, mode)
                     .await;
                 drop(permit);
                 result
@@ -712,6 +740,25 @@ fn strict_target_admission_result(original: &Proxy, checks: Vec<Option<Proxy>>) 
         accepted = Some(check?);
     }
     accepted.map(|mut proxy| {
+        proxy.success_count = original.success_count.saturating_add(1);
+        proxy
+    })
+}
+
+/// Admission policy for validating a proxy against multiple targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetAdmission {
+    /// Every target must pass for the proxy to be admitted.
+    Strict,
+    /// At least one target passing admits the proxy.
+    Quorum,
+}
+
+/// Quorum admission: alive if any target passed. Uses the first passing check
+/// (which carries measured latency/anonymity) as the admitted record.
+fn quorum_target_admission_result(original: &Proxy, checks: Vec<Option<Proxy>>) -> Option<Proxy> {
+    let mut passed = checks.into_iter().flatten();
+    passed.next().map(|mut proxy| {
         proxy.success_count = original.success_count.saturating_add(1);
         proxy
     })
@@ -824,6 +871,30 @@ mod tests {
         assert!(!validator.accepts_status(400));
         assert!(!validator.accepts_status(401));
         assert!(!validator.accepts_status(500));
+    }
+
+    #[test]
+    fn strict_admission_requires_all_targets() {
+        let original = Proxy::new("1.2.3.4", 8080, Protocol::Http);
+        let pass = || Some(Proxy::new("1.2.3.4", 8080, Protocol::Http));
+
+        // Two passes → admitted.
+        assert!(strict_target_admission_result(&original, vec![pass(), pass()]).is_some());
+        // One miss → rejected.
+        assert!(strict_target_admission_result(&original, vec![pass(), None]).is_none());
+    }
+
+    #[test]
+    fn quorum_admission_accepts_any_passing_target() {
+        let original = Proxy::new("1.2.3.4", 8080, Protocol::Http);
+        let pass = || Some(Proxy::new("1.2.3.4", 8080, Protocol::Http));
+
+        // One of two passes → admitted under quorum (would be rejected by strict).
+        let admitted = quorum_target_admission_result(&original, vec![None, pass()]);
+        assert!(admitted.is_some());
+        assert_eq!(admitted.unwrap().success_count, 1);
+        // Zero passes → rejected.
+        assert!(quorum_target_admission_result(&original, vec![None, None]).is_none());
     }
 
     #[test]

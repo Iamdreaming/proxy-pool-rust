@@ -198,6 +198,20 @@ impl Proxy {
         format!("{}://{}:{}", self.protocol.scheme(), self.host, self.port)
     }
 
+    /// The URL a client uses to *dial* this proxy.
+    ///
+    /// For `Https` proxies this is `http://host:port`: the "https" label means
+    /// the proxy supports CONNECT tunneling to TLS targets, not that the proxy
+    /// endpoint itself speaks TLS. Dialing it over `https://` (as `url()` would
+    /// imply) makes the client TLS-handshake the proxy port and always fails.
+    /// All other protocols match `url()`.
+    pub fn proxy_connect_url(&self) -> String {
+        match self.protocol {
+            Protocol::Https => format!("http://{}:{}", self.host, self.port),
+            _ => self.url(),
+        }
+    }
+
     /// Unique identity key: `host:port`.
     pub fn key(&self) -> String {
         format!("{}:{}", self.host, self.port)
@@ -435,6 +449,22 @@ impl ProxyFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Proxy::proxy_connect_url --
+
+    #[test]
+    fn https_proxy_dials_over_http_scheme() {
+        // "https" pool proxies are HTTP proxies that support CONNECT; the client
+        // must reach them over http:// or the TLS handshake to the proxy fails.
+        let proxy = Proxy::new("1.2.3.4", 8080, Protocol::Https);
+        assert_eq!(proxy.url(), "https://1.2.3.4:8080");
+        assert_eq!(proxy.proxy_connect_url(), "http://1.2.3.4:8080");
+
+        let http = Proxy::new("1.2.3.4", 8080, Protocol::Http);
+        assert_eq!(http.proxy_connect_url(), "http://1.2.3.4:8080");
+        let socks = Proxy::new("1.2.3.4", 1080, Protocol::Socks5);
+        assert_eq!(socks.proxy_connect_url(), "socks5://1.2.3.4:1080");
+    }
 
     // -- Anonymity::level / meets --
 

@@ -106,15 +106,17 @@ pub async fn handle(
 }
 
 /// Bidirectional copy between client stream and remote stream.
+///
+/// Uses `copy_bidirectional`, which propagates half-close correctly: when one
+/// side reaches EOF it shuts down the corresponding write half and keeps
+/// relaying the other direction until it also finishes, instead of tearing the
+/// whole tunnel down on the first EOF (which truncated responses when a client
+/// closed its write side early).
 async fn bidirectional_copy(mut stream: TcpStream, remote: &mut TcpStream) {
-    let (mut ri, mut wi) = stream.split();
-    let (mut ro, mut wo) = remote.split();
-
-    let client_to_server = tokio::io::copy(&mut ri, &mut wo);
-    let server_to_client = tokio::io::copy(&mut ro, &mut wi);
-
-    tokio::select! {
-        r = client_to_server => { if let Err(e) = r { tracing::debug!("client→server error: {e}"); } }
-        r = server_to_client => { if let Err(e) = r { tracing::debug!("server→client error: {e}"); } }
+    match tokio::io::copy_bidirectional(&mut stream, remote).await {
+        Ok((c2s, s2c)) => {
+            tracing::debug!("tunnel closed: client→server {c2s}B, server→client {s2c}B");
+        }
+        Err(e) => tracing::debug!("tunnel copy error: {e}"),
     }
 }

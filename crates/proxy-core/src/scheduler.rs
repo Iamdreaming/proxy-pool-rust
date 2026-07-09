@@ -304,7 +304,12 @@ impl Scheduler {
             .map(ValidationTarget::from)
             .collect();
         self.validator
-            .validate_many_against_targets(candidates, &targets, self.settings.validate_concurrency)
+            .validate_many_against_targets(
+                candidates,
+                &targets,
+                self.settings.validate_concurrency,
+                crate::validator::TargetAdmission::Quorum,
+            )
             .await
     }
 

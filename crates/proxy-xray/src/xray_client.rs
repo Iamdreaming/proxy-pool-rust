@@ -142,6 +142,27 @@ impl XrayClient {
         self.execute_cli_api("ado", &wrapper).await
     }
 
+    /// Add a routing rule to xray-core via `xray api adrules --append`.
+    ///
+    /// Without an installed rule linking the per-node inbound to its outbound,
+    /// xray routes the dynamic inbound to the first outbound (the bootstrap
+    /// `direct` freedom), so encrypted nodes would silently egress directly.
+    pub async fn add_routing_rule(&self, routing_rule_json: &serde_json::Value) -> Result<()> {
+        let wrapper = serde_json::json!({
+            "routing": { "rules": [routing_rule_json] }
+        });
+        self.execute_cli_api_with_args("adrules", &["--append"], &wrapper)
+            .await
+    }
+
+    /// Remove a routing rule by its `ruleTag` via `xray api rmrules`.
+    pub async fn remove_routing_rule(&self, rule_tag: &str) -> Result<()> {
+        let wrapper = serde_json::json!({
+            "ruleTag": [rule_tag]
+        });
+        self.execute_cli_api("rmrules", &wrapper).await
+    }
+
     /// Remove an outbound from xray-core via gRPC.
     ///
     /// If the gRPC call fails with a transport error (`Unavailable`), the
@@ -271,6 +292,17 @@ impl XrayClient {
     /// Writes the JSON to a temp file, runs the CLI command, and checks
     /// the exit code.
     async fn execute_cli_api(&self, subcommand: &str, json: &serde_json::Value) -> Result<()> {
+        self.execute_cli_api_with_args(subcommand, &[], json).await
+    }
+
+    /// Like `execute_cli_api`, but passes extra CLI flags (e.g. `--append`)
+    /// between the `--server` option and the JSON config path.
+    async fn execute_cli_api_with_args(
+        &self,
+        subcommand: &str,
+        extra_args: &[&str],
+        json: &serde_json::Value,
+    ) -> Result<()> {
         // Write JSON to temp file
         let temp_dir = std::env::temp_dir().join("proxy-pool-xray-api");
         std::fs::create_dir_all(&temp_dir)?;
@@ -282,11 +314,16 @@ impl XrayClient {
 
         let server_addr = format!("127.0.0.1:{}", self.api_port);
 
-        let output = Command::new(&self.binary_path)
+        let mut command = Command::new(&self.binary_path);
+        command
             .arg("api")
             .arg(subcommand)
             .arg("--server")
-            .arg(&server_addr)
+            .arg(&server_addr);
+        for arg in extra_args {
+            command.arg(arg);
+        }
+        let output = command
             .arg(&temp_path)
             .output()
             .await
