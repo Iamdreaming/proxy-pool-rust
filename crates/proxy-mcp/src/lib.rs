@@ -9,16 +9,15 @@
 //!
 //! Supports both stdio and Streamable HTTP transports.
 
+pub mod rest_client;
+pub mod serve;
+
 use proxy_core::geoip::GeoIPLookup;
 use proxy_core::models::ProxyFilter;
-use proxy_core::route_debug::UpstreamSelector;
-use proxy_core::scheduler::SchedulerHandle;
-use proxy_core::status::{XrayStatus, collect_service_status, parse_bool_env, split_image_ref};
+use proxy_core::status::{parse_bool_env, split_image_ref};
 use proxy_core::store::ProxyStore;
 use proxy_core::validator::{ProxyCheckMatrixRequest, ProxyCheckMatrixTarget, check_proxy_matrix};
-use proxy_core::warp::balancer::WarpBalancer;
-use proxy_core::xray_status::{XrayStatusRegistry, XrayStatusSnapshot};
-use proxy_sub::ops::{SubscriptionOpsHandle, SubscriptionRefreshMode};
+use rest_client::{RestClient, urlencode};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool_handler;
@@ -26,7 +25,7 @@ use rmcp::{ServerHandler, tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
 
 // ---------------------------------------------------------------------------
@@ -357,44 +356,30 @@ fn now_unix_secs() -> Option<u64> {
 #[derive(Clone)]
 pub struct ProxyPoolMcp {
     store: Arc<ProxyStore>,
-    balancer: Option<Arc<WarpBalancer>>,
     geoip: Option<Arc<Mutex<GeoIPLookup>>>,
-    scheduler_handle: SchedulerHandle,
-    subscription_ops: Option<SubscriptionOpsHandle>,
-    route_selector: Arc<UpstreamSelector>,
-    xray_status: Option<XrayStatusRegistry>,
+    /// Client for the main service REST API (in-proc-only tools proxy here).
+    rest: RestClient,
     update_status: Arc<RwLock<UpdateStatusSnapshot>>,
-    git_hash: &'static str,
-    started_at: Instant,
     tool_router: ToolRouter<Self>,
 }
 
-/// Dependencies required to construct the MCP service.
+/// Dependencies required to construct the standalone MCP service.
 pub struct ProxyPoolMcpConfig {
+    /// Redis-backed pool store (shared with the main service via Redis).
     pub store: Arc<ProxyStore>,
-    pub balancer: Option<Arc<WarpBalancer>>,
+    /// Optional local GeoIP lookup (MMDB file + Redis cache).
     pub geoip: Option<Arc<Mutex<GeoIPLookup>>>,
-    pub scheduler_handle: SchedulerHandle,
-    pub subscription_ops: Option<SubscriptionOpsHandle>,
-    pub route_selector: Arc<UpstreamSelector>,
-    pub xray_status: Option<XrayStatusRegistry>,
-    pub git_hash: &'static str,
-    pub started_at: Instant,
+    /// Base URL of the main service REST API, e.g. `http://proxy-pool:8000`.
+    pub upstream_api_url: String,
 }
 
 impl ProxyPoolMcp {
     pub fn new(config: ProxyPoolMcpConfig) -> Self {
         Self {
             store: config.store,
-            balancer: config.balancer,
             geoip: config.geoip,
-            scheduler_handle: config.scheduler_handle,
-            subscription_ops: config.subscription_ops,
-            route_selector: config.route_selector,
-            xray_status: config.xray_status,
+            rest: RestClient::new(config.upstream_api_url),
             update_status: Arc::new(RwLock::new(UpdateStatusSnapshot::never_triggered())),
-            git_hash: config.git_hash,
-            started_at: config.started_at,
             tool_router: Self::tool_router(),
         }
     }
@@ -403,6 +388,18 @@ impl ProxyPoolMcp {
         protocol
             .and_then(proxy_core::models::Protocol::from_str_loose)
             .unwrap_or(proxy_core::models::Protocol::Http)
+    }
+
+    /// Format a REST call result as an MCP tool response, mapping errors to a
+    /// structured `{"status":"error","message":...}` payload (never hang/panic).
+    fn rest_result(result: Result<serde_json::Value, rest_client::RestError>) -> String {
+        match result {
+            Ok(value) => to_json(value),
+            Err(e) => to_json(serde_json::json!({
+                "status": "error",
+                "message": e.to_string(),
+            })),
+        }
     }
 
     fn to_filter(param: &ProxyFilterParam) -> ProxyFilter {
@@ -426,13 +423,6 @@ impl ProxyPoolMcp {
             min_score: param.min_score,
             source: param.source.clone(),
             alive: param.alive,
-        }
-    }
-
-    async fn xray_snapshot(&self) -> XrayStatusSnapshot {
-        match &self.xray_status {
-            Some(registry) => registry.snapshot(true, 20).await,
-            None => XrayStatusSnapshot::disabled(),
         }
     }
 
@@ -568,22 +558,12 @@ impl ProxyPoolMcp {
         description = "Get structured service status, including version, uptime, Redis, pool, WARP, and xray summaries"
     )]
     async fn service_status(&self) -> String {
-        let snapshot = self.xray_snapshot().await;
-        let status = collect_service_status(
-            &self.store,
-            self.balancer.as_deref(),
-            env!("CARGO_PKG_VERSION"),
-            self.git_hash,
-            self.started_at.elapsed().as_secs(),
-            XrayStatus::from_snapshot(&snapshot),
-        )
-        .await;
-        serde_json::to_string_pretty(&status).unwrap_or_default()
+        Self::rest_result(self.rest.get_json("/api/status", &[]).await)
     }
 
     #[tool(description = "Get xray node lifecycle status and recent activation failures")]
     async fn xray_status(&self) -> String {
-        to_json(serde_json::to_value(self.xray_snapshot().await).unwrap_or_default())
+        Self::rest_result(self.rest.get_json("/api/xray/status", &[]).await)
     }
 
     #[tool(description = "Get the current status of the proxy pool")]
@@ -616,9 +596,22 @@ impl ProxyPoolMcp {
 
     #[tool(description = "Get the status of WARP instances")]
     async fn warp_status(&self) -> String {
-        match &self.balancer {
-            Some(balancer) => {
-                let healthy = balancer.healthy_list().await;
+        match self.rest.get_json("/api/warp", &[]).await {
+            Ok(body) => {
+                // /api/warp returns all instances with a `healthy` flag; preserve
+                // this tool's historical healthy-only shape.
+                let healthy: Vec<serde_json::Value> = body
+                    .get("instances")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter(|inst| {
+                                inst.get("healthy").and_then(|h| h.as_bool()).unwrap_or(false)
+                            })
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 to_json(serde_json::json!({
                     "warp": {
                         "healthy_count": healthy.len(),
@@ -626,7 +619,10 @@ impl ProxyPoolMcp {
                     }
                 }))
             }
-            None => "WARP not configured".into(),
+            Err(e) => to_json(serde_json::json!({
+                "status": "error",
+                "message": e.to_string(),
+            })),
         }
     }
 
@@ -660,47 +656,17 @@ impl ProxyPoolMcp {
 
     #[tool(description = "Trigger a pool refresh (fetch new proxies + validate)")]
     async fn refresh_pool(&self) -> String {
-        match self.scheduler_handle.refresh().await {
-            Ok(result) => to_json(serde_json::json!({
-                "status": "ok",
-                "fetched": result.fetched,
-                "validated": result.validated,
-                "stored": result.stored,
-                "errors": result.errors,
-                "fetchers": result.fetchers,
-            })),
-            Err(e) => to_json(serde_json::json!({
-                "status": "error",
-                "message": format!("{e}"),
-            })),
-        }
+        Self::rest_result(self.rest.post_json("/api/proxies/refresh", None).await)
     }
 
     #[tool(description = "Get the latest status report for each configured proxy fetcher")]
     async fn fetcher_status(&self) -> String {
-        let fetchers = self.scheduler_handle.fetcher_statuses().await;
-        to_json(serde_json::json!({
-            "fetchers": fetchers,
-        }))
+        Self::rest_result(self.rest.get_json("/api/fetchers", &[]).await)
     }
 
     #[tool(description = "Get configured subscription source status and latest refresh reports")]
     async fn subscription_sources(&self) -> String {
-        match &self.subscription_ops {
-            Some(ops) => to_json(serde_json::json!({
-                "status": "ok",
-                "subscriptions": ops.status().await,
-            })),
-            None => to_json(serde_json::json!({
-                "status": "unavailable",
-                "message": "subscription ops unavailable",
-                "subscriptions": {
-                    "enabled": false,
-                    "source_count": 0,
-                    "sources": [],
-                },
-            })),
-        }
+        Self::rest_result(self.rest.get_json("/api/subscriptions/sources", &[]).await)
     }
 
     #[tool(
@@ -711,54 +677,24 @@ impl ProxyPoolMcp {
         params: Parameters<RefreshSubscriptionSourceParam>,
     ) -> String {
         let source = params.0.source;
-        let mode = SubscriptionRefreshMode::from_apply(params.0.apply.unwrap_or(false));
-        match &self.subscription_ops {
-            Some(ops) => match ops.refresh_source(&source, mode).await {
-                Ok(Some(report)) => to_json(serde_json::json!({
-                    "status": "ok",
-                    "report": report,
-                })),
-                Ok(None) => to_json(serde_json::json!({
-                    "status": "not_found",
-                    "message": "subscription source not found",
-                    "source": source,
-                })),
-                Err(e) => to_json(serde_json::json!({
-                    "status": "error",
-                    "message": format!("{e}"),
-                    "source": source,
-                })),
-            },
-            None => to_json(serde_json::json!({
-                "status": "unavailable",
-                "message": "subscription ops unavailable",
-                "source": source,
-            })),
-        }
+        let apply = params.0.apply.unwrap_or(false);
+        let path = format!(
+            "/api/subscriptions/sources/{}/refresh",
+            urlencode(&source)
+        );
+        Self::rest_result(
+            self.rest
+                .post_json_query(&path, &[("apply", apply.to_string())], None)
+                .await,
+        )
     }
 
     #[tool(
         description = "Refresh one configured proxy fetcher by id, such as proxyscrape:http or geonode"
     )]
     async fn refresh_fetcher(&self, params: Parameters<RefreshFetcherParam>) -> String {
-        match self
-            .scheduler_handle
-            .refresh_fetcher(params.0.fetcher.clone())
-            .await
-        {
-            Ok(result) => to_json(serde_json::json!({
-                "status": "ok",
-                "fetched": result.fetched,
-                "validated": result.validated,
-                "stored": result.stored,
-                "errors": result.errors,
-                "fetchers": result.fetchers,
-            })),
-            Err(e) => to_json(serde_json::json!({
-                "status": "error",
-                "message": format!("{e}"),
-            })),
-        }
+        let path = format!("/api/fetchers/{}/refresh", urlencode(&params.0.fetcher));
+        Self::rest_result(self.rest.post_json(&path, None).await)
     }
 
     #[tool(
@@ -768,11 +704,14 @@ impl ProxyPoolMcp {
         let protocol = self
             .resolve_protocol(params.0.protocol.as_deref())
             .to_string();
-        let decision = self.route_selector.dry_run(&params.0.host, &protocol).await;
-        to_json(serde_json::json!({
-            "status": "ok",
-            "decision": decision,
-        }))
+        Self::rest_result(
+            self.rest
+                .get_json(
+                    "/api/routes/test",
+                    &[("host", params.0.host), ("protocol", protocol)],
+                )
+                .await,
+        )
     }
 
     #[tool(description = "Get proxy pool statistics (protocol distribution)")]
@@ -1596,6 +1535,7 @@ mod tests {
 
     #[test]
     fn test_xray_status_snapshot_serializes_tool_contract() {
+        use proxy_core::xray_status::XrayStatusSnapshot;
         let snapshot = XrayStatusSnapshot {
             enabled: true,
             active_nodes: 3,

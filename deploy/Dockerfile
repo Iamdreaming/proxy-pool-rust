@@ -41,6 +41,7 @@ RUN mkdir -p crates/proxy-core/src && echo "" > crates/proxy-core/src/lib.rs \
  && mkdir -p crates/proxy-api/src && echo "" > crates/proxy-api/src/lib.rs \
  && mkdir -p crates/proxy-gateway/src && echo "" > crates/proxy-gateway/src/lib.rs \
  && mkdir -p crates/proxy-mcp/src && echo "" > crates/proxy-mcp/src/lib.rs \
+ && mkdir -p crates/proxy-mcp/src/bin && echo "fn main(){}" > crates/proxy-mcp/src/bin/proxy-mcp-server.rs \
  && mkdir -p crates/proxy-server/src && echo "fn main(){}" > crates/proxy-server/src/main.rs \
  && echo "fn main(){}" > crates/proxy-server/build.rs \
  && mkdir -p crates/proxy-sub/src && echo "" > crates/proxy-sub/src/lib.rs \
@@ -71,12 +72,13 @@ RUN cargo chef cook --release --target x86_64-unknown-linux-musl --recipe-path r
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-# Build the actual binary (only business code recompiles)
+# Build the actual binaries (only business code recompiles)
 # Use musl target for static linking — no glibc dependency in runtime image
 ARG GIT_HASH=unknown
 ENV GIT_HASH=${GIT_HASH}
-RUN cargo build --release -p proxy-server --target x86_64-unknown-linux-musl \
- && cp /app/target/x86_64-unknown-linux-musl/release/proxy-server /app/target/release/proxy-server
+RUN cargo build --release -p proxy-server -p proxy-mcp --target x86_64-unknown-linux-musl \
+ && cp /app/target/x86_64-unknown-linux-musl/release/proxy-server /app/target/release/proxy-server \
+ && cp /app/target/x86_64-unknown-linux-musl/release/proxy-mcp-server /app/target/release/proxy-mcp-server
 
 # ──────────────────────────────────────────────
 # Stage 5: Runtime image
@@ -112,8 +114,9 @@ RUN mkdir -p /app/geoip \
 
 WORKDIR /app
 
-# Copy binary from builder
+# Copy binaries from builder
 COPY --from=builder /app/target/release/proxy-server /app/proxy-server
+COPY --from=builder /app/target/release/proxy-mcp-server /app/proxy-mcp-server
 
 # Copy web UI from web-builder
 COPY --from=web-builder /web/dist /app/web

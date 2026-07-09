@@ -13,4 +13,11 @@ schemars = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
+redis = { workspace = true }
+axum = { workspace = true }
+
+[[bin]]
+name = "proxy-mcp-server"
+path = "src/bin/proxy-mcp-server.rs"

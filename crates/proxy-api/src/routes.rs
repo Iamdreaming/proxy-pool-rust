@@ -58,6 +58,15 @@ pub struct ProxyFilterQuery {
     pub alive: Option<bool>,
 }
 
+/// Body for `POST /api/proxies/cleanup` (mirrors MCP cleanup args).
+#[derive(Debug, Default, Deserialize)]
+pub struct CleanupRequest {
+    pub protocol: Option<String>,
+    pub limit: Option<usize>,
+    pub min_score: Option<f64>,
+    pub apply: Option<bool>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RouteTestQuery {
     pub host: String,
@@ -196,11 +205,14 @@ pub fn create_router() -> Router<AppState> {
         )
         .route("/api/proxies/scores", get(explain_proxy_scores))
         .route("/api/proxies", get(list_proxies))
+        .route("/api/proxies/stats", get(proxy_stats))
+        .route("/api/proxies/cleanup", post(cleanup_proxies))
         .route("/api/proxy/check-matrix", post(proxy_check_matrix))
         .route("/api/proxy/random", get(get_random_proxy))
         .route("/api/proxy/best", get(get_best_proxy))
         .route("/api/proxies/refresh", post(refresh_pool))
         .route("/api/proxy/{key}", delete(delete_proxy))
+        .route("/api/proxy/{key}/mark-failed", post(mark_failed_proxy))
         .route("/api/metrics", get(metrics))
         .route("/api/xray/status", get(xray_status))
         .route("/api/warp", get(warp_status))
@@ -612,6 +624,66 @@ async fn delete_proxy(State(state): State<AppState>, Path(key): Path<String>) ->
         Ok(false) => json_status(StatusCode::NOT_FOUND, "proxy not found"),
         Err(e) => json_status(StatusCode::INTERNAL_SERVER_ERROR, format!("error: {e}")),
     }
+}
+
+/// Parse a `protocol:host:port` key into a `Proxy`.
+fn parse_proxy_key(key: &str) -> Result<Proxy, &'static str> {
+    let parts: Vec<&str> = key.splitn(3, ':').collect();
+    if parts.len() != 3 {
+        return Err("invalid key format, expected protocol:host:port");
+    }
+    let protocol = Protocol::from_str_loose(parts[0]).ok_or("invalid protocol")?;
+    let port: u16 = parts[2].parse().map_err(|_| "invalid port")?;
+    Ok(Proxy::new(parts[1], port, protocol))
+}
+
+/// Mark a proxy as failed (increments fail_count / may hard-evict), mirroring the
+/// MCP `remove_proxy` semantics — distinct from the plain-delete `delete_proxy`.
+async fn mark_failed_proxy(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    let proxy = match parse_proxy_key(&key) {
+        Ok(p) => p,
+        Err(msg) => return json_status(StatusCode::BAD_REQUEST, msg),
+    };
+    match state.store.mark_failed(&proxy).await {
+        Ok(()) => json_status(StatusCode::OK, "ok"),
+        Err(e) => json_status(StatusCode::INTERNAL_SERVER_ERROR, format!("error: {e}")),
+    }
+}
+
+/// Dry-run or apply cleanup of low-score proxies (mirrors MCP
+/// `cleanup_low_score_proxies`).
+async fn cleanup_proxies(
+    State(state): State<AppState>,
+    Json(req): Json<CleanupRequest>,
+) -> impl IntoResponse {
+    let protocol = req
+        .protocol
+        .as_deref()
+        .and_then(Protocol::from_str_loose)
+        .unwrap_or(Protocol::Http);
+    let limit = req.limit.unwrap_or(100);
+    let apply = req.apply.unwrap_or(false);
+    match state
+        .store
+        .cleanup_low_score(protocol, limit, req.min_score, apply)
+        .await
+    {
+        Ok(result) => Json(result).into_response(),
+        Err(e) => json_status(StatusCode::INTERNAL_SERVER_ERROR, format!("error: {e}")),
+    }
+}
+
+/// Per-protocol proxy count distribution (mirrors MCP `proxy_stats`).
+async fn proxy_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let mut distribution = serde_json::Map::new();
+    for proto in Protocol::all() {
+        let count = state.store.count(*proto).await.unwrap_or(0);
+        distribution.insert(proto.to_string(), serde_json::json!(count));
+    }
+    Json(serde_json::json!({ "protocol_distribution": distribution }))
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {

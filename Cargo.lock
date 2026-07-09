@@ -1445,8 +1445,10 @@ name = "proxy-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum 0.8.9",
  "proxy-core",
  "proxy-sub",
+ "redis",
  "reqwest",
  "rmcp",
  "schemars",
@@ -1454,6 +1456,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1465,11 +1468,9 @@ dependencies = [
  "proxy-api",
  "proxy-core",
  "proxy-gateway",
- "proxy-mcp",
  "proxy-sub",
  "proxy-xray",
  "redis",
- "rmcp",
  "serde",
  "serde_json",
  "tokio",

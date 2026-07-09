@@ -7,7 +7,6 @@ edition.workspace = true
 proxy-core = { workspace = true }
 proxy-api = { workspace = true }
 proxy-gateway = { workspace = true }
-proxy-mcp = { workspace = true }
 proxy-sub = { workspace = true }
 proxy-xray = { workspace = true }
 tokio = { workspace = true }
@@ -17,6 +16,5 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 redis = { workspace = true }
-rmcp = { workspace = true }
 axum = { workspace = true }
 tokio-util = { workspace = true }

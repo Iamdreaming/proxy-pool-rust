@@ -30,7 +30,6 @@ use proxy_core::warp::health::WarpHealthChecker;
 use proxy_core::xray_status::XrayStatusRegistry;
 use proxy_gateway::ProxyGateway;
 use proxy_gateway::UpstreamSelector;
-use proxy_mcp::{ProxyPoolMcp, ProxyPoolMcpConfig};
 use proxy_sub::ops::{SubscriptionOpsHandle, subscription_ops_loop};
 use proxy_sub::pending::PendingStore;
 use proxy_xray::config_gen::ConfigGenerator;
@@ -169,7 +168,6 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("no routes_path configured, using default routing");
         None
     };
-    let mcp_geoip = geoip.clone();
     let selector = Arc::new(UpstreamSelector::new(
         store.clone(),
         Some(balancer.clone()),
@@ -200,19 +198,6 @@ async fn main() -> anyhow::Result<()> {
         settings.gateway.clone(),
         selector.clone(),
     ));
-
-    // Build MCP server with geoip lookup and scheduler handle
-    let mcp_server = ProxyPoolMcp::new(ProxyPoolMcpConfig {
-        store: store.clone(),
-        balancer: Some(balancer.clone()),
-        geoip: mcp_geoip,
-        scheduler_handle,
-        subscription_ops: subscription_ops.clone(),
-        route_selector: selector.clone(),
-        xray_status: xray_status.clone(),
-        git_hash: GIT_HASH,
-        started_at,
-    });
 
     tracing::info!("starting proxy-pool services");
 
@@ -364,84 +349,10 @@ async fn main() -> anyhow::Result<()> {
 
     let gateway_handle = { tokio::spawn(async move { gateway.run().await }) };
 
-    // MCP: based on transport config
-    let transport = settings.mcp.transport.as_str();
-    if transport == "http" || transport == "both" {
-        let port = settings.mcp.http_port;
-        tracing::info!("MCP server starting on HTTP transport (port {port})");
-        let mcp_for_http = mcp_server.clone();
-        tokio::spawn(async move {
-            use rmcp::transport::streamable_http_server::{
-                StreamableHttpServerConfig, StreamableHttpService,
-                session::local::LocalSessionManager,
-            };
-            let service = StreamableHttpService::new(
-                move || Ok(mcp_for_http.clone()),
-                Arc::new(LocalSessionManager::default()),
-                StreamableHttpServerConfig::default(),
-            );
-            let app = axum::Router::new()
-                // OAuth discovery fallback: Claude Code's MCP client probes various
-                // well-known paths during connection. Without handlers, axum returns
-                // 404 with empty body, causing JSON parse errors in the client.
-                //
-                // Routes defined before nest_service take priority, so we intercept
-                // /mcp/.well-known/* paths that would otherwise go to rmcp (which
-                // returns 406 with non-JSON body). A catch-all fallback handles any
-                // other unmatched path (root-level well-known variants, etc.).
-                .route(
-                    "/mcp/.well-known/{*path}",
-                    axum::routing::get(|| async {
-                        (
-                            axum::http::StatusCode::NOT_FOUND,
-                            [(axum::http::header::CONTENT_TYPE, "application/json")],
-                            axum::Json(serde_json::json!({
-                                "error": "not_found",
-                                "error_description": "This server does not require OAuth"
-                            })),
-                        )
-                    }),
-                )
-                .nest_service("/mcp", service)
-                .fallback(|| async {
-                    (
-                        axum::http::StatusCode::NOT_FOUND,
-                        [(axum::http::header::CONTENT_TYPE, "application/json")],
-                        axum::Json(serde_json::json!({
-                            "error": "not_found",
-                            "error_description": "This server does not require OAuth"
-                        })),
-                    )
-                });
-            let addr = format!("0.0.0.0:{port}");
-            match tokio::net::TcpListener::bind(&addr).await {
-                Ok(listener) => {
-                    tracing::info!("MCP HTTP transport listening on {addr}");
-                    if let Err(e) = axum::serve(listener, app).await {
-                        tracing::error!("MCP HTTP transport error: {e}");
-                    }
-                }
-                Err(e) => tracing::error!("MCP HTTP bind failed on {addr}: {e}"),
-            }
-        });
-    }
-    if transport == "stdio" || transport == "both" {
-        tracing::info!("MCP server starting on stdio transport");
-        tokio::spawn(async move {
-            use rmcp::ServiceExt;
-            match mcp_server.serve(rmcp::transport::io::stdio()).await {
-                Ok(service) => {
-                    if let Err(e) = service.waiting().await {
-                        tracing::info!("MCP stdio ended: {e}");
-                    }
-                }
-                Err(e) => tracing::info!("MCP stdio ended: {e}"),
-            }
-        });
-    }
+    // MCP is now served by the standalone `proxy-mcp-server` binary (its own
+    // container), decoupled so that update_service restarts do not kill it.
 
     // Wait for critical services only.
-    // MCP (stdio or HTTP) is non-critical — its exit should not shut down the process.
     // API, gateway, and scheduler are the core services; if any stops, the process should exit.
     tokio::select! {
         r = scheduler_task => tracing::error!("scheduler stopped (fatal): {:?}", r),

@@ -22,21 +22,14 @@ services:
     ports:
       - "9080:9080" # Gateway (HTTP CONNECT + SOCKS5)
       - "8000:8000" # REST API
-      - "9000:9000" # MCP HTTP transport
     depends_on:
       - redis
     volumes:
       - ../config:/app/config
-      - /var/run/docker.sock:/var/run/docker.sock # For MCP update_service & WARP optimizer
+      - /var/run/docker.sock:/var/run/docker.sock # For WARP optimizer
     environment:
       - RUST_LOG=info
       - PROXY_POOL_CONFIG=/app/config/settings.yaml
-      - PROXY_POOL_UPDATE_ENABLED=true
-      - PROXY_POOL_UPDATE_DOCKER_SOCKET=/var/run/docker.sock
-      - PROXY_POOL_UPDATE_CONTAINER=proxy-pool
-      - PROXY_POOL_UPDATE_IMAGE=ghcr.io/iamdreaming/proxy-pool-rust:latest
-      - PROXY_POOL_UPDATE_WATCHTOWER_URL=http://watchtower-proxy-pool:8080/v1/update
-      - PROXY_POOL_UPDATE_TOKEN=${PROXY_POOL_UPDATE_TOKEN:-proxy-pool-update}
     restart: unless-stopped
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
@@ -56,6 +49,41 @@ services:
           memory: 512M
           cpus: "2.0"
           pids: 512
+
+  proxy-mcp:
+    # Standalone MCP server (same image, different binary). Decoupled from
+    # proxy-pool so triggering update_service does not kill the MCP responder.
+    image: ghcr.io/iamdreaming/proxy-pool-rust:latest
+    command: ["/app/proxy-mcp-server"]
+    container_name: proxy-mcp
+    ports:
+      - "9000:9000" # MCP HTTP transport
+    depends_on:
+      - redis
+      - proxy-pool
+    volumes:
+      - ../config:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock # For MCP update_service
+    environment:
+      - RUST_LOG=info
+      - PROXY_POOL_CONFIG=/app/config/settings.yaml
+      - MCP_UPSTREAM_API_URL=http://proxy-pool:8000
+      - MCP_HTTP_PORT=9000
+      # update_service targets the sibling proxy-pool container via Watchtower.
+      - PROXY_POOL_UPDATE_ENABLED=true
+      - PROXY_POOL_UPDATE_DOCKER_SOCKET=/var/run/docker.sock
+      - PROXY_POOL_UPDATE_CONTAINER=proxy-pool
+      - PROXY_POOL_UPDATE_IMAGE=ghcr.io/iamdreaming/proxy-pool-rust:latest
+      - PROXY_POOL_UPDATE_WATCHTOWER_URL=http://watchtower-proxy-pool:8080/v1/update
+      - PROXY_POOL_UPDATE_TOKEN=${PROXY_POOL_UPDATE_TOKEN:-proxy-pool-update}
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
 
   watchtower-proxy-pool:
     image: containrrr/watchtower
