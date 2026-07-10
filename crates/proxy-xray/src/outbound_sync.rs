@@ -4,7 +4,7 @@
 //! The sync loop pauses when the xray gRPC connection is lost and
 //! resumes automatically on reconnection.
 
-use crate::config_gen::{ConfigGenerator, XrayNodeConfig};
+use crate::config_gen::{ConfigGenerator, XrayNodeConfig, is_xray_activatable};
 use crate::models::{SyncStats, XrayNode};
 use crate::port_manager::PortManager;
 use crate::xray_client::XrayClient;
@@ -176,16 +176,16 @@ impl OutboundSync {
                     break;
                 }
 
-                // Skip nodes that do not produce an xray outbound config
-                // (Basic, Unknown — these should not appear in encrypted
-                // pending sets, but guard against it).
-                if !matches!(
-                    node,
-                    SubscriptionProxy::Shadowsocks { .. }
-                        | SubscriptionProxy::Vmess { .. }
-                        | SubscriptionProxy::Trojan { .. }
-                        | SubscriptionProxy::Vless { .. }
-                ) {
+                // Skip nodes xray cannot build an outbound for: Basic/Unknown
+                // (should not appear here) and Shadowsocks nodes using a legacy
+                // cipher xray-core rejects (aes-*-cfb, rc4-md5, ...). Filtering
+                // here avoids spending a port, a validation attempt, and an
+                // `xray api ado` round-trip on a node that can never activate.
+                if !is_xray_activatable(node) {
+                    tracing::debug!(
+                        tag = %tag,
+                        "outbound_sync: skipping node xray cannot activate"
+                    );
                     continue;
                 }
 

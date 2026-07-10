@@ -165,6 +165,44 @@ pub fn routing_rule_tag(inbound_tag: &str) -> String {
     format!("rule-{inbound_tag}")
 }
 
+/// Shadowsocks ciphers that xray-core can build an outbound for (AEAD, the
+/// 2022 edition, and `none`/`plain`).
+///
+/// Legacy stream ciphers such as `aes-256-cfb`, `aes-128-ctr`, and `rc4-md5`
+/// were removed from xray-core and make `xray api ado` fail with
+/// "unknown cipher method", so nodes using them can never be activated.
+pub fn shadowsocks_cipher_supported(method: &str) -> bool {
+    matches!(
+        method.trim().to_ascii_lowercase().as_str(),
+        "aes-256-gcm"
+            | "aes-128-gcm"
+            | "chacha20-poly1305"
+            | "chacha20-ietf-poly1305"
+            | "xchacha20-poly1305"
+            | "xchacha20-ietf-poly1305"
+            | "2022-blake3-aes-128-gcm"
+            | "2022-blake3-aes-256-gcm"
+            | "2022-blake3-chacha20-poly1305"
+            | "none"
+            | "plain"
+    )
+}
+
+/// Whether xray-core can build an outbound for this node.
+///
+/// Returns `false` for `Basic`/`Unknown` (no xray outbound) and for Shadowsocks
+/// nodes whose cipher xray does not support, so callers can skip them before
+/// spending an activation attempt.
+pub fn is_xray_activatable(node: &SubscriptionProxy) -> bool {
+    match node {
+        SubscriptionProxy::Shadowsocks { method, .. } => shadowsocks_cipher_supported(method),
+        SubscriptionProxy::Vmess { .. }
+        | SubscriptionProxy::Trojan { .. }
+        | SubscriptionProxy::Vless { .. } => true,
+        SubscriptionProxy::Basic { .. } | SubscriptionProxy::Unknown { .. } => false,
+    }
+}
+
 /// Generate an outbound JSON config for the given `SubscriptionProxy`.
 ///
 /// Returns `None` for `Basic` and `Unknown` variants.
@@ -708,5 +746,53 @@ mod tests {
         // through the bootstrap `direct` outbound.
         assert!(services.iter().any(|s| s == "HandlerService"));
         assert!(services.iter().any(|s| s == "RoutingService"));
+    }
+
+    #[test]
+    fn test_shadowsocks_cipher_supported_whitelist() {
+        // AEAD + 2022 + none are accepted (case-insensitive).
+        for ok in [
+            "aes-256-gcm",
+            "AES-128-GCM",
+            "chacha20-ietf-poly1305",
+            "chacha20-poly1305",
+            "2022-blake3-aes-256-gcm",
+            "none",
+            "plain",
+        ] {
+            assert!(shadowsocks_cipher_supported(ok), "{ok} should be supported");
+        }
+        // Legacy stream ciphers xray-core rejects.
+        for bad in ["aes-256-cfb", "aes-128-ctr", "rc4-md5", "salsa20", ""] {
+            assert!(
+                !shadowsocks_cipher_supported(bad),
+                "{bad} should be unsupported"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_xray_activatable() {
+        let good_ss = SubscriptionProxy::Shadowsocks {
+            host: "1.2.3.4".into(),
+            port: 8388,
+            method: "aes-256-gcm".into(),
+            password: "p".into(),
+            plugin: None,
+            plugin_opts: None,
+        };
+        let legacy_ss = SubscriptionProxy::Shadowsocks {
+            host: "1.2.3.4".into(),
+            port: 8388,
+            method: "aes-256-cfb".into(),
+            password: "p".into(),
+            plugin: None,
+            plugin_opts: None,
+        };
+        assert!(is_xray_activatable(&good_ss));
+        assert!(!is_xray_activatable(&legacy_ss));
+        assert!(!is_xray_activatable(&SubscriptionProxy::Unknown {
+            raw_config: "x".into()
+        }));
     }
 }
