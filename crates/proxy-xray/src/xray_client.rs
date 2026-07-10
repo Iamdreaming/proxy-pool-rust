@@ -156,11 +156,13 @@ impl XrayClient {
     }
 
     /// Remove a routing rule by its `ruleTag` via `xray api rmrules`.
+    ///
+    /// `rmrules` takes ruleTags as positional CLI arguments — passing a
+    /// `{"ruleTag":[...]}` JSON file is silently accepted but removes nothing,
+    /// which previously let ruleTags accumulate until re-adding a node's rule
+    /// failed with "duplicate ruleTag".
     pub async fn remove_routing_rule(&self, rule_tag: &str) -> Result<()> {
-        let wrapper = serde_json::json!({
-            "ruleTag": [rule_tag]
-        });
-        self.execute_cli_api("rmrules", &wrapper).await
+        self.execute_cli_command("rmrules", &[rule_tag]).await
     }
 
     /// Remove an outbound from xray-core via gRPC.
@@ -331,6 +333,38 @@ impl XrayClient {
 
         // Clean up temp file
         let _ = std::fs::remove_file(&temp_path);
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "xray api {subcommand} failed with exit code {}: {stderr}",
+                output.status.code().unwrap_or(-1)
+            );
+        }
+
+        tracing::debug!("xray api {subcommand} succeeded");
+        Ok(())
+    }
+
+    /// Run `xray api <subcommand> --server <addr> <args...>` with no config file.
+    ///
+    /// Used for commands like `rmrules` that take positional arguments (ruleTags)
+    /// rather than a JSON payload.
+    async fn execute_cli_command(&self, subcommand: &str, args: &[&str]) -> Result<()> {
+        let server_addr = format!("127.0.0.1:{}", self.api_port);
+        let mut command = Command::new(&self.binary_path);
+        command
+            .arg("api")
+            .arg(subcommand)
+            .arg("--server")
+            .arg(&server_addr);
+        for arg in args {
+            command.arg(arg);
+        }
+        let output = command
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to execute xray api {subcommand}: {e}"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

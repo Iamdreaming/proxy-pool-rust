@@ -506,6 +506,12 @@ impl OutboundSync {
             if !client.is_connected() {
                 None
             } else {
+                // Best-effort clear any stale rule with the same ruleTag first,
+                // so a leftover orphan (e.g. from an earlier incomplete cleanup)
+                // cannot make AddRule fail with "duplicate ruleTag".
+                let _ = client
+                    .remove_routing_rule(&node_config.routing_rule_tag())
+                    .await;
                 Some(
                     client
                         .add_routing_rule(&node_config.routing_rule_json)
