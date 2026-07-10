@@ -162,6 +162,15 @@ pub struct CleanupLowScoreParam {
     pub apply: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ContainerLogsParam {
+    /// Container name or id. Defaults to the configured update target
+    /// (PROXY_POOL_UPDATE_CONTAINER, i.e. the main proxy-pool service).
+    pub container: Option<String>,
+    /// Number of trailing log lines to return. Defaults to 200, clamped to 1..=1000.
+    pub tail: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -223,6 +232,7 @@ impl UpdateServiceConfig {
 enum UpdateStatusKind {
     NeverTriggered,
     Disabled,
+    InProgress,
     AlreadyCurrent,
     Updated,
     Failed,
@@ -285,6 +295,14 @@ impl UpdateStatusSnapshot {
                 "update_service is disabled; set PROXY_POOL_UPDATE_ENABLED=true to allow updates"
                     .into(),
             ),
+        )
+    }
+
+    fn in_progress(config: &UpdateServiceConfig) -> Self {
+        Self::from_config(
+            UpdateStatusKind::InProgress,
+            config,
+            Some("update in progress; poll update_status for the result".into()),
         )
     }
 
@@ -749,7 +767,7 @@ impl ProxyPoolMcp {
             }));
         }
 
-        let Some(watchtower_token) = config.watchtower_token.as_deref() else {
+        if config.watchtower_token.is_none() {
             self.record_update_status(UpdateStatusSnapshot::failed(
                 &config,
                 "PROXY_POOL_UPDATE_TOKEN must be set when update_service is enabled",
@@ -759,193 +777,202 @@ impl ProxyPoolMcp {
                 "status": "error",
                 "message": "PROXY_POOL_UPDATE_TOKEN must be set when update_service is enabled",
             }));
-        };
+        }
 
-        // Step 1: Inspect current container to get previous image identity.
-        tracing::info!(
-            container = %config.container_name,
-            "update_service: inspecting current container"
+        // Run the pull + Watchtower trigger in the background so the MCP call
+        // returns immediately; the client polls `update_status` for the result.
+        // The MCP process is separate from proxy-pool now, so this task survives
+        // the container recreation and records the terminal snapshot.
+        self.record_update_status(UpdateStatusSnapshot::in_progress(&config))
+            .await;
+        let update_status = self.update_status.clone();
+        let cfg = config.clone();
+        tokio::spawn(async move {
+            let timeout = std::time::Duration::from_secs(UPDATE_SERVICE_TIMEOUT_SECS);
+            if tokio::time::timeout(timeout, run_update(update_status.clone(), cfg.clone()))
+                .await
+                .is_err()
+            {
+                *update_status.write().await = UpdateStatusSnapshot::failed(
+                    &cfg,
+                    format!("update timed out after {UPDATE_SERVICE_TIMEOUT_SECS}s"),
+                );
+            }
+        });
+
+        to_json(serde_json::json!({
+            "status": "update_started",
+            "message": "Update started in the background. Poll update_status for progress and the result.",
+            "image": config.image,
+            "container_name": config.container_name,
+        }))
+    }
+
+    #[tool(
+        description = "Fetch recent logs from a Docker container (default: the proxy-pool service). Params: container (name/id, optional), tail (line count, default 200, max 1000)."
+    )]
+    async fn container_logs(&self, params: Parameters<ContainerLogsParam>) -> String {
+        let config = UpdateServiceConfig::from_env();
+        let container = params
+            .0
+            .container
+            .filter(|c| !c.trim().is_empty())
+            .unwrap_or(config.container_name);
+        let tail = params.0.tail.unwrap_or(200).clamp(1, 1000);
+        let path = format!(
+            "/containers/{}/logs?stdout=1&stderr=1&timestamps=1&tail={}",
+            docker_api_escape(&container),
+            tail
         );
-        let old_inspect = match docker_api_get(
-            &config.socket_path,
-            &format!("/containers/{}/json", config.container_name),
-        )
-        .await
-        {
-            Ok(body) => body,
-            Err(e) => {
-                let message = format!("failed to inspect container: {e}");
-                self.record_update_status(UpdateStatusSnapshot::failed(&config, message.clone()))
-                    .await;
-                return to_json(serde_json::json!({
-                    "status": "error",
-                    "message": message,
-                    "image": config.image,
-                    "container_name": config.container_name,
-                }));
-            }
-        };
-
-        let previous_image_id = old_inspect
-            .get("Image")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        // Step 2: Pull latest image (pre-fetch so Watchtower doesn't need to)
-        tracing::info!(image = %config.image, "update_service: pulling image");
-        if let Err(e) = docker_api_post(
-            &config.socket_path,
-            &format!(
-                "/images/create?fromImage={}&tag={}",
-                docker_api_escape(&config.image_repo),
-                docker_api_escape(&config.image_tag)
-            ),
-        )
-        .await
-        {
-            let message = format!("docker pull failed: {e}");
-            self.record_update_status(
-                UpdateStatusSnapshot::failed(&config, message.clone())
-                    .with_previous_image_id(previous_image_id.clone()),
-            )
-            .await;
-            return to_json(serde_json::json!({
+        match docker_api_get_raw(&config.socket_path, &path).await {
+            Ok(body) => to_json(serde_json::json!({
+                "status": "ok",
+                "container": container,
+                "tail": tail,
+                "logs": demux_docker_log_stream(&body),
+            })),
+            Err(e) => to_json(serde_json::json!({
                 "status": "error",
-                "message": message,
-                "previous_image_id": previous_image_id,
-                "image": config.image,
-            }));
-        }
-
-        let new_inspect = match docker_api_get(
-            &config.socket_path,
-            &format!("/images/{}/json", docker_api_escape(&config.image)),
-        )
-        .await
-        {
-            Ok(body) => body,
-            Err(e) => {
-                let message = format!("failed to inspect pulled image: {e}");
-                self.record_update_status(
-                    UpdateStatusSnapshot::failed(&config, message.clone())
-                        .with_previous_image_id(previous_image_id.clone()),
-                )
-                .await;
-                return to_json(serde_json::json!({
-                    "status": "error",
-                    "message": message,
-                    "previous_image_id": previous_image_id,
-                    "image": config.image,
-                }));
-            }
-        };
-        let new_digest = docker_image_digest(&new_inspect).unwrap_or_else(|| "unknown".into());
-        let new_image_id = docker_image_id(&new_inspect).unwrap_or_else(|| "unknown".into());
-        let digest_changed = image_identity_changed(&previous_image_id, &new_image_id);
-
-        if !digest_changed {
-            self.record_update_status(
-                UpdateStatusSnapshot::already_current(&config).with_image_result(
-                    previous_image_id.clone(),
-                    new_image_id.clone(),
-                    new_digest.clone(),
-                    false,
-                ),
-            )
-            .await;
-            return to_json(serde_json::json!({
-                "status": "already_current",
-                "previous_image_id": previous_image_id,
-                "new_image_id": new_image_id,
-                "new_digest": new_digest,
-                "digest_changed": false,
-                "image": config.image,
-                "message": "Pulled image matches the running container image; Watchtower was not triggered.",
-            }));
-        }
-
-        // Step 3: Trigger Watchtower to update the container
-        // Watchtower is an independent container that handles stop/recreate/start
-        // safely — it doesn't have the "self-surgery" problem.
-        tracing::info!("update_service: triggering Watchtower update");
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(&config.watchtower_url)
-            .header("Authorization", format!("Bearer {watchtower_token}"))
-            .timeout(std::time::Duration::from_secs(30))
-            .send()
-            .await;
-
-        match resp {
-            Ok(r) if r.status().is_success() => {
-                tracing::info!("update_service: Watchtower update triggered successfully");
-                self.record_update_status(
-                    UpdateStatusSnapshot::updated(&config).with_image_result(
-                        previous_image_id.clone(),
-                        new_image_id.clone(),
-                        new_digest.clone(),
-                        digest_changed,
-                    ),
-                )
-                .await;
-                // Note: the current container will be stopped and recreated by Watchtower.
-                // This process will be killed, so the response may not reach the caller.
-                // The success signal is the new container's git_hash changing (verified externally).
-                to_json(serde_json::json!({
-                    "status": "update_triggered",
-                    "previous_image_id": previous_image_id,
-                    "new_image_id": new_image_id,
-                    "new_digest": new_digest,
-                    "digest_changed": digest_changed,
-                    "image": config.image,
-                    "message": "Watchtower update triggered. The container will be recreated shortly.",
-                }))
-            }
-            Ok(r) => {
-                let status = r.status();
-                let body = r.text().await.unwrap_or_default();
-                let message = format!("Watchtower returned {status}: {body}");
-                self.record_update_status(
-                    UpdateStatusSnapshot::failed(&config, message.clone()).with_image_result(
-                        previous_image_id.clone(),
-                        new_image_id.clone(),
-                        new_digest.clone(),
-                        digest_changed,
-                    ),
-                )
-                .await;
-                to_json(serde_json::json!({
-                    "status": "error",
-                    "message": message,
-                    "previous_image_id": previous_image_id,
-                    "new_image_id": new_image_id,
-                    "new_digest": new_digest,
-                    "digest_changed": digest_changed,
-                }))
-            }
-            Err(e) => {
-                let message = format!("failed to reach Watchtower: {e}");
-                self.record_update_status(
-                    UpdateStatusSnapshot::failed(&config, message.clone()).with_image_result(
-                        previous_image_id.clone(),
-                        new_image_id.clone(),
-                        new_digest.clone(),
-                        digest_changed,
-                    ),
-                )
-                .await;
-                to_json(serde_json::json!({
-                    "status": "error",
-                    "message": message,
-                    "previous_image_id": previous_image_id,
-                    "new_image_id": new_image_id,
-                    "new_digest": new_digest,
-                    "digest_changed": digest_changed,
-                }))
-            }
+                "container": container,
+                "message": e,
+            })),
         }
     }
+}
+
+/// Overall safety timeout for a background `update_service` run.
+const UPDATE_SERVICE_TIMEOUT_SECS: u64 = 300;
+
+/// Background body of `update_service`: inspect → pull → compare → trigger
+/// Watchtower, writing the terminal snapshot into `update_status`.
+async fn run_update(update_status: Arc<RwLock<UpdateStatusSnapshot>>, config: UpdateServiceConfig) {
+    async fn set(status: &Arc<RwLock<UpdateStatusSnapshot>>, snapshot: UpdateStatusSnapshot) {
+        *status.write().await = snapshot;
+    }
+
+    let Some(watchtower_token) = config.watchtower_token.as_deref() else {
+        set(
+            &update_status,
+            UpdateStatusSnapshot::failed(&config, "PROXY_POOL_UPDATE_TOKEN missing"),
+        )
+        .await;
+        return;
+    };
+
+    // Step 1: Inspect current container to get previous image identity.
+    tracing::info!(
+        container = %config.container_name,
+        "update_service: inspecting current container"
+    );
+    let old_inspect = match docker_api_get(
+        &config.socket_path,
+        &format!("/containers/{}/json", config.container_name),
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(e) => {
+            set(
+                &update_status,
+                UpdateStatusSnapshot::failed(&config, format!("failed to inspect container: {e}")),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let previous_image_id = old_inspect
+        .get("Image")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    // Step 2: Pull latest image (pre-fetch so Watchtower doesn't need to).
+    tracing::info!(image = %config.image, "update_service: pulling image");
+    if let Err(e) = docker_api_post(
+        &config.socket_path,
+        &format!(
+            "/images/create?fromImage={}&tag={}",
+            docker_api_escape(&config.image_repo),
+            docker_api_escape(&config.image_tag)
+        ),
+    )
+    .await
+    {
+        set(
+            &update_status,
+            UpdateStatusSnapshot::failed(&config, format!("docker pull failed: {e}"))
+                .with_previous_image_id(previous_image_id.clone()),
+        )
+        .await;
+        return;
+    }
+
+    let new_inspect = match docker_api_get(
+        &config.socket_path,
+        &format!("/images/{}/json", docker_api_escape(&config.image)),
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(e) => {
+            set(
+                &update_status,
+                UpdateStatusSnapshot::failed(
+                    &config,
+                    format!("failed to inspect pulled image: {e}"),
+                )
+                .with_previous_image_id(previous_image_id.clone()),
+            )
+            .await;
+            return;
+        }
+    };
+    let new_digest = docker_image_digest(&new_inspect).unwrap_or_else(|| "unknown".into());
+    let new_image_id = docker_image_id(&new_inspect).unwrap_or_else(|| "unknown".into());
+    let digest_changed = image_identity_changed(&previous_image_id, &new_image_id);
+
+    if !digest_changed {
+        set(
+            &update_status,
+            UpdateStatusSnapshot::already_current(&config).with_image_result(
+                previous_image_id,
+                new_image_id,
+                new_digest,
+                false,
+            ),
+        )
+        .await;
+        return;
+    }
+
+    // Step 3: Trigger Watchtower to recreate the container.
+    tracing::info!("update_service: triggering Watchtower update");
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&config.watchtower_url)
+        .header("Authorization", format!("Bearer {watchtower_token}"))
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await;
+
+    let snapshot = match resp {
+        Ok(r) if r.status().is_success() => {
+            tracing::info!("update_service: Watchtower update triggered successfully");
+            UpdateStatusSnapshot::updated(&config)
+        }
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            UpdateStatusSnapshot::failed(&config, format!("Watchtower returned {status}: {body}"))
+        }
+        Err(e) => UpdateStatusSnapshot::failed(&config, format!("failed to reach Watchtower: {e}")),
+    };
+    set(
+        &update_status,
+        snapshot.with_image_result(previous_image_id, new_image_id, new_digest, digest_changed),
+    )
+    .await;
 }
 
 // Implement ServerHandler with tool_handler to enable .serve()
@@ -1314,6 +1341,127 @@ fn docker_api_escape(value: &str) -> String {
         .replace('@', "%40")
 }
 
+/// GET a Docker Engine API path and return the raw (non-JSON) response body.
+///
+/// Sends `Connection: close` so the daemon closes the socket after the body,
+/// letting us read to EOF safely (used for the container-logs stream, which is
+/// binary-framed and must not be parsed as JSON). Dechunks if needed.
+#[cfg(unix)]
+async fn docker_api_get_raw(socket_path: &str, path: &str) -> Result<Vec<u8>, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+    use tokio::time::{Duration, timeout};
+
+    let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+        .await
+        .map_err(|_| format!("connect to {socket_path}: timed out after 10s"))?
+        .map_err(|e| format!("connect to {socket_path}: {e}"))?;
+
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    timeout(
+        Duration::from_secs(10),
+        stream.write_all(request.as_bytes()),
+    )
+    .await
+    .map_err(|_| "write: timed out after 10s".to_string())?
+    .map_err(|e| format!("write: {e}"))?;
+
+    let mut buf = Vec::with_capacity(16384);
+    let mut tmp = [0u8; 16384];
+    let max_size = 16_777_216; // 16 MiB cap
+    loop {
+        match timeout(Duration::from_secs(15), stream.read(&mut tmp)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() > max_size {
+                    break;
+                }
+            }
+            Ok(Err(e)) => return Err(format!("read: {e}")),
+            Err(_) => return Err("read: timed out after 15s".into()),
+        }
+    }
+
+    let sep = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or("no HTTP header terminator in response")?;
+    let header_bytes = &buf[..sep];
+    let header = String::from_utf8_lossy(header_bytes);
+    let status_line = header.lines().next().unwrap_or("");
+    if !(status_line.contains(" 200") || status_line.contains(" 101")) {
+        return Err(format!("docker returned non-200: {status_line}"));
+    }
+    let header_lower = header.to_ascii_lowercase();
+    let body = &buf[sep + 4..];
+    if header_lower.contains("transfer-encoding: chunked") {
+        Ok(dechunk_bytes(body))
+    } else {
+        Ok(body.to_vec())
+    }
+}
+
+#[cfg(not(unix))]
+async fn docker_api_get_raw(_socket_path: &str, _path: &str) -> Result<Vec<u8>, String> {
+    Err("Docker Engine API is only available on Unix (requires Unix socket)".into())
+}
+
+/// Decode an HTTP chunked-transfer body into raw bytes (byte-accurate; safe for
+/// binary payloads).
+#[cfg(unix)]
+fn dechunk_bytes(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        // Read the chunk-size line up to CRLF.
+        let Some(nl) = body[i..].windows(2).position(|w| w == b"\r\n") else {
+            break;
+        };
+        let size_str = String::from_utf8_lossy(&body[i..i + nl]);
+        let size = match usize::from_str_radix(size_str.trim(), 16) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        let data_start = i + nl + 2;
+        let data_end = (data_start + size).min(body.len());
+        out.extend_from_slice(&body[data_start..data_end]);
+        i = data_end + 2; // skip trailing CRLF
+    }
+    out
+}
+
+/// Demultiplex Docker's non-TTY log stream (8-byte frame header + payload) into
+/// plain text, merging stdout/stderr in arrival order.
+///
+/// Falls back to a lossy UTF-8 decode of the whole buffer when the data is not
+/// framed (TTY containers emit raw bytes).
+fn demux_docker_log_stream(body: &[u8]) -> String {
+    // A valid frame header is [stream(1..=2), 0, 0, 0, size(4 BE)].
+    let looks_framed = body.len() >= 8 && matches!(body[0], 1 | 2) && body[1..4] == [0, 0, 0];
+    if !looks_framed {
+        return String::from_utf8_lossy(body).into_owned();
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i + 8 <= body.len() {
+        let stream = body[i];
+        if !matches!(stream, 1 | 2) || body[i + 1..i + 4] != [0, 0, 0] {
+            // Framing broke — append the remainder raw and stop.
+            out.extend_from_slice(&body[i..]);
+            break;
+        }
+        let size =
+            u32::from_be_bytes([body[i + 4], body[i + 5], body[i + 6], body[i + 7]]) as usize;
+        let start = i + 8;
+        let end = (start + size).min(body.len());
+        out.extend_from_slice(&body[start..end]);
+        i = end;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Decode a chunked transfer-encoding body.
 #[cfg(unix)]
 fn decode_chunked(body: &str) -> String {
@@ -1559,6 +1707,77 @@ mod tests {
         assert_eq!(param.limit, Some(50));
         assert_eq!(param.min_score, Some(0.25));
         assert_eq!(param.apply, Some(true));
+    }
+
+    #[test]
+    fn test_container_logs_param_and_tail_clamp() {
+        let param: ContainerLogsParam = serde_json::from_str(r#"{"tail":5000}"#).unwrap();
+        assert_eq!(param.tail.unwrap_or(200).clamp(1, 1000), 1000);
+        let param: ContainerLogsParam = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(param.container.is_none());
+        assert_eq!(param.tail.unwrap_or(200).clamp(1, 1000), 200);
+        let param: ContainerLogsParam = serde_json::from_str(r#"{"tail":0}"#).unwrap();
+        assert_eq!(param.tail.unwrap_or(200).clamp(1, 1000), 1);
+    }
+
+    #[test]
+    fn test_demux_docker_log_stream_frames() {
+        // Two frames: stdout "hello\n" then stderr "err\n".
+        let mut buf = Vec::new();
+        let payload1 = b"hello\n";
+        buf.extend_from_slice(&[1, 0, 0, 0]);
+        buf.extend_from_slice(&(payload1.len() as u32).to_be_bytes());
+        buf.extend_from_slice(payload1);
+        let payload2 = b"err\n";
+        buf.extend_from_slice(&[2, 0, 0, 0]);
+        buf.extend_from_slice(&(payload2.len() as u32).to_be_bytes());
+        buf.extend_from_slice(payload2);
+
+        assert_eq!(demux_docker_log_stream(&buf), "hello\nerr\n");
+    }
+
+    #[test]
+    fn test_demux_docker_log_stream_raw_fallback() {
+        // Not framed (TTY / plain text) → lossy passthrough.
+        let raw = b"plain log line\n";
+        assert_eq!(demux_docker_log_stream(raw), "plain log line\n");
+    }
+
+    #[test]
+    fn test_demux_docker_log_stream_truncated_and_malformed() {
+        // Empty buffer → empty string (no panic).
+        assert_eq!(demux_docker_log_stream(&[]), "");
+
+        // Size field larger than the remaining payload → copy what is present,
+        // no out-of-bounds slice.
+        let mut buf = vec![1, 0, 0, 0];
+        buf.extend_from_slice(&100u32.to_be_bytes()); // claims 100 bytes
+        buf.extend_from_slice(b"short"); // only 5 present
+        assert_eq!(demux_docker_log_stream(&buf), "short");
+
+        // A valid frame followed by a partial (<8 byte) trailing header → the
+        // parsed frame is kept and the partial header is dropped, no panic.
+        let mut buf = vec![1, 0, 0, 0];
+        buf.extend_from_slice(&6u32.to_be_bytes());
+        buf.extend_from_slice(b"hello\n");
+        buf.extend_from_slice(&[2, 0, 0]); // 3-byte partial header
+        assert_eq!(demux_docker_log_stream(&buf), "hello\n");
+
+        // Framing breaks mid-stream (invalid stream byte) → keep the decoded
+        // prefix, append the remainder raw, no panic.
+        let mut buf = vec![1, 0, 0, 0];
+        buf.extend_from_slice(&3u32.to_be_bytes());
+        buf.extend_from_slice(b"abc");
+        buf.extend_from_slice(&[9, 0, 0, 0, 0, 0, 0, 2, b'x', b'y']); // stream byte 9 invalid
+        assert!(demux_docker_log_stream(&buf).starts_with("abc"));
+    }
+
+    #[test]
+    fn test_update_status_in_progress_snapshot() {
+        let config = UpdateServiceConfig::from_env();
+        let snap = UpdateStatusSnapshot::in_progress(&config);
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(json.contains("\"status\":\"in_progress\""));
     }
 
     #[test]
