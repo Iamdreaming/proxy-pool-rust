@@ -10,8 +10,9 @@ services:
           memory: 128M
 
   proxy-pool:
-    # Pull pre-built image from GHCR (built by GitHub Actions)
-    image: ghcr.io/iamdreaming/proxy-pool-rust:latest
+    # Pre-built image, built by GitHub Actions and pushed to ghcr.io; pulled via
+    # the NJU GHCR mirror (ghcr.nju.edu.cn) for reliable access from China.
+    image: ghcr.nju.edu.cn/iamdreaming/proxy-pool-rust:latest
     # To build locally instead, comment the image line above and uncomment:
     # build:
     #   context: ..
@@ -53,7 +54,7 @@ services:
   proxy-mcp:
     # Standalone MCP server (same image, different binary). Decoupled from
     # proxy-pool so triggering update_service does not kill the MCP responder.
-    image: ghcr.io/iamdreaming/proxy-pool-rust:latest
+    image: ghcr.nju.edu.cn/iamdreaming/proxy-pool-rust:latest
     command: ["/app/proxy-mcp-server"]
     container_name: proxy-mcp
     ports:
@@ -73,7 +74,7 @@ services:
       - PROXY_POOL_UPDATE_ENABLED=true
       - PROXY_POOL_UPDATE_DOCKER_SOCKET=/var/run/docker.sock
       - PROXY_POOL_UPDATE_CONTAINER=proxy-pool
-      - PROXY_POOL_UPDATE_IMAGE=ghcr.io/iamdreaming/proxy-pool-rust:latest
+      - PROXY_POOL_UPDATE_IMAGE=ghcr.nju.edu.cn/iamdreaming/proxy-pool-rust:latest
       - PROXY_POOL_UPDATE_WATCHTOWER_URL=http://watchtower-proxy-pool:8080/v1/update
       - PROXY_POOL_UPDATE_TOKEN=${PROXY_POOL_UPDATE_TOKEN:-proxy-pool-update}
     restart: unless-stopped
