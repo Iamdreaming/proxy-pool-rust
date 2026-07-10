@@ -843,6 +843,12 @@ impl ProxyPoolMcp {
 /// Overall safety timeout for a background `update_service` run.
 const UPDATE_SERVICE_TIMEOUT_SECS: u64 = 300;
 
+/// Max attempts for the image pull (retries transient registry timeouts).
+const PULL_MAX_ATTEMPTS: usize = 3;
+
+/// Base backoff between pull attempts (multiplied by the attempt number).
+const PULL_RETRY_BACKOFF_SECS: u64 = 3;
+
 /// Background body of `update_service`: inspect → pull → compare → trigger
 /// Watchtower, writing the terminal snapshot into `update_status`.
 async fn run_update(update_status: Arc<RwLock<UpdateStatusSnapshot>>, config: UpdateServiceConfig) {
@@ -888,21 +894,49 @@ async fn run_update(update_status: Arc<RwLock<UpdateStatusSnapshot>>, config: Up
         .to_string();
 
     // Step 2: Pull latest image (pre-fetch so Watchtower doesn't need to).
-    tracing::info!(image = %config.image, "update_service: pulling image");
-    if let Err(e) = docker_api_post(
-        &config.socket_path,
-        &format!(
-            "/images/create?fromImage={}&tag={}",
-            docker_api_escape(&config.image_repo),
-            docker_api_escape(&config.image_tag)
-        ),
-    )
-    .await
-    {
+    //
+    // Retry on transient failures: the daemon's anonymous token fetch to
+    // ghcr.io can time out on a flaky network, whereas an interactive
+    // `docker compose pull` succeeds thanks to cached tokens / CLI retries.
+    let pull_path = format!(
+        "/images/create?fromImage={}&tag={}",
+        docker_api_escape(&config.image_repo),
+        docker_api_escape(&config.image_tag)
+    );
+    let mut pull_error = None;
+    for attempt in 1..=PULL_MAX_ATTEMPTS {
+        tracing::info!(
+            image = %config.image,
+            attempt,
+            "update_service: pulling image"
+        );
+        match docker_api_post(&config.socket_path, &pull_path).await {
+            Ok(_) => {
+                pull_error = None;
+                break;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "update_service: docker pull attempt {attempt}/{PULL_MAX_ATTEMPTS} failed: {e}"
+                );
+                pull_error = Some(e);
+                if attempt < PULL_MAX_ATTEMPTS {
+                    tokio::time::sleep(std::time::Duration::from_secs(
+                        PULL_RETRY_BACKOFF_SECS * attempt as u64,
+                    ))
+                    .await;
+                }
+            }
+        }
+    }
+    if let Some(e) = pull_error {
         set(
             &update_status,
-            UpdateStatusSnapshot::failed(&config, format!("docker pull failed: {e}"))
-                .with_previous_image_id(previous_image_id.clone()),
+            UpdateStatusSnapshot::failed(
+                &config,
+                format!("docker pull failed after {PULL_MAX_ATTEMPTS} attempts: {e}"),
+            )
+            .with_previous_image_id(previous_image_id.clone()),
         )
         .await;
         return;
