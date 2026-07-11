@@ -80,3 +80,81 @@ Added preview-based apply recommendations for optional GitHub airport subscripti
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: auth-proxy-support 收尾 + xray 只读排查
+
+**Date**: 2026-07-11
+**Task**: `07-11-auth-proxy-support` (completed) + xray health diagnosis (read-only)
+**Package**: proxy-core / proxy-xray
+**Branch**: `main`
+
+### Summary
+
+Authenticated HTTP/SOCKS5 proxy support shipped and verified on dev (`514663b`). TopChina clash_sub 入库 267 basic（含凭据）；http 池上升。xray 进程/gRPC 正常但 active=0：outbound_sync 固定先扫 `ss`，每轮最多 50 次验证，失败冷却 3600s；免费 SS 节点对 `https://httpbin.org/ip` 验证几乎全失败，vless/vmess/trojan 在 ss 队列耗尽前基本进不了激活窗口。
+
+### Main Changes
+
+- feat: `username`/`password` on Proxy + SubscriptionProxy::Basic; validator basic_auth; gateway CONNECT Proxy-Authorization + SOCKS5 RFC1929
+- config: subscription.urls 追加 TopChina clash_sub（经 v4.gh-proxy.org）
+- deploy: runtime 更新到 `514663b`；鉴权任务 Trellis status=completed, commit=514663b
+- cleanup: 删除本地 `.tmp_verify` / `.tmp_xray_status.json`
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `514663b` | feat(core): support authenticated HTTP/SOCKS5 proxies |
+| `4a18095` | chore(trellis): complete auth-proxy-support task |
+
+### Testing / Verification
+
+- [OK] local cargo test + clippy (pre-push)
+- [OK] GHCR docker-build CI green
+- [OK] `/api/status` git_hash=514663b; pool total≈1000+; TopChina stored_basic=267
+- [OK] xray diagnosis (read-only): enabled, active=0, failed growing, recent all ss + "xray validation failed"
+
+### Status
+
+[OK] **auth-proxy-support completed**
+[INFO] **xray not healthy for routing** — process OK, no active encrypted nodes
+
+### Next Steps
+
+- Optional follow-up: xray activation starvation (ss-first + free-node quality) / validation target / protocol fair scheduling
+- User can `/finish-work` to archive session if desired
+
+
+## Session 3: auth-proxy-support 交付收尾 + xray 只读排查
+
+**Date**: 2026-07-11
+**Task**: auth-proxy-support 交付收尾 + xray 只读排查
+**Package**: proxy-core
+**Branch**: `main`
+
+### Summary
+
+鉴权 HTTP/SOCKS5 代理支持已完成并部署到 dev（514663b）：TopChina clash_sub 入库 267 basic；http 池可用。收尾清理临时验证文件并记 journal。xray 只读诊断：进程/gRPC 正常但 active=0，outbound_sync 固定先扫 ss、每轮 50 次验证、失败冷却 1h，免费 SS 对 httpbin 验证几乎全挂，vless/vmess/trojan 被饥饿；与鉴权改动无关。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `514663b` | (see git log) |
+| `4a18095` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
