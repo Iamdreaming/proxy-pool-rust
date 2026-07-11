@@ -112,11 +112,15 @@ fn parse_line(line: &str) -> SubscriptionProxy {
             host: server,
             port,
             protocol: Protocol::Socks5,
+            username: params.get_any(&["username", "user"]),
+            password: params.get("password"),
         },
         "http" => SubscriptionProxy::Basic {
             host: server,
             port,
             protocol: Protocol::Http,
+            username: params.get_any(&["username", "user"]),
+            password: params.get("password"),
         },
         "ss" => SubscriptionProxy::Shadowsocks {
             host: server,
@@ -294,6 +298,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &proxies[0]
         {
             assert_eq!(host, "10.0.0.1");
@@ -314,6 +319,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &proxies[0]
         {
             assert_eq!(host, "10.0.0.2");
@@ -535,6 +541,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &proxies[0]
         {
             assert_eq!(host, "10.0.0.1");
@@ -549,6 +556,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &proxies[1]
         {
             assert_eq!(host, "10.0.0.2");

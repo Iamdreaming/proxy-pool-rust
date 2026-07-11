@@ -127,6 +127,10 @@ fn record_failure_sample(proxy: &mut Proxy, error: &'static str) {
 /// counters; without this carry-forward every refresh cycle would wipe scores,
 /// quality history, and circuit state (B3). A genuinely-validated incoming
 /// proxy (non-zero counts or a `last_check`) keeps its own fresh stats.
+///
+/// Auth credentials (`username`/`password`) are intentionally NOT carried from
+/// `existing`: `merged` starts as `incoming.clone()`, so hourly-rotating
+/// subscription credentials always win over stale stored ones.
 fn carry_forward_history(incoming: &Proxy, existing: Option<&Proxy>) -> Proxy {
     let mut merged = incoming.clone();
     let incoming_has_history =
@@ -865,6 +869,24 @@ mod tests {
         let merged = carry_forward_history(&incoming, Some(&existing));
         assert_eq!(merged.success_count, 1);
         assert_eq!(merged.fail_count, 4);
+    }
+
+    #[test]
+    fn carry_forward_history_keeps_incoming_credentials() {
+        // Hourly-rotating subscription credentials must replace stale ones.
+        let mut existing = make_proxy("1.1.1.1", 80);
+        existing.success_count = 5;
+        existing.username = Some("old-user".into());
+        existing.password = Some("old-pass".into());
+
+        let mut incoming = make_proxy("1.1.1.1", 80);
+        incoming.username = Some("new-user".into());
+        incoming.password = Some("new-pass".into());
+
+        let merged = carry_forward_history(&incoming, Some(&existing));
+        assert_eq!(merged.credentials(), Some(("new-user", "new-pass")));
+        // History still carries forward when incoming has none.
+        assert_eq!(merged.success_count, 5);
     }
 
     #[test]

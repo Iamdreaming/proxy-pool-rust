@@ -19,9 +19,13 @@ pub fn to_proxy(sub: &SubscriptionProxy, source_url: &str) -> Option<Proxy> {
             host,
             port,
             protocol,
+            username,
+            password,
         } => {
             let mut proxy = Proxy::new(host.clone(), *port, *protocol);
             proxy.source = Some(format!("subscription:{source_url}"));
+            proxy.username = username.clone();
+            proxy.password = password.clone();
             Some(proxy)
         }
         _ => None,
@@ -68,11 +72,14 @@ mod tests {
             host: "1.2.3.4".into(),
             port: 1080,
             protocol: Protocol::Socks5,
+            username: Some("user1".into()),
+            password: Some("pass1".into()),
         };
         let proxy = to_proxy(&sub, "https://example.com/sub").unwrap();
         assert_eq!(proxy.host, "1.2.3.4");
         assert_eq!(proxy.port, 1080);
         assert_eq!(proxy.protocol, Protocol::Socks5);
+        assert_eq!(proxy.credentials(), Some(("user1", "pass1")));
         assert_eq!(
             proxy.source.as_deref(),
             Some("subscription:https://example.com/sub")
@@ -112,6 +119,8 @@ mod tests {
                 host: "1.1.1.1".into(),
                 port: 1080,
                 protocol: Protocol::Socks5,
+                username: None,
+                password: None,
             },
             SubscriptionProxy::Shadowsocks {
                 host: "2.2.2.2".into(),
@@ -125,6 +134,8 @@ mod tests {
                 host: "3.3.3.3".into(),
                 port: 8080,
                 protocol: Protocol::Http,
+                username: None,
+                password: None,
             },
             SubscriptionProxy::Trojan {
                 host: "4.4.4.4".into(),

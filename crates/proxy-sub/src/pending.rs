@@ -97,6 +97,8 @@ mod tests {
             host: "1.2.3.4".into(),
             port: 1080,
             protocol: Protocol::Socks5,
+            username: None,
+            password: None,
         };
         let json = serde_json::to_string(&basic).unwrap();
         let decoded: SubscriptionProxy = serde_json::from_str(&json).unwrap();

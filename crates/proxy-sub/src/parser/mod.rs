@@ -85,6 +85,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &proxies[0]
         {
             assert_eq!(host, "10.0.0.1");
@@ -98,6 +99,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &proxies[1]
         {
             assert_eq!(host, "10.0.0.2");

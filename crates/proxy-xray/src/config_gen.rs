@@ -694,6 +694,8 @@ mod tests {
             host: "1.2.3.4".into(),
             port: 1080,
             protocol: Protocol::Socks5,
+            username: None,
+            password: None,
         };
         assert!(ConfigGenerator::generate(&basic, 20000).is_none());
     }

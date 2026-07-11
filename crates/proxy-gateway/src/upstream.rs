@@ -25,16 +25,44 @@ pub(crate) async fn connect_to_upstream_with_timeout(
 pub async fn socks5_handshake_on_stream(
     stream: &mut tokio::net::TcpStream,
     target_addr: &str,
+    credentials: Option<(&str, &str)>,
 ) -> anyhow::Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // SOCKS5 greeting: version 5, 1 method, no-auth (0x00)
-    stream.write_all(&[0x05, 0x01, 0x00]).await?;
+    // SOCKS5 greeting: offer no-auth (0x00), plus username/password (0x02) when
+    // credentials are available.
+    if credentials.is_some() {
+        stream.write_all(&[0x05, 0x02, 0x00, 0x02]).await?;
+    } else {
+        stream.write_all(&[0x05, 0x01, 0x00]).await?;
+    }
 
     let mut resp = [0u8; 2];
     stream.read_exact(&mut resp).await?;
-    if resp[0] != 0x05 || resp[1] != 0x00 {
-        anyhow::bail!("SOCKS5 upstream rejected no-auth: {:#?}", resp);
+    if resp[0] != 0x05 {
+        anyhow::bail!("SOCKS5 upstream bad version: {:#?}", resp);
+    }
+    match resp[1] {
+        0x00 => {} // no auth
+        0x02 => {
+            let (user, pass) = credentials
+                .ok_or_else(|| anyhow::anyhow!("SOCKS5 upstream requires auth but none provided"))?;
+            if user.len() > 255 || pass.len() > 255 {
+                anyhow::bail!("SOCKS5 username/password too long for RFC1929");
+            }
+            // RFC 1929: VER(0x01), ULEN, UNAME, PLEN, PASSWD
+            let mut auth = vec![0x01, user.len() as u8];
+            auth.extend_from_slice(user.as_bytes());
+            auth.push(pass.len() as u8);
+            auth.extend_from_slice(pass.as_bytes());
+            stream.write_all(&auth).await?;
+            let mut auth_resp = [0u8; 2];
+            stream.read_exact(&mut auth_resp).await?;
+            if auth_resp[0] != 0x01 || auth_resp[1] != 0x00 {
+                anyhow::bail!("SOCKS5 username/password auth rejected");
+            }
+        }
+        other => anyhow::bail!("SOCKS5 upstream selected unsupported method: {other}"),
     }
 
     // Parse target address for SOCKS5 CONNECT request
@@ -103,24 +131,35 @@ pub async fn socks5_handshake_on_stream(
 pub async fn connect_via_socks5(
     upstream_addr: &str,
     target_addr: &str,
+    credentials: Option<(&str, &str)>,
 ) -> anyhow::Result<tokio::net::TcpStream> {
     let mut stream = tokio::net::TcpStream::connect(upstream_addr).await?;
-    socks5_handshake_on_stream(&mut stream, target_addr).await?;
+    socks5_handshake_on_stream(&mut stream, target_addr, credentials).await?;
     Ok(stream)
 }
 
 /// Connect to a target through an HTTP proxy using CONNECT.
 ///
 /// This establishes a TCP connection to the upstream HTTP proxy, sends a
-/// CONNECT request for `target_addr`, and returns a stream tunneled to the
-/// target when the proxy replies with any 2xx status.
+/// CONNECT request for `target_addr` (with `Proxy-Authorization` when
+/// credentials are supplied), and returns a stream tunneled to the target when
+/// the proxy replies with any 2xx status.
 pub async fn connect_via_http_proxy(
     upstream_addr: &str,
     target_addr: &str,
+    credentials: Option<(&str, &str)>,
 ) -> anyhow::Result<tokio::net::TcpStream> {
     let mut stream = tokio::net::TcpStream::connect(upstream_addr).await?;
+    let auth_header = match credentials {
+        Some((user, pass)) => {
+            use base64::Engine;
+            let token = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
+            format!("Proxy-Authorization: Basic {token}\r\n")
+        }
+        None => String::new(),
+    };
     let request = format!(
-        "CONNECT {target_addr} HTTP/1.1\r\nHost: {target_addr}\r\nProxy-Connection: keep-alive\r\n\r\n"
+        "CONNECT {target_addr} HTTP/1.1\r\nHost: {target_addr}\r\n{auth_header}Proxy-Connection: keep-alive\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).await?;
 
@@ -166,11 +205,11 @@ pub async fn connect_via_warp_chain(
     let proxy_addr = format!("{}:{}", proxy.host, proxy.port);
     let warp_addr = format!("127.0.0.1:{warp_socks5_port}");
 
-    // Step 1: proxy -> WARP entry
-    let mut stream = connect_via_socks5(&proxy_addr, &warp_addr).await?;
+    // Step 1: proxy -> WARP entry (authenticate to the pool proxy if it needs it)
+    let mut stream = connect_via_socks5(&proxy_addr, &warp_addr, proxy.credentials()).await?;
 
     // Step 2: WARP -> target (SOCKS5 handshake on the already-tunneled stream)
-    socks5_handshake_on_stream(&mut stream, target_addr).await?;
+    socks5_handshake_on_stream(&mut stream, target_addr, None).await?;
 
     Ok(stream)
 }
@@ -184,23 +223,24 @@ pub async fn connect_to_upstream(
         Upstream::Direct => Ok(tokio::net::TcpStream::connect(target_addr).await?),
         Upstream::Proxy(proxy) => {
             let upstream_addr = format!("{}:{}", proxy.host, proxy.port);
+            let creds = proxy.credentials();
             match proxy.protocol {
                 Protocol::Http | Protocol::Https => {
-                    connect_via_http_proxy(&upstream_addr, target_addr).await
+                    connect_via_http_proxy(&upstream_addr, target_addr, creds).await
                 }
-                Protocol::Socks5 => connect_via_socks5(&upstream_addr, target_addr).await,
+                Protocol::Socks5 => connect_via_socks5(&upstream_addr, target_addr, creds).await,
                 Protocol::Socks4 => anyhow::bail!("SOCKS4 upstream proxies are not supported"),
             }
         }
         Upstream::Warp { socks5_port, .. } => {
             let upstream_addr = format!("127.0.0.1:{socks5_port}");
-            connect_via_socks5(&upstream_addr, target_addr).await
+            connect_via_socks5(&upstream_addr, target_addr, None).await
         }
         Upstream::Xray {
             local_socks5_port: socks5_port,
         } => {
             let upstream_addr = format!("127.0.0.1:{socks5_port}");
-            connect_via_socks5(&upstream_addr, target_addr).await
+            connect_via_socks5(&upstream_addr, target_addr, None).await
         }
         Upstream::WarpChain { proxy, socks5_port } => {
             connect_via_warp_chain(proxy, *socks5_port, target_addr).await
@@ -416,7 +456,7 @@ mod tests {
         });
 
         let mut stream =
-            connect_via_http_proxy(&format!("127.0.0.1:{upstream_port}"), "example.com:443")
+            connect_via_http_proxy(&format!("127.0.0.1:{upstream_port}"), "example.com:443", None)
                 .await
                 .unwrap();
         let mut tunneled = [0u8; 7];
@@ -507,5 +547,94 @@ mod tests {
             err.to_string()
                 .contains("SOCKS4 upstream proxies are not supported")
         );
+    }
+
+    #[tokio::test]
+    async fn test_http_proxy_connect_sends_proxy_authorization() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_headers(&mut socket).await;
+            let request_text = String::from_utf8(request).unwrap();
+            assert!(request_text.starts_with("CONNECT example.com:443 HTTP/1.1\r\n"));
+            // base64("user:pass") = dXNlcjpwYXNz
+            assert!(request_text.contains("\r\nProxy-Authorization: Basic dXNlcjpwYXNz\r\n"));
+            socket
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        connect_via_http_proxy(
+            &format!("127.0.0.1:{upstream_port}"),
+            "example.com:443",
+            Some(("user", "pass")),
+        )
+        .await
+        .unwrap();
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_socks5_proxy_upstream_uses_username_password_auth() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+
+            // Greeting: VER, NMETHODS=2, METHODS={0x00, 0x02}
+            let mut greeting = [0u8; 4];
+            socket.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [0x05, 0x02, 0x00, 0x02]);
+            // Select username/password
+            socket.write_all(&[0x05, 0x02]).await.unwrap();
+
+            // RFC 1929 sub-negotiation: VER=0x01, ULEN, UNAME, PLEN, PASSWD
+            let mut ver_ulen = [0u8; 2];
+            socket.read_exact(&mut ver_ulen).await.unwrap();
+            assert_eq!(ver_ulen, [0x01, 4]); // "user".len()
+            let mut uname = [0u8; 4];
+            socket.read_exact(&mut uname).await.unwrap();
+            assert_eq!(&uname, b"user");
+            let mut plen = [0u8; 1];
+            socket.read_exact(&mut plen).await.unwrap();
+            assert_eq!(plen, [4]); // "pass".len()
+            let mut passwd = [0u8; 4];
+            socket.read_exact(&mut passwd).await.unwrap();
+            assert_eq!(&passwd, b"pass");
+            // Auth success
+            socket.write_all(&[0x01, 0x00]).await.unwrap();
+
+            // CONNECT request for example.com:443
+            let mut header = [0u8; 4];
+            socket.read_exact(&mut header).await.unwrap();
+            assert_eq!(header, [0x05, 0x01, 0x00, 0x03]);
+            let mut domain_len = [0u8; 1];
+            socket.read_exact(&mut domain_len).await.unwrap();
+            let mut domain = vec![0u8; domain_len[0] as usize];
+            socket.read_exact(&mut domain).await.unwrap();
+            assert_eq!(domain, b"example.com");
+            let mut port = [0u8; 2];
+            socket.read_exact(&mut port).await.unwrap();
+            assert_eq!(u16::from_be_bytes(port), 443);
+
+            socket
+                .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0])
+                .await
+                .unwrap();
+        });
+
+        let mut proxy = Proxy::new("127.0.0.1", upstream_port, Protocol::Socks5);
+        proxy.username = Some("user".into());
+        proxy.password = Some("pass".into());
+        connect_to_upstream(&Upstream::Proxy(proxy), "example.com:443")
+            .await
+            .unwrap();
+
+        server.await.unwrap();
     }
 }

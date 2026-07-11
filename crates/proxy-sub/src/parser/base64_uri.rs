@@ -181,9 +181,29 @@ fn parse_uri(uri: &str) -> SubscriptionProxy {
     }
 }
 
-/// Parse `socks5://host:port` or `http://host:port`.
+/// Parse `socks5://host:port` or `http://host:port`, with optional
+/// `user:pass@` userinfo (percent-decoded).
 fn parse_basic(rest: &str, protocol: Protocol) -> SubscriptionProxy {
-    let (host, port) = match split_host_port(rest) {
+    // Strip fragment/query, then split optional userinfo before the last '@'.
+    let core = rest
+        .split(['#', '?'])
+        .next()
+        .unwrap_or(rest);
+    let (userinfo, hostport) = match core.rsplit_once('@') {
+        Some((u, hp)) => (Some(u), hp),
+        None => (None, core),
+    };
+    let (username, password) = match userinfo {
+        Some(ui) => match ui.split_once(':') {
+            Some((u, p)) => (
+                non_empty(&percent_decode(u)),
+                non_empty(&percent_decode(p)),
+            ),
+            None => (non_empty(&percent_decode(ui)), None),
+        },
+        None => (None, None),
+    };
+    let (host, port) = match split_host_port(hostport) {
         Some(pair) => pair,
         None => {
             tracing::warn!("Base64 URI: invalid basic URI: {rest}");
@@ -196,6 +216,17 @@ fn parse_basic(rest: &str, protocol: Protocol) -> SubscriptionProxy {
         host,
         port,
         protocol,
+        username,
+        password,
+    }
+}
+
+/// Map a non-empty string to `Some`, empty to `None`.
+fn non_empty(s: &str) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
     }
 }
 
@@ -667,6 +698,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &result
         {
             assert_eq!(host, "10.0.0.1");
@@ -684,6 +716,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &result
         {
             assert_eq!(host, "10.0.0.2");
@@ -691,6 +724,49 @@ mod tests {
             assert_eq!(*protocol, Protocol::Http);
         } else {
             panic!("Expected Basic, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_http_with_userinfo() {
+        let result = parse_uri("http://user:pass@10.0.0.2:8080");
+        if let SubscriptionProxy::Basic {
+            host,
+            port,
+            protocol,
+            username,
+            password,
+        } = &result
+        {
+            assert_eq!(host, "10.0.0.2");
+            assert_eq!(*port, 8080);
+            assert_eq!(*protocol, Protocol::Http);
+            assert_eq!(username.as_deref(), Some("user"));
+            assert_eq!(password.as_deref(), Some("pass"));
+        } else {
+            panic!("Expected Basic with creds, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_socks5_with_percent_decoded_userinfo() {
+        // user "a@b", password "p/s" percent-encoded in userinfo
+        let result = parse_uri("socks5://a%40b:p%2Fs@10.0.0.1:1080");
+        if let SubscriptionProxy::Basic {
+            host,
+            port,
+            protocol,
+            username,
+            password,
+        } = &result
+        {
+            assert_eq!(host, "10.0.0.1");
+            assert_eq!(*port, 1080);
+            assert_eq!(*protocol, Protocol::Socks5);
+            assert_eq!(username.as_deref(), Some("a@b"));
+            assert_eq!(password.as_deref(), Some("p/s"));
+        } else {
+            panic!("Expected Basic with percent-decoded creds, got {result:?}");
         }
     }
 

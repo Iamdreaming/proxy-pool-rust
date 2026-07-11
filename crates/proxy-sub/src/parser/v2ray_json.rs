@@ -103,11 +103,14 @@ fn parse_socks(settings: &Value) -> Option<SubscriptionProxy> {
     let server = first_server(settings)?;
     let host = server.get("address").and_then(|v| v.as_str())?.to_string();
     let port = server.get("port").and_then(|v| v.as_u64())? as u16;
+    let (username, password) = server_user_pass(server);
 
     Some(SubscriptionProxy::Basic {
         host,
         port,
         protocol: Protocol::Socks5,
+        username,
+        password,
     })
 }
 
@@ -191,12 +194,30 @@ fn parse_http(settings: &Value) -> Option<SubscriptionProxy> {
     let server = first_server(settings)?;
     let host = server.get("address").and_then(|v| v.as_str())?.to_string();
     let port = server.get("port").and_then(|v| v.as_u64())? as u16;
+    let (username, password) = server_user_pass(server);
 
     Some(SubscriptionProxy::Basic {
         host,
         port,
         protocol: Protocol::Http,
+        username,
+        password,
     })
+}
+
+/// Extract the first user's `user`/`pass` credentials from a socks/http server.
+fn server_user_pass(server: &serde_json::Map<String, Value>) -> (Option<String>, Option<String>) {
+    let user = server
+        .get("users")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first());
+    let get = |key: &str| -> Option<String> {
+        user.and_then(|u| u.get(key))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    (get("user"), get("pass"))
 }
 
 /// Parse a vmess outbound → `SubscriptionProxy::Vmess`.
@@ -426,6 +447,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &proxies[0]
         {
             assert_eq!(host, "10.0.0.1");
@@ -446,6 +468,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &proxies[0]
         {
             assert_eq!(host, "10.0.0.2");
@@ -722,6 +745,7 @@ mod tests {
             host,
             port,
             protocol,
+            ..
         } = &proxies[0]
         {
             assert_eq!(host, "10.0.0.1");

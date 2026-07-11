@@ -1429,6 +1429,7 @@ name = "proxy-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bytes",
  "proxy-core",
  "rand 0.9.4",

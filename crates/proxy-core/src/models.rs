@@ -157,6 +157,14 @@ pub struct Proxy {
     // -- Source tracking --
     pub source: Option<String>,
 
+    // -- Upstream authentication (for auth'd http/socks5 proxies) --
+    /// Username for upstream proxy auth, if the proxy requires it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Password for upstream proxy auth, if the proxy requires it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+
     // -- Encrypted proxy state (xray integration) --
     /// For encrypted-protocol nodes: tracks the xray integration state.
     #[serde(default)]
@@ -188,8 +196,18 @@ impl Proxy {
             circuit_open: false,
             circuit_open_until: None,
             source: None,
+            username: None,
+            password: None,
             encrypted_state: None,
             encrypted_config: None,
+        }
+    }
+
+    /// Upstream proxy auth credentials, when both username and password are set.
+    pub fn credentials(&self) -> Option<(&str, &str)> {
+        match (&self.username, &self.password) {
+            (Some(u), Some(p)) => Some((u.as_str(), p.as_str())),
+            _ => None,
         }
     }
 
@@ -449,6 +467,30 @@ impl ProxyFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Proxy::credentials --
+
+    #[test]
+    fn credentials_requires_both_username_and_password() {
+        let mut proxy = Proxy::new("1.2.3.4", 8080, Protocol::Http);
+        assert!(proxy.credentials().is_none());
+
+        proxy.username = Some("user".into());
+        assert!(proxy.credentials().is_none());
+
+        proxy.password = Some("pass".into());
+        assert_eq!(proxy.credentials(), Some(("user", "pass")));
+    }
+
+    #[test]
+    fn proxy_auth_fields_default_on_missing_json() {
+        // Backward-compatible: stored Proxy JSON without auth still deserializes.
+        let json = r#"{"host":"1.2.3.4","port":8080,"protocol":"http","latency_ms":null,"anonymity":null,"last_check":null,"success_count":0,"fail_count":0,"quality_history":{"samples":[]},"country":null,"country_name":null,"is_overseas":false,"warp_chain_ok":false,"warp_chain_latency_ms":null,"warp_chain_last_test":null,"circuit_open":false,"circuit_open_until":null,"source":null}"#;
+        let proxy: Proxy = serde_json::from_str(json).expect("legacy proxy json");
+        assert!(proxy.username.is_none());
+        assert!(proxy.password.is_none());
+        assert!(proxy.credentials().is_none());
+    }
 
     // -- Proxy::proxy_connect_url --
 

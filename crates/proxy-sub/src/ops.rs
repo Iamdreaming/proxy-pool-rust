@@ -992,11 +992,15 @@ mod tests {
                 host: "1.1.1.1".into(),
                 port: 8080,
                 protocol: Protocol::Http,
+                username: None,
+                password: None,
             },
             SubscriptionProxy::Basic {
                 host: "1.1.1.1".into(),
                 port: 8080,
                 protocol: Protocol::Http,
+                username: None,
+                password: None,
             },
             SubscriptionProxy::Unknown {
                 raw_config: "vless://secret".into(),

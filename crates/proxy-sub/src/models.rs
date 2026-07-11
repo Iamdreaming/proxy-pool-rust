@@ -11,6 +11,10 @@ pub enum SubscriptionProxy {
         host: String,
         port: u16,
         protocol: Protocol,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
     },
     /// Shadowsocks node.
     Shadowsocks {
@@ -134,6 +138,8 @@ mod tests {
             host: "1.2.3.4".into(),
             port: 1080,
             protocol: Protocol::Socks5,
+            username: None,
+            password: None,
         };
         assert!(basic.is_direct_usable());
 
@@ -154,6 +160,8 @@ mod tests {
             host: "1.2.3.4".into(),
             port: 1080,
             protocol: Protocol::Socks5,
+            username: None,
+            password: None,
         };
         assert_eq!(basic.dedup_key(), "1.2.3.4:1080:basic");
 

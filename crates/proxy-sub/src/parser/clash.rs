@@ -28,6 +28,8 @@ struct ClashProxyEntry {
     #[serde(default)]
     password: String,
     #[serde(default)]
+    username: String,
+    #[serde(default)]
     plugin: Option<String>,
     // Clash emits plugin-opts as a map, not a string; accept any YAML value.
     #[serde(default, rename = "plugin-opts")]
@@ -88,6 +90,16 @@ struct RealityOpts {
 struct ClashConfig {
     #[serde(default)]
     proxies: Vec<ClashProxyEntry>,
+}
+
+/// Map a non-empty (trimmed) string to `Some`, empty to `None`.
+fn non_empty(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
 }
 
 /// Deserialize a port that may be a YAML integer or a quoted string.
@@ -175,6 +187,8 @@ impl Parser for ClashParser {
                         host: entry.server.clone(),
                         port: entry.port,
                         protocol: Protocol::Socks5,
+                        username: non_empty(&entry.username),
+                        password: non_empty(&entry.password),
                     },
                     "http" => SubscriptionProxy::Basic {
                         host: entry.server.clone(),
@@ -184,6 +198,8 @@ impl Parser for ClashParser {
                         } else {
                             Protocol::Http
                         },
+                        username: non_empty(&entry.username),
+                        password: non_empty(&entry.password),
                     },
                     "ss" => SubscriptionProxy::Shadowsocks {
                         host: entry.server.clone(),
@@ -434,6 +450,62 @@ proxies:
             assert!(opts.contains("host=cdn.example.com"));
         } else {
             panic!("Expected Shadowsocks, got {:?}", proxies[0]);
+        }
+    }
+
+    #[test]
+    fn test_clash_http_with_username_password() {
+        let parser = ClashParser;
+        let content = r#"
+proxies:
+  - name: auth-http
+    type: http
+    server: 203.0.113.10
+    port: 8080
+    username: rotate-user
+    password: rotate-pass
+  - name: auth-socks5
+    type: socks5
+    server: 203.0.113.11
+    port: 1080
+    username: socks-user
+    password: socks-pass
+"#;
+        let proxies = parser.parse(content);
+        assert_eq!(proxies.len(), 2);
+
+        if let SubscriptionProxy::Basic {
+            host,
+            port,
+            protocol,
+            username,
+            password,
+        } = &proxies[0]
+        {
+            assert_eq!(host, "203.0.113.10");
+            assert_eq!(*port, 8080);
+            assert_eq!(*protocol, Protocol::Http);
+            assert_eq!(username.as_deref(), Some("rotate-user"));
+            assert_eq!(password.as_deref(), Some("rotate-pass"));
+        } else {
+            panic!("Expected Basic http, got {:?}", proxies[0]);
+        }
+
+        if let SubscriptionProxy::Basic {
+            host,
+            port,
+            protocol,
+            username,
+            password,
+        } = &proxies[1]
+        {
+            assert_eq!(host, "203.0.113.11");
+            assert_eq!(*port, 1080);
+            assert_eq!(*protocol, Protocol::Socks5);
+            assert_eq!(username.as_deref(), Some("socks-user"));
+            assert_eq!(password.as_deref(), Some("socks-pass"));
+        } else {
+            panic!("Expected Basic socks5, got {:?}", proxies[1]);
         }
     }
 }

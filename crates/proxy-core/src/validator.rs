@@ -16,6 +16,19 @@ pub const DEFAULT_MATRIX_TARGETS: &[&str] = &[
     "https://www.gstatic.com/generate_204",
 ];
 
+/// Build a reqwest `Proxy` for `proxy`, applying basic auth when credentials
+/// are present.
+///
+/// Uses `basic_auth` (not userinfo-in-URL) so hourly-rotating, base64-ish
+/// usernames need no URL-encoding.
+pub(crate) fn build_reqwest_proxy(proxy: &Proxy) -> Result<reqwest::Proxy, reqwest::Error> {
+    let rp = reqwest::Proxy::all(proxy.proxy_connect_url())?;
+    Ok(match proxy.credentials() {
+        Some((user, pass)) => rp.basic_auth(user, pass),
+        None => rp,
+    })
+}
+
 const DEFAULT_MATRIX_TIMEOUT_SECS: u64 = 10;
 const MAX_MATRIX_TARGETS: usize = 8;
 
@@ -490,18 +503,19 @@ impl Validator {
         let start = Instant::now();
         let diagnostics = ProxyCheckDiagnostics::new(&self.target_url);
 
+        let reqwest_proxy = match build_reqwest_proxy(proxy) {
+            Ok(rp) => rp,
+            Err(e) => {
+                return ProxyCheckResult::failure(
+                    proxy,
+                    diagnostics.with_total(start.elapsed()),
+                    ProxyCheckErrorType::InvalidProxyUrl,
+                    format!("{e}"),
+                );
+            }
+        };
         let client = reqwest::Client::builder()
-            .proxy(match reqwest::Proxy::all(proxy.proxy_connect_url()) {
-                Ok(proxy) => proxy,
-                Err(e) => {
-                    return ProxyCheckResult::failure(
-                        proxy,
-                        diagnostics.with_total(start.elapsed()),
-                        ProxyCheckErrorType::InvalidProxyUrl,
-                        format!("{e}"),
-                    );
-                }
-            })
+            .proxy(reqwest_proxy)
             .timeout(Duration::from_secs(self.timeout_secs))
             .connect_timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(0)
@@ -768,6 +782,21 @@ fn quorum_target_admission_result(original: &Proxy, checks: Vec<Option<Proxy>>) 
 mod tests {
     use super::*;
     use crate::models::Protocol;
+
+    #[test]
+    fn build_reqwest_proxy_succeeds_with_credentials() {
+        let mut proxy = Proxy::new("1.2.3.4", 8080, Protocol::Http);
+        proxy.username = Some("rotating-user".into());
+        proxy.password = Some("s3cret".into());
+        // Construction must succeed; reqwest does not expose auth for inspection.
+        build_reqwest_proxy(&proxy).expect("authenticated reqwest proxy should build");
+    }
+
+    #[test]
+    fn build_reqwest_proxy_succeeds_without_credentials() {
+        let proxy = Proxy::new("1.2.3.4", 8080, Protocol::Http);
+        build_reqwest_proxy(&proxy).expect("unauthenticated reqwest proxy should build");
+    }
 
     #[test]
     fn proxy_check_failure_serializes_error_type() {
