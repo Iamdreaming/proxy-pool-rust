@@ -18,7 +18,7 @@ Validate per crate: `cargo test -p <crate>`; final `cargo test` + clippy `-D war
 8. [x] Tests: clash http auth, base64 userinfo, validator auth build, gateway
        CONNECT Proxy-Authorization bytes, socks5 auth framing, carry-forward creds.
 9. [x] Full test + clippy; trellis-check; commit; push; CI.
-10. [ ] Config: append URL to subscription.urls (PUT /api/settings) + restart
+10. [x] Config: append URL to subscription.urls (PUT /api/settings) + restart
         proxy-pool; verify source parses (logs) and http/https pool rises.
 
 ## Rollback
