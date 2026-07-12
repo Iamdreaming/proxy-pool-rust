@@ -9,9 +9,14 @@ pub const REDACTED_VALUE: &str = "__PROXY_POOL_REDACTED__";
 
 /// Recommended minimum score for overseas proxy pools.
 ///
-/// At this threshold, a proxy needs at least ~2 s latency with decent
-/// success rate and anonymity to stay in the pool.  Free-list proxies
-/// that fail most targets are naturally excluded.
+/// This is a reference constant for documentation and example configs; it is
+/// not wired into any default or validation logic.  Operators should set
+/// `pool.min_score` to this value (or a tuned equivalent) in their YAML
+/// when running an overseas profile.
+///
+/// At this threshold, a proxy needs ≤2 s latency with decent success rate
+/// and anonymity to stay in the pool.  Free-list proxies that fail most
+/// targets are naturally excluded.
 pub const RECOMMENDED_OVERSEAS_MIN_SCORE: f64 = 0.35;
 
 /// Errors from strict settings read/write helpers used by operator config APIs.
