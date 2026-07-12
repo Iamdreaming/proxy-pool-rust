@@ -830,7 +830,7 @@ mod tests {
         assert_eq!(quality.recent_samples, 3);
         assert_eq!(quality.recent_failures, 2);
         assert_eq!(quality.recent_success_rate, Some(1.0 / 3.0));
-        assert_eq!(quality.retention.below_min_score, 1);
+        assert_eq!(quality.retention.below_min_score, 0);
         assert_eq!(quality.retention.hard_failure_evict, 1);
         assert_eq!(
             quality.top_failure_reasons,

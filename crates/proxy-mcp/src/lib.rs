@@ -624,7 +624,9 @@ impl ProxyPoolMcp {
                     .map(|arr| {
                         arr.iter()
                             .filter(|inst| {
-                                inst.get("healthy").and_then(|h| h.as_bool()).unwrap_or(false)
+                                inst.get("healthy")
+                                    .and_then(|h| h.as_bool())
+                                    .unwrap_or(false)
                             })
                             .cloned()
                             .collect()
@@ -696,10 +698,7 @@ impl ProxyPoolMcp {
     ) -> String {
         let source = params.0.source;
         let apply = params.0.apply.unwrap_or(false);
-        let path = format!(
-            "/api/subscriptions/sources/{}/refresh",
-            urlencode(&source)
-        );
+        let path = format!("/api/subscriptions/sources/{}/refresh", urlencode(&source));
         Self::rest_result(
             self.rest
                 .post_json_query(&path, &[("apply", apply.to_string())], None)

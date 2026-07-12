@@ -768,6 +768,15 @@ pub enum TargetAdmission {
     Quorum,
 }
 
+impl From<crate::config::TargetAdmissionConfig> for TargetAdmission {
+    fn from(cfg: crate::config::TargetAdmissionConfig) -> Self {
+        match cfg {
+            crate::config::TargetAdmissionConfig::Strict => TargetAdmission::Strict,
+            crate::config::TargetAdmissionConfig::Quorum => TargetAdmission::Quorum,
+        }
+    }
+}
+
 /// Quorum admission: alive if any target passed. Uses the first passing check
 /// (which carries measured latency/anonymity) as the admitted record.
 fn quorum_target_admission_result(original: &Proxy, checks: Vec<Option<Proxy>>) -> Option<Proxy> {

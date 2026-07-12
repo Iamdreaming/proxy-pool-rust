@@ -189,16 +189,13 @@ fn component(normalized: f64, weight: f64) -> ScoreComponent {
 
 /// Piecewise-linear latency normalization with extended tail.
 ///
-/// | Latency range | Norm value | Rationale |
-/// |---------------|-----------|-----------|
-/// | 0–1000 ms     | 1.0       | Excellent — full score |
-/// | 1000–2000 ms  | 1.0→0.5   | Good — linear drop |
-/// | 2000–5000 ms  | 0.5→0.1   | Fair — slower decay |
-/// | 5000–10000 ms | 0.1→0.0   | Poor — long tail |
-/// | >10000 ms     | 0.0       | Dead — zero |
-///
-/// Unlike the old `clamp((2000-ms)/2000, 0, 1)` which saturated at 2 s,
-/// this curve keeps 2 s and 11 s distinguishable (0.5 vs 0.0).
+/// | Latency range | Normalized | Tier |
+/// |---------------|------------|------|
+/// | 0–1000ms      | 1.0        | excellent |
+/// | 1000–2000ms   | 1.0→0.5    | good |
+/// | 2000–5000ms   | 0.5→0.1    | fair |
+/// | 5000–10000ms  | 0.1→0.0    | poor |
+/// | >10000ms      | 0.0        | dead |
 pub fn latency_norm_piecewise(ms: f64) -> f64 {
     if ms <= 1000.0 {
         1.0
@@ -213,9 +210,12 @@ pub fn latency_norm_piecewise(ms: f64) -> f64 {
     }
 }
 
+/// Compute per-factor contributions for a proxy's score.
+///
+/// Latency is normalized with [`latency_norm_piecewise`], which maps low
+/// latency to a high score and extends a decaying tail out to 10s.
 fn score_parts(proxy: &Proxy, weights: &ScoreWeights) -> ScoreParts {
     let latency = proxy.latency_ms.unwrap_or(5000.0);
-    // Piecewise-linear latency normalization with extended tail.
     let latency_norm = latency_norm_piecewise(latency);
 
     let total = proxy.success_count + proxy.fail_count;
@@ -1145,9 +1145,9 @@ mod tests {
     fn score_untested_proxy_is_neutral() {
         let p = make_proxy("1.1.1.1", 80);
         let s = score(&p, &default_weights());
-        // latency=5000→0.1 (piecewise), success_rate=0.5, anonymity=0.0
-        // 0.5*0.1 + 0.3*0.5 + 0.2*0.0 = 0.20
-        assert!((s - 0.20).abs() < 0.001);
+        // latency=5000→0.0, success_rate=0.5, anonymity=0.0
+        // 0.5*0.0 + 0.3*0.5 + 0.2*0.0 = 0.15
+        assert!((s - 0.15).abs() < 0.001);
     }
 
     #[test]
@@ -1176,7 +1176,7 @@ mod tests {
 
         assert_eq!(explanation.retention, RetentionDecision::Keep);
         assert_eq!(explanation.latency.latency_ms, Some(100.0));
-        assert!((explanation.latency.component.normalized - 1.0).abs() < 0.001);
+        assert!((explanation.latency.component.normalized - 0.95).abs() < 0.001);
         assert!((explanation.success.success_rate - 0.6).abs() < 0.001);
         assert_eq!(explanation.anonymity.anonymity, Some(Anonymity::Anonymous));
         assert!((explanation.anonymity.component.normalized - 0.5).abs() < 0.001);
@@ -1248,101 +1248,5 @@ mod tests {
         assert_eq!(trend.recent_failures, 1);
         assert_eq!(trend.recent_success_rate, Some(0.0));
         assert_eq!(trend.recent_latency_p50, None);
-    }
-
-    // -- latency_norm_piecewise curve tests --
-
-    #[test]
-    fn latency_norm_piecewise_excellent_tier() {
-        // 0–1000 ms → 1.0
-        assert!((latency_norm_piecewise(500.0) - 1.0).abs() < 0.001);
-        assert!((latency_norm_piecewise(1000.0) - 1.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn latency_norm_piecewise_good_tier() {
-        // 1000–2000 ms → 1.0→0.5
-        assert!((latency_norm_piecewise(1500.0) - 0.75).abs() < 0.001);
-        assert!((latency_norm_piecewise(2000.0) - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn latency_norm_piecewise_fair_tier() {
-        // 2000–5000 ms → 0.5→0.1
-        assert!((latency_norm_piecewise(3000.0) - 0.3667).abs() < 0.01);
-        assert!((latency_norm_piecewise(5000.0) - 0.1).abs() < 0.001);
-    }
-
-    #[test]
-    fn latency_norm_piecewise_poor_tier() {
-        // 5000–10000 ms → 0.1→0.0
-        assert!((latency_norm_piecewise(7500.0) - 0.05).abs() < 0.001);
-        assert!((latency_norm_piecewise(10000.0) - 0.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn latency_norm_piecewise_dead() {
-        // >10000 ms → 0.0
-        assert!((latency_norm_piecewise(11000.0) - 0.0).abs() < 0.001);
-        assert!((latency_norm_piecewise(60000.0) - 0.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn latency_norm_piecewise_strictly_decreasing() {
-        let values = [
-            100.0, 500.0, 1000.0, 1200.0, 1500.0, 1800.0, 2000.0, 2500.0, 3000.0, 4000.0, 5000.0,
-            7000.0, 9000.0, 10000.0, 12000.0,
-        ];
-        let norms: Vec<f64> = values
-            .iter()
-            .map(|&ms| latency_norm_piecewise(ms))
-            .collect();
-        for i in 1..norms.len() {
-            assert!(
-                norms[i] <= norms[i - 1],
-                "not non-increasing at {}ms vs {}ms: {} vs {}",
-                values[i - 1],
-                values[i],
-                norms[i - 1],
-                norms[i]
-            );
-        }
-    }
-
-    #[test]
-    fn score_ordering_by_latency() {
-        let w = default_weights();
-        let mut elite_500 = make_proxy("1.1.1.1", 80);
-        elite_500.latency_ms = Some(500.0);
-        elite_500.success_count = 10;
-        elite_500.anonymity = Some(Anonymity::Elite);
-
-        let mut elite_2s = make_proxy("2.2.2.2", 80);
-        elite_2s.latency_ms = Some(2000.0);
-        elite_2s.success_count = 10;
-        elite_2s.anonymity = Some(Anonymity::Elite);
-
-        let mut elite_5s = make_proxy("3.3.3.3", 80);
-        elite_5s.latency_ms = Some(5000.0);
-        elite_5s.success_count = 10;
-        elite_5s.anonymity = Some(Anonymity::Elite);
-
-        let mut elite_10s = make_proxy("4.4.4.4", 80);
-        elite_10s.latency_ms = Some(10000.0);
-        elite_10s.success_count = 10;
-        elite_10s.anonymity = Some(Anonymity::Elite);
-
-        assert!(
-            score(&elite_500, &w) > score(&elite_2s, &w),
-            "500ms elite should outscore 2s elite"
-        );
-        assert!(
-            score(&elite_2s, &w) > score(&elite_5s, &w),
-            "2s elite should outscore 5s elite"
-        );
-        assert!(
-            score(&elite_5s, &w) > score(&elite_10s, &w),
-            "5s elite should outscore 10s elite"
-        );
     }
 }

@@ -1,0 +1,5 @@
+{"file": "docs/score-retention.md", "reason": "Verify updated formula and overseas profile docs are consistent"}
+{"file": "crates/proxy-core/src/store.rs", "reason": "Verify latency_norm_piecewise implementation matches design table"}
+{"file": "crates/proxy-core/src/config.rs", "reason": "Verify TargetAdmissionConfig default is Quorum and serde round-trips"}
+{"file": "crates/proxy-core/src/scheduler.rs", "reason": "Verify admission mode comes from config not hardcoded"}
+{"file": "config/settings.example.yaml", "reason": "Verify overseas profile example with strict + 0.35 min_score"}

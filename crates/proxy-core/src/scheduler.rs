@@ -308,7 +308,7 @@ impl Scheduler {
                 candidates,
                 &targets,
                 self.settings.validate_concurrency,
-                crate::validator::TargetAdmission::Quorum,
+                self.settings.target_admission.into(),
             )
             .await
     }

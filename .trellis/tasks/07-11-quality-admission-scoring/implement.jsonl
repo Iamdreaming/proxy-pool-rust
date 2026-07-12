@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "Core crate spec index for store/config/validator patterns"}
+{"file": "docs/score-retention.md", "reason": "Current scoring/retention documentation to be updated"}
+{"file": "config/settings.example.yaml", "reason": "Config template to add target_admission and overseas profile comments"}
+{"file": "crates/proxy-core/src/store.rs", "reason": "Score formula, latency norm, retention decision implementation"}
+{"file": "crates/proxy-core/src/config.rs", "reason": "PoolSettings, ScoreWeights, ValidationTargetConfig, min_score defaults"}
+{"file": "crates/proxy-core/src/validator.rs", "reason": "TargetAdmission enum, strict/quorum admission, multi-target validation"}
+{"file": "crates/proxy-core/src/scheduler.rs", "reason": "validate_candidates reads admission mode from config"}

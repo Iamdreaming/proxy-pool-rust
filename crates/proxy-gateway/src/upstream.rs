@@ -45,8 +45,9 @@ pub async fn socks5_handshake_on_stream(
     match resp[1] {
         0x00 => {} // no auth
         0x02 => {
-            let (user, pass) = credentials
-                .ok_or_else(|| anyhow::anyhow!("SOCKS5 upstream requires auth but none provided"))?;
+            let (user, pass) = credentials.ok_or_else(|| {
+                anyhow::anyhow!("SOCKS5 upstream requires auth but none provided")
+            })?;
             if user.len() > 255 || pass.len() > 255 {
                 anyhow::bail!("SOCKS5 username/password too long for RFC1929");
             }
@@ -455,10 +456,13 @@ mod tests {
                 .unwrap();
         });
 
-        let mut stream =
-            connect_via_http_proxy(&format!("127.0.0.1:{upstream_port}"), "example.com:443", None)
-                .await
-                .unwrap();
+        let mut stream = connect_via_http_proxy(
+            &format!("127.0.0.1:{upstream_port}"),
+            "example.com:443",
+            None,
+        )
+        .await
+        .unwrap();
         let mut tunneled = [0u8; 7];
         stream.read_exact(&mut tunneled).await.unwrap();
         assert_eq!(&tunneled, b"preface");

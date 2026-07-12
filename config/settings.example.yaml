@@ -35,6 +35,10 @@ pool:
   #   - url: "https://api.openai.com/v1/models"
   #     expected_statuses: [401]
   min_score: 0.1
+  # Admission policy for multi-target validation:
+  #   quorum  — any target passing admits the proxy (default)
+  #   strict  — all targets must pass for admission
+  target_admission: quorum
   pace_rate_per_sec: 10      # 0 = unlimited; 10 recommended to avoid socket exhaustion
   score_weights:
     latency: 0.5
@@ -126,3 +130,17 @@ xray:
 #     # Aggregator list URL. Supported formats: text, json, yaml.
 #     # - url: "https://raw.githubusercontent.com/example/repo/main/subscriptions.txt"
 #     #   format: "text"
+
+# ── Overseas profile example ──────────────────────────────────────────────
+# Uncomment and adapt for a pool that only retains overseas proxies passing
+# all validation targets.  The recommended min_score of 0.35 ensures a proxy
+# needs at least ~2 s latency with decent success rate and anonymity.
+#
+# pool:
+#   min_score: 0.35
+#   target_admission: strict
+#   validate_targets:
+#     - url: "https://cloudflare.com/cdn-cgi/trace"
+#     - url: "https://api.ipify.org?format=json"
+#     - url: "https://www.youtube.com"
+#       expected_statuses: [200, 301, 302]

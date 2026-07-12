@@ -22,13 +22,33 @@ Default weights from `config/settings.example.yaml`:
 | success | `0.3` |
 | anonymity | `0.2` |
 
-Latency normalization:
+### Latency normalization (piecewise-linear)
+
+The piecewise-linear curve keeps proxies distinguishable across the full latency
+range. The old `clamp((2000-ms)/2000, 0, 1)` saturated at 2 s, making 2 s and
+11 s proxies indistinguishable.
 
 ```text
-latency_norm = clamp((2000 - latency_ms) / 2000, 0, 1)
+  ms ≤ 1000  → 1.0
+ 1000 < ms ≤ 2000  → 1.0 − 0.5 × (ms−1000)/1000
+ 2000 < ms ≤ 5000  → 0.5 − 0.4 × (ms−2000)/3000
+ 5000 < ms ≤ 10000 → 0.1 − 0.1 × (ms−5000)/5000
+ ms > 10000 → 0.0
 ```
 
-Unknown latency is treated as `5000ms`, which contributes `0`.
+| Latency | Norm | Tier |
+|---------|------|------|
+| 500 ms | 1.0 | Excellent |
+| 1000 ms | 1.0 | Excellent |
+| 1500 ms | 0.75 | Good |
+| 2000 ms | 0.5 | Good |
+| 3000 ms | ≈0.37 | Fair |
+| 5000 ms | 0.1 | Fair |
+| 7500 ms | 0.05 | Poor |
+| 10000 ms | 0.0 | Dead |
+
+Unknown latency is treated as `5000ms`, which maps to `0.1` (was `0.0` under
+the old formula).
 
 Success rate:
 
@@ -63,6 +83,36 @@ Retention decisions:
 | `hard_failure_evict` | `fail_count > max(8, success_count * 3)` |
 
 Hard failure eviction wins over the min-score decision.
+
+## Target Admission
+
+The `pool.target_admission` field controls how multi-target validation admits
+proxies:
+
+| Value | Behavior | Default? |
+|-------|----------|----------|
+| `quorum` | Any target passing admits the proxy | ✓ |
+| `strict` | All targets must pass for admission | |
+
+For overseas profiles, `strict` is recommended to ensure the proxy reaches all
+required destinations.
+
+## Recommended Overseas Profile
+
+```yaml
+pool:
+  min_score: 0.35
+  target_admission: strict
+  validate_targets:
+    - url: "https://cloudflare.com/cdn-cgi/trace"
+    - url: "https://api.ipify.org?format=json"
+    - url: "https://www.youtube.com"
+      expected_statuses: [200, 301, 302]
+```
+
+The recommended `min_score` of `0.35` ensures a proxy needs at least ~2 s
+latency with decent success rate and anonymity to remain in the pool. Free-list
+proxies that fail most targets are naturally excluded.
 
 ## Explainability
 

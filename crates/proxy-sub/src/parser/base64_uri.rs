@@ -185,20 +185,14 @@ fn parse_uri(uri: &str) -> SubscriptionProxy {
 /// `user:pass@` userinfo (percent-decoded).
 fn parse_basic(rest: &str, protocol: Protocol) -> SubscriptionProxy {
     // Strip fragment/query, then split optional userinfo before the last '@'.
-    let core = rest
-        .split(['#', '?'])
-        .next()
-        .unwrap_or(rest);
+    let core = rest.split(['#', '?']).next().unwrap_or(rest);
     let (userinfo, hostport) = match core.rsplit_once('@') {
         Some((u, hp)) => (Some(u), hp),
         None => (None, core),
     };
     let (username, password) = match userinfo {
         Some(ui) => match ui.split_once(':') {
-            Some((u, p)) => (
-                non_empty(&percent_decode(u)),
-                non_empty(&percent_decode(p)),
-            ),
+            Some((u, p)) => (non_empty(&percent_decode(u)), non_empty(&percent_decode(p))),
             None => (non_empty(&percent_decode(ui)), None),
         },
         None => (None, None),

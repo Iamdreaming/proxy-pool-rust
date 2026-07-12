@@ -7,6 +7,13 @@ use std::path::{Path, PathBuf};
 /// Placeholder returned by settings edit APIs for sensitive values.
 pub const REDACTED_VALUE: &str = "__PROXY_POOL_REDACTED__";
 
+/// Recommended minimum score for overseas proxy pools.
+///
+/// At this threshold, a proxy needs at least ~2 s latency with decent
+/// success rate and anonymity to stay in the pool.  Free-list proxies
+/// that fail most targets are naturally excluded.
+pub const RECOMMENDED_OVERSEAS_MIN_SCORE: f64 = 0.35;
+
 /// Errors from strict settings read/write helpers used by operator config APIs.
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsEditError {
@@ -180,6 +187,9 @@ pub struct PoolSettings {
     /// Max connection attempts per second (0 = unlimited).
     #[serde(default = "default_pace_rate")]
     pub pace_rate_per_sec: f64,
+    /// Admission policy for multi-target validation.
+    #[serde(default)]
+    pub target_admission: TargetAdmissionConfig,
 }
 
 /// Structured proxy validation target configuration.
@@ -199,6 +209,20 @@ impl ValidationTargetConfig {
             expected_statuses: Vec::new(),
         }
     }
+}
+
+/// Config-driven admission policy for multi-target validation.
+///
+/// Maps 1:1 to [`crate::validator::TargetAdmission`] but lives in the config
+/// layer so it can be deserialized from YAML and defaulted via serde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetAdmissionConfig {
+    /// Every target must pass for the proxy to be admitted.
+    Strict,
+    /// At least one target passing admits the proxy (default).
+    #[default]
+    Quorum,
 }
 
 impl PoolSettings {
@@ -1006,6 +1030,29 @@ mod tests {
                 expected_statuses: vec![401],
             }]
         );
+    }
+
+    #[test]
+    fn target_admission_config_serde_roundtrip() {
+        // Default is Quorum
+        let default = TargetAdmissionConfig::default();
+        assert_eq!(default, TargetAdmissionConfig::Quorum);
+
+        // Explicit quorum
+        let q: TargetAdmissionConfig = serde_yaml::from_str("quorum").unwrap();
+        assert_eq!(q, TargetAdmissionConfig::Quorum);
+
+        // Explicit strict
+        let s: TargetAdmissionConfig = serde_yaml::from_str("strict").unwrap();
+        assert_eq!(s, TargetAdmissionConfig::Strict);
+
+        // Round-trip
+        let yaml = serde_yaml::to_string(&TargetAdmissionConfig::Strict).unwrap();
+        assert!(yaml.contains("strict"));
+
+        // Missing field defaults to Quorum in PoolSettings
+        let pool: PoolSettings = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(pool.target_admission, TargetAdmissionConfig::Quorum);
     }
 
     #[test]

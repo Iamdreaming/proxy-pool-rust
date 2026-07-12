@@ -1,0 +1,31 @@
+{
+  "id": "high-quality-overseas-proxy",
+  "name": "high-quality-overseas-proxy",
+  "title": "高质量海外稳定代理获取",
+  "description": "Parent: 以海外稳定链路为目标，分层提升代理质量（准入/评分/订阅-xray/运营清理）。不引入付费VPS；评估机场试用路径的合规边界。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": "proxy-core",
+  "priority": "P2",
+  "creator": "nightrain",
+  "assignee": "nightrain",
+  "createdAt": "2026-07-11",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "07-11-quality-admission-scoring",
+    "07-11-subscription-xray-overseas",
+    "07-11-trial-sub-intake-workflow",
+    "07-11-ops-cleanup-pool-tiers"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
