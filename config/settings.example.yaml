@@ -34,7 +34,7 @@ pool:
   #   - url: "https://www.cloudflare.com/cdn-cgi/trace"
   #   - url: "https://api.openai.com/v1/models"
   #     expected_statuses: [401]
-  min_score: 0.1
+  min_score: 0.3
   # Admission policy for multi-target validation:
   #   quorum  — any target passing admits the proxy (default)
   #   strict  — all targets must pass for admission
@@ -100,9 +100,9 @@ xray:
   max_active_nodes: 5000
   # Optional xray admission filtering. When validate_targets is empty, xray
   # reuses pool.effective_validate_targets().
-  validate_timeout_sec: 5
+  validate_timeout_sec: 15
   validation_attempt_limit_per_cycle: 50
-  validation_failure_cooldown_sec: 3600
+  validation_failure_cooldown_sec: 600
   # validate_targets:
   #   - url: "https://www.youtube.com/generate_204"
   #     expected_statuses: [204]

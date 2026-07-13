@@ -647,7 +647,7 @@ async fn mark_failed_proxy(
         Ok(p) => p,
         Err(msg) => return json_status(StatusCode::BAD_REQUEST, msg),
     };
-    match state.store.mark_failed(&proxy).await {
+    match state.store.mark_failed(&proxy, "operator_action").await {
         Ok(()) => json_status(StatusCode::OK, "ok"),
         Err(e) => json_status(StatusCode::INTERNAL_SERVER_ERROR, format!("error: {e}")),
     }

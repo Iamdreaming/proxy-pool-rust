@@ -248,6 +248,36 @@ impl ProxyCheckResult {
     }
 }
 
+/// Outcome of validating a single proxy, carrying either the updated proxy
+/// (if alive) or the specific failure reason (if dead).
+#[derive(Debug, Clone, Serialize)]
+pub struct ProxyValidationOutcome {
+    /// The proxy key (host:port:protocol) for matching back to the original.
+    pub proxy_key: String,
+    /// The validated proxy when alive.
+    pub alive_proxy: Option<Proxy>,
+    /// The specific error type when the proxy failed validation.
+    pub error_type: Option<ProxyCheckErrorType>,
+    /// Human-readable error message when the proxy failed validation.
+    pub error_message: Option<String>,
+}
+
+impl ProxyValidationOutcome {
+    /// Build an outcome from a single-target check result.
+    pub fn from_check_result(result: ProxyCheckResult) -> Self {
+        let proxy_key = format!("{}:{}:{}", result.host, result.port, result.protocol);
+        let error_type = result.error_type;
+        let error_message = result.error.clone();
+        let alive_proxy = result.into_proxy();
+        Self {
+            proxy_key,
+            alive_proxy,
+            error_type,
+            error_message,
+        }
+    }
+}
+
 /// Check one proxy against a set of validation targets.
 pub async fn check_proxy_matrix(
     request: ProxyCheckMatrixRequest,
@@ -676,6 +706,132 @@ impl Validator {
             }
         }
         alive
+    }
+
+    /// Validate many proxies against targets and return full check results for
+    /// both alive and dead proxies, enabling callers to access specific failure
+    /// reasons.
+    pub async fn validate_many_with_results(
+        &self,
+        proxies: &[Proxy],
+        targets: &[ValidationTarget],
+        concurrency: usize,
+        mode: TargetAdmission,
+    ) -> Vec<ProxyValidationOutcome> {
+        if targets.is_empty() {
+            return self
+                .validate_with_results_simple(proxies, concurrency)
+                .await;
+        }
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let mut handles = Vec::with_capacity(proxies.len());
+
+        for proxy in proxies {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let validator = self.clone();
+            let targets = targets.to_vec();
+            let proxy = proxy.clone();
+            handles.push(tokio::spawn(async move {
+                let outcome = validator
+                    .check_one_with_admission(&proxy, &targets, mode)
+                    .await;
+                drop(permit);
+                outcome
+            }));
+        }
+
+        let mut outcomes = Vec::with_capacity(handles.len());
+        for handle in handles {
+            match handle.await {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(e) => tracing::warn!("validation task panicked: {e}"),
+            }
+        }
+        outcomes
+    }
+
+    async fn validate_with_results_simple(
+        &self,
+        proxies: &[Proxy],
+        concurrency: usize,
+    ) -> Vec<ProxyValidationOutcome> {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let mut handles = Vec::with_capacity(proxies.len());
+
+        for proxy in proxies {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let validator = self.clone();
+            let proxy = proxy.clone();
+            handles.push(tokio::spawn(async move {
+                let result = validator.check_one(&proxy).await;
+                drop(permit);
+                ProxyValidationOutcome::from_check_result(result)
+            }));
+        }
+
+        let mut outcomes = Vec::with_capacity(handles.len());
+        for handle in handles {
+            match handle.await {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(e) => tracing::warn!("validation task panicked: {e}"),
+            }
+        }
+        outcomes
+    }
+
+    /// Check a proxy against multiple targets with admission mode, returning a
+    /// validation outcome with specific failure reasons.
+    async fn check_one_with_admission(
+        &self,
+        proxy: &Proxy,
+        targets: &[ValidationTarget],
+        mode: TargetAdmission,
+    ) -> ProxyValidationOutcome {
+        let mut last_error_type = None;
+        let mut last_error_message = None;
+        let mut alive_proxy = None;
+        let mut any_passed = false;
+
+        for target in targets {
+            let validator = Self {
+                target_url: target.url.clone(),
+                expected_statuses: target.expected_statuses.clone(),
+                timeout_secs: self.timeout_secs,
+                real_ip: self.real_ip.clone(),
+                pacer: self.pacer.clone(),
+            };
+            let result = validator.check_one(proxy).await;
+            if result.alive {
+                any_passed = true;
+                alive_proxy = result.into_proxy();
+                if mode == TargetAdmission::Quorum {
+                    break;
+                }
+            } else {
+                last_error_type = result.error_type;
+                last_error_message = result.error;
+                if mode == TargetAdmission::Strict {
+                    break;
+                }
+            }
+        }
+
+        if any_passed {
+            ProxyValidationOutcome {
+                proxy_key: proxy.key(),
+                alive_proxy,
+                error_type: None,
+                error_message: None,
+            }
+        } else {
+            ProxyValidationOutcome {
+                proxy_key: proxy.key(),
+                alive_proxy: None,
+                error_type: last_error_type,
+                error_message: last_error_message,
+            }
+        }
     }
 
     /// Detect anonymity level from the observed origin IP.

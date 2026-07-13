@@ -647,7 +647,7 @@ mod tests {
 
         assert_eq!(plan.timeout_secs, 11);
         assert_eq!(plan.attempt_limit_per_cycle, 50);
-        assert_eq!(plan.failure_cooldown, Duration::from_secs(3600));
+        assert_eq!(plan.failure_cooldown, Duration::from_secs(600));
         assert_eq!(plan.targets.len(), 1);
         assert_eq!(plan.targets[0].url, "https://pool.example/check");
         assert_eq!(plan.targets[0].expected_statuses, vec![204]);

@@ -668,7 +668,7 @@ impl ProxyPoolMcp {
         let proto = proxy_core::models::Protocol::from_str_loose(&params.0.protocol)
             .unwrap_or(proxy_core::models::Protocol::Http);
         let proxy = proxy_core::models::Proxy::new(&params.0.host, params.0.port, proto);
-        match self.store.mark_failed(&proxy).await {
+        match self.store.mark_failed(&proxy, "operator_action").await {
             Ok(()) => Ok(format!("Proxy {}:{} removed", params.0.host, params.0.port)),
             Err(e) => Err(format!("Error: {e}")),
         }

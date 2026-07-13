@@ -114,7 +114,7 @@ fn record_success_sample(proxy: &mut Proxy) {
         .record_success(checked_at, proxy.latency_ms);
 }
 
-fn record_failure_sample(proxy: &mut Proxy, error: &'static str) {
+fn record_failure_sample(proxy: &mut Proxy, error: &str) {
     proxy
         .quality_history
         .record_failure(chrono::Utc::now(), error);
@@ -169,7 +169,7 @@ fn retention_decision(proxy: &Proxy, score: f64, min_score: f64) -> RetentionDec
 }
 
 fn hard_failure_evict(proxy: &Proxy) -> bool {
-    proxy.fail_count > std::cmp::max(8, proxy.success_count * 3)
+    proxy.fail_count > std::cmp::max(5, proxy.success_count * 2)
 }
 
 struct ScoreParts {
@@ -499,11 +499,11 @@ impl ProxyStore {
     }
 
     /// Mark a proxy as failed; evict if below threshold.
-    pub async fn mark_failed(&self, proxy: &Proxy) -> anyhow::Result<()> {
+    pub async fn mark_failed(&self, proxy: &Proxy, reason: &str) -> anyhow::Result<()> {
         self.remove_existing(&proxy.protocol, proxy).await?;
         let mut updated = proxy.clone();
         updated.fail_count += 1;
-        record_failure_sample(&mut updated, "validation_failed");
+        record_failure_sample(&mut updated, reason);
 
         // Hard eviction: too many failures
         if hard_failure_evict(&updated) || score(&updated, &self.weights) < self.min_score {
@@ -535,11 +535,15 @@ impl ProxyStore {
     /// If the net failure count exceeds the circuit breaker threshold,
     /// the proxy is tripped (circuit opened). Otherwise, the proxy is
     /// updated with incremented fail_count and re-scored.
-    pub async fn mark_failed_with_circuit(&self, proxy: &Proxy) -> anyhow::Result<()> {
+    pub async fn mark_failed_with_circuit(
+        &self,
+        proxy: &Proxy,
+        reason: &str,
+    ) -> anyhow::Result<()> {
         self.remove_existing(&proxy.protocol, proxy).await?;
         let mut updated = proxy.clone();
         updated.fail_count += 1;
-        record_failure_sample(&mut updated, "validation_failed");
+        record_failure_sample(&mut updated, reason);
 
         // Check circuit breaker
         if circuit::should_trip(&updated, &self.circuit_config) {
