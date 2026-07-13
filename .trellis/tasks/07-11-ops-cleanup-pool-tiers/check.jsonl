@@ -1,1 +1,2 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "PoolTier enum and status integration tests"}
+{"file": ".trellis/spec/proxy-api/backend/index.md", "reason": "API status endpoint tier field verification"}

@@ -136,6 +136,10 @@ xray:
 # all validation targets.  The recommended min_score of 0.35 ensures a proxy
 # needs at least ~2 s latency with decent success rate and anonymity.
 #
+# When xray is enabled with ≥ 3 active nodes and WARP is healthy, the pool
+# tier is "stable" — indicating reliable overseas exit capacity.
+# See docs/ops-cleanup.md for tier semantics and cleanup guidance.
+#
 # pool:
 #   min_score: 0.35
 #   target_admission: strict
@@ -144,3 +148,16 @@ xray:
 #     - url: "https://api.ipify.org?format=json"
 #     - url: "https://www.youtube.com"
 #       expected_statuses: [200, 301, 302]
+#   fetchers:
+#     # Disable high-noise free sources for overseas profile.
+#     # See docs/ops-cleanup.md for identification criteria.
+#     proxyscrape: { enabled: true }
+#     thespeedx: { enabled: true }
+#     free_proxy_list: { enabled: false }
+#     clarketm: { enabled: false }
+#     geonode: { enabled: false }
+#     proxifly: { enabled: true }
+#     databay: { enabled: true }
+#     iplocate: { enabled: true }
+#     vpslab: { enabled: true }
+#     monosans: { enabled: true }

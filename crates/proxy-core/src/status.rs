@@ -97,6 +97,42 @@ pub fn split_image_ref(image: &str) -> (String, String) {
     (image.to_string(), "latest".into())
 }
 
+/// Operator-facing pool tier derived from xray and WARP health.
+///
+/// The tier reflects whether the pool can provide reliable overseas exit
+/// capacity.  It is a read-only signal computed from existing status fields
+/// and does not change routing or scoring behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolTier {
+    /// xray active ≥ 3 **and** WARP healthy ≥ 1 — reliable overseas exit.
+    Stable,
+    /// WARP healthy ≥ 1 but xray active < 3 — degraded overseas capacity.
+    Degraded,
+    /// WARP healthy ≥ 1, xray not enabled — minimal overseas via WARP only.
+    Minimal,
+    /// No reliable overseas exit (WARP 0 healthy, xray 0 active).
+    #[default]
+    Unstable,
+}
+
+impl PoolTier {
+    /// Derive the pool tier from xray and WARP health signals.
+    pub fn from_status(xray_enabled: bool, xray_active: usize, warp_healthy: usize) -> Self {
+        if xray_enabled && xray_active >= 3 && warp_healthy >= 1 {
+            Self::Stable
+        } else if warp_healthy >= 1 && (!xray_enabled || xray_active < 3) {
+            if xray_enabled {
+                Self::Degraded
+            } else {
+                Self::Minimal
+            }
+        } else {
+            Self::Unstable
+        }
+    }
+}
+
 /// Proxy pool counts by protocol.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PoolStatus {
@@ -104,6 +140,8 @@ pub struct PoolStatus {
     pub https: usize,
     pub socks5: usize,
     pub total: usize,
+    /// Derived pool tier reflecting overseas exit reliability.
+    pub tier: PoolTier,
 }
 
 /// Aggregate proxy quality summary for status and metrics surfaces.
@@ -247,16 +285,20 @@ pub async fn collect_service_status(
     } else {
         DependencyStatus::error(redis_errors.join("; "))
     };
+    let warp_status = collect_warp_status(balancer).await;
 
     ServiceStatus {
         version,
         git_hash,
         uptime_sec,
         release: ReleaseMetadata::from_env(version, git_hash),
-        pool,
+        pool: PoolStatus {
+            tier: PoolTier::from_status(xray.enabled, xray.active_nodes, warp_status.healthy),
+            ..pool
+        },
         quality,
         redis,
-        warp: collect_warp_status(balancer).await,
+        warp: warp_status,
         xray,
     }
 }
@@ -278,6 +320,7 @@ async fn collect_pool_status(store: &ProxyStore) -> Result<PoolStatus, String> {
         https,
         socks5,
         total: http + https + socks5,
+        tier: PoolTier::default(), // overridden in collect_service_status
     })
 }
 
@@ -474,6 +517,20 @@ pub fn render_prometheus_metrics(status: &ServiceStatus) -> String {
         status.pool.total
     )
     .ok();
+
+    writeln!(
+        out,
+        "# HELP proxy_pool_tier Pool tier reflecting overseas exit reliability (0=unstable, 1=minimal, 2=degraded, 3=stable)"
+    )
+    .ok();
+    writeln!(out, "# TYPE proxy_pool_tier gauge").ok();
+    let tier_value = match status.pool.tier {
+        PoolTier::Unstable => 0,
+        PoolTier::Minimal => 1,
+        PoolTier::Degraded => 2,
+        PoolTier::Stable => 3,
+    };
+    writeln!(out, "proxy_pool_tier {tier_value}").ok();
 
     writeln!(
         out,
@@ -674,6 +731,7 @@ mod tests {
                 https: 1,
                 socks5: 3,
                 total: 6,
+                tier: PoolTier::Stable,
             },
             quality: QualityStatus::default(),
             redis: DependencyStatus::ok(),
@@ -877,6 +935,7 @@ mod tests {
                 https: 1,
                 socks5: 3,
                 total: 6,
+                tier: PoolTier::Stable,
             },
             quality: QualityStatus {
                 total: 6,
@@ -931,5 +990,50 @@ mod tests {
         assert!(metrics.contains("proxy_warp_instances_configured 3"));
         assert!(metrics.contains("proxy_xray_active_nodes 5"));
         assert!(metrics.contains("proxy_xray_failed_nodes 1"));
+        assert!(metrics.contains("proxy_pool_tier 3"));
+    }
+
+    #[test]
+    fn pool_tier_from_status_covers_all_combinations() {
+        // Stable: xray enabled + active ≥ 3 + WARP healthy ≥ 1
+        assert_eq!(PoolTier::from_status(true, 3, 1), PoolTier::Stable);
+        assert_eq!(PoolTier::from_status(true, 10, 5), PoolTier::Stable);
+
+        // Degraded: WARP healthy ≥ 1, xray enabled but active < 3
+        assert_eq!(PoolTier::from_status(true, 2, 1), PoolTier::Degraded);
+        assert_eq!(PoolTier::from_status(true, 0, 3), PoolTier::Degraded);
+
+        // Minimal: WARP healthy ≥ 1, xray not enabled
+        assert_eq!(PoolTier::from_status(false, 0, 1), PoolTier::Minimal);
+        assert_eq!(PoolTier::from_status(false, 0, 5), PoolTier::Minimal);
+
+        // Unstable: WARP 0 healthy
+        assert_eq!(PoolTier::from_status(true, 5, 0), PoolTier::Unstable);
+        assert_eq!(PoolTier::from_status(false, 0, 0), PoolTier::Unstable);
+    }
+
+    #[test]
+    fn pool_tier_default_is_unstable() {
+        assert_eq!(PoolTier::default(), PoolTier::Unstable);
+    }
+
+    #[test]
+    fn pool_tier_serializes_to_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&PoolTier::Stable).unwrap(),
+            "\"stable\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PoolTier::Degraded).unwrap(),
+            "\"degraded\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PoolTier::Minimal).unwrap(),
+            "\"minimal\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PoolTier::Unstable).unwrap(),
+            "\"unstable\""
+        );
     }
 }

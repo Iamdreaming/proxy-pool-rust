@@ -3,7 +3,7 @@
   "name": "ops-cleanup-pool-tiers",
   "title": "运营清理与分池取用",
   "description": "低分清理、stale处理、free/subscription分池或过滤、取代理默认门槛",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "proxy-core",
