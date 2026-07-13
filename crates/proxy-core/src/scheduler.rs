@@ -367,25 +367,48 @@ impl Scheduler {
                 continue;
             }
 
-            let working = self.validate_candidates(&existing).await;
+            let targets: Vec<ValidationTarget> = self
+                .settings
+                .effective_validate_targets()
+                .into_iter()
+                .map(ValidationTarget::from)
+                .collect();
+            let outcomes = self
+                .validator
+                .validate_many_with_results(
+                    &existing,
+                    &targets,
+                    self.settings.validate_concurrency,
+                    self.settings.target_admission.into(),
+                )
+                .await;
 
-            let working_keys: std::collections::HashSet<String> =
-                working.iter().map(|p| p.key()).collect();
-
-            for p in &working {
-                if let Err(e) = self.store.add(p).await {
+            for outcome in &outcomes {
+                if let Some(ref proxy) = outcome.alive_proxy
+                    && let Err(e) = self.store.add(proxy).await
+                {
                     tracing::warn!(
                         "failed to update successful validation for {}: {e}",
-                        p.key()
+                        proxy.key()
                     );
                 }
             }
 
+            let alive_keys: std::collections::HashSet<String> = outcomes
+                .iter()
+                .filter_map(|o| o.alive_proxy.as_ref().map(|p| p.key()))
+                .collect();
+
             for p in &existing {
-                if !working_keys.contains(&p.key())
-                    && let Err(e) = self.store.mark_failed_with_circuit(p).await
-                {
-                    tracing::warn!("failed to mark {} as failed: {e}", p.key());
+                if !alive_keys.contains(&p.key()) {
+                    let reason = outcomes
+                        .iter()
+                        .find(|o| o.proxy_key == p.key())
+                        .and_then(|o| o.error_type.map(error_type_to_reason))
+                        .unwrap_or("validation_failed");
+                    if let Err(e) = self.store.mark_failed_with_circuit(p, reason).await {
+                        tracing::warn!("failed to mark {} as failed: {e}", p.key());
+                    }
                 }
             }
         }
@@ -459,7 +482,37 @@ fn should_skip_fetcher_for_run(
     previous: Option<&FetcherRunReport>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> bool {
-    !manual_refresh && previous.is_some_and(|report| report.should_skip_automatic_at(now))
+    if manual_refresh {
+        return false;
+    }
+    let Some(report) = previous else {
+        return false;
+    };
+    // Skip if the fetcher circuit is open (too many fetch errors)
+    if report.should_skip_automatic_at(now) {
+        return true;
+    }
+    // Skip if the last run had very low validation survival rate (< 10%)
+    // This gates sources that successfully fetch proxies but those proxies
+    // almost never pass validation, reducing wasted validation capacity.
+    if let Some(survival_rate) = report.validation_survival_rate
+        && survival_rate < 0.10
+        && report.unique > 0
+    {
+        return true;
+    }
+    false
+}
+
+fn error_type_to_reason(error_type: crate::validator::ProxyCheckErrorType) -> &'static str {
+    match error_type {
+        crate::validator::ProxyCheckErrorType::Timeout => "timeout",
+        crate::validator::ProxyCheckErrorType::RequestFailed => "request_failed",
+        crate::validator::ProxyCheckErrorType::BadStatus => "bad_status",
+        crate::validator::ProxyCheckErrorType::BodyReadFailed => "body_read_failed",
+        crate::validator::ProxyCheckErrorType::ClientBuildFailed => "client_build_failed",
+        crate::validator::ProxyCheckErrorType::InvalidProxyUrl => "invalid_proxy_url",
+    }
 }
 
 fn count_by_source(proxies: &[Proxy]) -> HashMap<String, usize> {
@@ -608,6 +661,49 @@ mod tests {
 
         assert!(should_skip_fetcher_for_run(false, Some(&report), now));
         assert!(!should_skip_fetcher_for_run(true, Some(&report), now));
+    }
+
+    #[test]
+    fn automatic_refresh_skips_low_survival_rate_fetcher() {
+        let now = Utc::now();
+        let mut report = FetcherRunReport {
+            id: "low-quality-source".into(),
+            name: "Low Quality Source".into(),
+            status: crate::fetcher::base::FetcherRunStatus::Success,
+            fetched: 100,
+            parsed: 100,
+            unique: 100,
+            validated: 5,
+            stored: 3,
+            validation_survival_rate: Some(0.05), // 5% survival rate
+            error: None,
+            circuit_state: FetcherCircuitState::Closed,
+            consecutive_failures: 0,
+            last_error: None,
+            last_attempt_at: Some(now),
+            last_success_at: Some(now),
+            opened_at: None,
+            next_probe_at: None,
+            action: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+        };
+
+        // Should skip because survival rate < 10%
+        assert!(should_skip_fetcher_for_run(false, Some(&report), now));
+        // Manual refresh should still proceed
+        assert!(!should_skip_fetcher_for_run(true, Some(&report), now));
+
+        // A source with 15% survival rate should NOT be skipped
+        report.validation_survival_rate = Some(0.15);
+        assert!(!should_skip_fetcher_for_run(false, Some(&report), now));
+
+        // A source with no unique proxies (unique=0) should not be skipped
+        // even with low survival rate (division-by-zero guard)
+        report.unique = 0;
+        report.validation_survival_rate = Some(0.05);
+        assert!(!should_skip_fetcher_for_run(false, Some(&report), now));
     }
 
     #[test]

@@ -430,9 +430,7 @@ fn normalize_failure_reason(error: Option<&str>) -> &'static str {
         return "unknown";
     };
     let lower = error.to_ascii_lowercase();
-    if lower.contains("validation_failed") || lower.contains("validation failed") {
-        "validation_failed"
-    } else if lower.contains("timeout") {
+    if lower.contains("timeout") {
         "timeout"
     } else if lower.contains("bad_status") || lower.contains("bad status") {
         "bad_status"
@@ -446,6 +444,8 @@ fn normalize_failure_reason(error: Option<&str>) -> &'static str {
         "request_failed"
     } else if lower.contains("circuit") {
         "circuit_open"
+    } else if lower.contains("validation_failed") || lower.contains("validation failed") {
+        "validation_failed"
     } else {
         "other"
     }

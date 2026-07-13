@@ -758,7 +758,7 @@ fn default_validate_target() -> String {
     "https://www.cloudflare.com/cdn-cgi/trace".into()
 }
 fn default_min_score() -> f64 {
-    0.1
+    0.3
 }
 fn default_pace_rate() -> f64 {
     10.0
@@ -857,7 +857,7 @@ fn default_xray_validation_attempt_limit() -> usize {
     50
 }
 fn default_xray_validation_failure_cooldown() -> u64 {
-    3600
+    600
 }
 
 // Default impls for sub-configs that need explicit Default
@@ -1066,7 +1066,7 @@ mod tests {
 
         assert_eq!(settings.validate_timeout_sec, None);
         assert_eq!(settings.validation_attempt_limit_per_cycle, 50);
-        assert_eq!(settings.validation_failure_cooldown_sec, 3600);
+        assert_eq!(settings.validation_failure_cooldown_sec, 600);
         assert!(settings.validate_targets.is_empty());
     }
 
