@@ -1,1 +1,2 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/proxy-xray/backend/index.md", "reason": "config_gen.rs transport mapping and outbound generation"}
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "route_debug.rs overseas exit order"}

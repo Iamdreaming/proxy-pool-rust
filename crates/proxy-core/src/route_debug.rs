@@ -748,18 +748,8 @@ fn exits_for_known_group(group: &str) -> Option<Vec<RouteExit>> {
             RouteExit::Xray,
             RouteExit::NoProxy,
         ]),
-        "warp" => Some(vec![
-            RouteExit::Warp,
-            RouteExit::Xray,
-            RouteExit::FreePool,
-            RouteExit::NoProxy,
-        ]),
-        "xray" => Some(vec![
-            RouteExit::Xray,
-            RouteExit::FreePool,
-            RouteExit::Warp,
-            RouteExit::NoProxy,
-        ]),
+        "warp" => Some(vec![RouteExit::Warp, RouteExit::Xray, RouteExit::NoProxy]),
+        "xray" => Some(vec![RouteExit::Xray, RouteExit::Warp, RouteExit::NoProxy]),
         _ => None,
     }
 }
@@ -775,12 +765,8 @@ fn general_fallback_exits() -> Vec<RouteExit> {
 
 fn geoip_exits(overseas: bool) -> Vec<RouteExit> {
     if overseas {
-        vec![
-            RouteExit::Warp,
-            RouteExit::Xray,
-            RouteExit::FreePool,
-            RouteExit::NoProxy,
-        ]
+        // D3: xray first, WARP fallback. D4: stable overseas = xray + WARP only.
+        vec![RouteExit::Xray, RouteExit::Warp, RouteExit::NoProxy]
     } else {
         vec![RouteExit::Direct]
     }
@@ -917,21 +903,11 @@ mod tests {
         );
         assert_eq!(
             exits_for_known_group("warp").unwrap(),
-            vec![
-                RouteExit::Warp,
-                RouteExit::Xray,
-                RouteExit::FreePool,
-                RouteExit::NoProxy
-            ]
+            vec![RouteExit::Warp, RouteExit::Xray, RouteExit::NoProxy]
         );
         assert_eq!(
             exits_for_known_group("xray").unwrap(),
-            vec![
-                RouteExit::Xray,
-                RouteExit::FreePool,
-                RouteExit::Warp,
-                RouteExit::NoProxy
-            ]
+            vec![RouteExit::Xray, RouteExit::Warp, RouteExit::NoProxy]
         );
         assert!(exits_for_known_group("custom").is_none());
     }
@@ -941,12 +917,7 @@ mod tests {
         assert_eq!(geoip_exits(false), vec![RouteExit::Direct]);
         assert_eq!(
             geoip_exits(true),
-            vec![
-                RouteExit::Warp,
-                RouteExit::Xray,
-                RouteExit::FreePool,
-                RouteExit::NoProxy
-            ]
+            vec![RouteExit::Xray, RouteExit::Warp, RouteExit::NoProxy]
         );
     }
 

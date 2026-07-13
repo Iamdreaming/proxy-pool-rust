@@ -310,7 +310,11 @@ pub fn generate_outbound_json(node: &SubscriptionProxy, tag: &str) -> Option<Val
             sni,
             network,
         } => {
-            let net = network.as_deref().unwrap_or("tcp");
+            // xray-core 1.8.24+ removed "http" transport; map to "xhttp".
+            let net = match network.as_deref().unwrap_or("tcp") {
+                "http" | "h2" => "xhttp",
+                other => other,
+            };
             let mut stream = json!({
                 "network": net
             });
@@ -387,9 +391,14 @@ struct StreamSettingsInput<'a> {
 }
 
 fn build_stream_settings(input: StreamSettingsInput<'_>) -> Value {
-    let mut stream = json!({ "network": input.network });
+    // xray-core 1.8.24+ removed the "http" transport; map to "xhttp" (splithttp).
+    let effective_network = match input.network {
+        "http" | "h2" => "xhttp",
+        other => other,
+    };
+    let mut stream = json!({ "network": effective_network });
 
-    match input.network {
+    match effective_network {
         "ws" => {
             let mut ws = json!({});
             if let Some(p) = input.path {
@@ -796,5 +805,75 @@ mod tests {
         assert!(!is_xray_activatable(&SubscriptionProxy::Unknown {
             raw_config: "x".into()
         }));
+    }
+
+    #[test]
+    fn test_http_transport_mapped_to_xhttp() {
+        // xray-core 1.8.24+ removed "http" transport; it must be mapped to "xhttp".
+        let trojan_http = SubscriptionProxy::Trojan {
+            host: "1.2.3.4".into(),
+            port: 443,
+            password: "pass".into(),
+            sni: Some("example.com".into()),
+            network: Some("http".into()),
+        };
+        let config = ConfigGenerator::generate(&trojan_http, 20010).unwrap();
+        let ob = &config.outbound_json;
+        assert_eq!(ob["streamSettings"]["network"], "xhttp");
+
+        // "h2" should also map to "xhttp"
+        let trojan_h2 = SubscriptionProxy::Trojan {
+            host: "1.2.3.4".into(),
+            port: 443,
+            password: "pass".into(),
+            sni: Some("example.com".into()),
+            network: Some("h2".into()),
+        };
+        let config_h2 = ConfigGenerator::generate(&trojan_h2, 20011).unwrap();
+        assert_eq!(
+            config_h2.outbound_json["streamSettings"]["network"],
+            "xhttp"
+        );
+    }
+
+    #[test]
+    fn test_build_stream_settings_maps_http_h2_to_xhttp() {
+        let none_path = None;
+        let none_host = None;
+        let none_service = None;
+        let none_security = None;
+        let none_sni = None;
+        let none_fp = None;
+        let none_pk = None;
+        let none_sid = None;
+        let none_spider = None;
+
+        let stream_http = build_stream_settings(StreamSettingsInput {
+            network: "http",
+            path: &none_path,
+            host_header: &none_host,
+            service_name: &none_service,
+            security: &none_security,
+            sni: &none_sni,
+            fingerprint: &none_fp,
+            public_key: &none_pk,
+            short_id: &none_sid,
+            spider_x: &none_spider,
+        });
+        assert_eq!(stream_http["network"], "xhttp");
+
+        let stream_h2 = build_stream_settings(StreamSettingsInput {
+            network: "h2",
+            path: &none_path,
+            host_header: &none_host,
+            service_name: &none_service,
+            security: &none_security,
+            sni: &none_sni,
+            fingerprint: &none_fp,
+            public_key: &none_pk,
+            short_id: &none_sid,
+            spider_x: &none_spider,
+        });
+        assert_eq!(stream_h2["network"], "xhttp");
     }
 }
