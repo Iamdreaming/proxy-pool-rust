@@ -696,11 +696,11 @@ impl UpstreamSelector {
                 .get_proxies_with_tag(&CapabilityTag::ChatGPT)
                 .await
         {
-            let preferred: std::collections::HashSet<String> =
-                preferred_keys.into_iter().collect();
+            let preferred: std::collections::HashSet<String> = preferred_keys.into_iter().collect();
             if !preferred.is_empty() {
-                let (pref, rest): (Vec<_>, Vec<_>) =
-                    filtered.into_iter().partition(|p| preferred.contains(&p.key()));
+                let (pref, rest): (Vec<_>, Vec<_>) = filtered
+                    .into_iter()
+                    .partition(|p| preferred.contains(&p.key()));
                 let mut ordered = pref;
                 ordered.extend(rest);
                 return ordered.into_iter().take(limit).collect();

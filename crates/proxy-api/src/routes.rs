@@ -7,12 +7,12 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get, post},
 };
+use proxy_core::capability::{CapabilityStore, CapabilityTag};
 use proxy_core::config::{
     Settings, SettingsEditError, read_settings_for_edit, redact_settings, write_settings_for_edit,
 };
 use proxy_core::fetcher::base::FetcherRunReport;
 use proxy_core::models::{Protocol, Proxy, ProxyFilter, WarpInstance};
-use proxy_core::capability::{CapabilityStore, CapabilityTag};
 use proxy_core::route_debug::RouteDecision;
 use proxy_core::status::{
     XrayStatus, collect_readiness, collect_service_status, render_prometheus_metrics,
@@ -221,10 +221,7 @@ pub fn create_router() -> Router<AppState> {
             post(refresh_subscription_source),
         )
         .route("/api/airports/checkin", post(airport_checkin_trigger))
-        .route(
-            "/api/airports/checkin/status",
-            get(airport_checkin_status),
-        )
+        .route("/api/airports/checkin/status", get(airport_checkin_status))
         .route("/api/proxies/scores", get(explain_proxy_scores))
         .route("/api/proxies", get(list_proxies))
         .route("/api/proxies/stats", get(proxy_stats))
@@ -542,11 +539,14 @@ async fn list_proxy_capabilities(State(state): State<AppState>) -> impl IntoResp
             }
             Err(e) => {
                 tracing::error!("list_proxy_capabilities: index read failed: {e}");
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ProxyCapabilitiesResponse {
-                    count: 0,
-                    proxies: vec![],
-                }))
-                .into_response();
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ProxyCapabilitiesResponse {
+                        count: 0,
+                        proxies: vec![],
+                    }),
+                )
+                    .into_response();
             }
         }
     }
@@ -594,10 +594,7 @@ async fn get_proxy_capabilities(
             tracing::error!("get_proxy_capabilities error: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ProxyCapabilityEntrySingle {
-                    key,
-                    tags: vec![],
-                }),
+                Json(ProxyCapabilityEntrySingle { key, tags: vec![] }),
             )
                 .into_response()
         }

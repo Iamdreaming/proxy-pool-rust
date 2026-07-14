@@ -12,8 +12,8 @@
 pub mod rest_client;
 pub mod serve;
 
-use proxy_core::geoip::GeoIPLookup;
 use proxy_core::capability::{CapabilityStore, CapabilityTag};
+use proxy_core::geoip::GeoIPLookup;
 use proxy_core::models::ProxyFilter;
 use proxy_core::status::{parse_bool_env, split_image_ref};
 use proxy_core::store::ProxyStore;
@@ -758,16 +758,20 @@ impl ProxyPoolMcp {
         Self::rest_result(self.rest.post_json(&path, None).await)
     }
 
-    #[tool(description = "Trigger a manual check-in for all registered airport (VPN panel) accounts")]
+    #[tool(
+        description = "Trigger a manual check-in for all registered airport (VPN panel) accounts"
+    )]
     async fn airport_checkin(&self) -> String {
         Self::rest_result(self.rest.post_json("/api/airports/checkin", None).await)
     }
 
-    #[tool(
-        description = "Get the last check-in status for all registered airport accounts"
-    )]
+    #[tool(description = "Get the last check-in status for all registered airport accounts")]
     async fn airport_checkin_status(&self) -> String {
-        Self::rest_result(self.rest.get_json("/api/airports/checkin/status", &[]).await)
+        Self::rest_result(
+            self.rest
+                .get_json("/api/airports/checkin/status", &[])
+                .await,
+        )
     }
 
     #[tool(

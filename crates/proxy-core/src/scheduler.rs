@@ -4,7 +4,6 @@ use crate::capability::{CapabilityStore, CapabilityTag, CapabilityTarget};
 use crate::circuit;
 use crate::config::{CapabilityConfig, PoolSettings};
 use crate::dedup;
-use std::str::FromStr;
 use crate::fetcher::Fetcher;
 use crate::fetcher::base::{FetcherOutput, FetcherRunReport};
 use crate::geoip::GeoIPLookup;
@@ -12,6 +11,7 @@ use crate::models::{Protocol, Proxy};
 use crate::store::ProxyStore;
 use crate::validator::{ValidationTarget, Validator};
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 
@@ -418,7 +418,8 @@ impl Scheduler {
             }
         }
 
-        if self.capability.enabled && self.capability.test_on_revalidate
+        if self.capability.enabled
+            && self.capability.test_on_revalidate
             && let Err(e) = self.run_capability_tests().await
         {
             tracing::warn!("capability revalidation failed: {e}");
@@ -443,9 +444,7 @@ impl Scheduler {
                     tops.retain(|p| seen.insert(p.key()));
                     candidates.extend(tops);
                 }
-                Err(e) => tracing::warn!(
-                    "capability: failed to list {protocol:?} candidates: {e}"
-                ),
+                Err(e) => tracing::warn!("capability: failed to list {protocol:?} candidates: {e}"),
             }
         }
         if candidates.is_empty() {
@@ -457,12 +456,14 @@ impl Scheduler {
             .targets
             .iter()
             .filter_map(|t| {
-                CapabilityTag::from_str(&t.tag).ok().map(|tag| CapabilityTarget {
-                    name: t.name.clone(),
-                    url: t.url.clone(),
-                    expected_status: t.expected_status,
-                    tag,
-                })
+                CapabilityTag::from_str(&t.tag)
+                    .ok()
+                    .map(|tag| CapabilityTarget {
+                        name: t.name.clone(),
+                        url: t.url.clone(),
+                        expected_status: t.expected_status,
+                        tag,
+                    })
             })
             .collect();
         if targets.is_empty() {

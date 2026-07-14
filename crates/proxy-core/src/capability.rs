@@ -204,10 +204,22 @@ mod tests {
 
     #[test]
     fn tag_from_str_round_trips() {
-        assert_eq!(CapabilityTag::from_str("chat_gpt").unwrap(), CapabilityTag::ChatGPT);
-        assert_eq!(CapabilityTag::from_str("openai").unwrap(), CapabilityTag::OpenAI);
-        assert_eq!(CapabilityTag::from_str("youtube").unwrap(), CapabilityTag::YouTube);
-        assert_eq!(CapabilityTag::from_str("google").unwrap(), CapabilityTag::Google);
+        assert_eq!(
+            CapabilityTag::from_str("chat_gpt").unwrap(),
+            CapabilityTag::ChatGPT
+        );
+        assert_eq!(
+            CapabilityTag::from_str("openai").unwrap(),
+            CapabilityTag::OpenAI
+        );
+        assert_eq!(
+            CapabilityTag::from_str("youtube").unwrap(),
+            CapabilityTag::YouTube
+        );
+        assert_eq!(
+            CapabilityTag::from_str("google").unwrap(),
+            CapabilityTag::Google
+        );
         assert!(CapabilityTag::from_str("nope").is_err());
     }
 

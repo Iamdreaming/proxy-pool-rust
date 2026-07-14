@@ -85,7 +85,8 @@ pub async fn discover_airport_domains(
     let mut out = Vec::new();
     for raw in candidates {
         if let Some(clean) = clean_domain(&raw)
-            && seen.insert(clean.clone()) {
+            && seen.insert(clean.clone())
+        {
             out.push(clean);
         }
     }
@@ -168,7 +169,8 @@ pub async fn save_airport_account(store: &ProxyStore, acct: &AirportAccount) -> 
     let panel_type = serde_json::to_value(&acct.panel_type)?;
     let panel_type_str = panel_type.as_str().unwrap_or("unknown").to_string();
     let _: () = conn.hset(&key, "panel_type", panel_type_str).await?;
-    let _: () = conn.hset(&key, "registered_at", acct.registered_at.to_rfc3339())
+    let _: () = conn
+        .hset(&key, "registered_at", acct.registered_at.to_rfc3339())
         .await?;
     Ok(())
 }
@@ -262,7 +264,8 @@ fn extract_hosts(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     // A full URL: take its host.
     if let Ok(url) = Url::parse(text.trim())
-        && let Some(host) = url.host_str() {
+        && let Some(host) = url.host_str()
+    {
         out.push(host.to_string());
         return out;
     }
@@ -297,7 +300,8 @@ fn clean_domain(raw: &str) -> Option<String> {
     };
     let host = host.trim_end_matches('.');
     let last_label = host.rsplit('.').next()?;
-    if !(2..=6).contains(&last_label.len()) || !last_label.chars().all(|c| c.is_ascii_alphabetic()) {
+    if !(2..=6).contains(&last_label.len()) || !last_label.chars().all(|c| c.is_ascii_alphabetic())
+    {
         return None;
     }
     Some(host.to_string())
