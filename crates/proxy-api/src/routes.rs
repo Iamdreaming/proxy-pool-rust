@@ -12,6 +12,7 @@ use proxy_core::config::{
 };
 use proxy_core::fetcher::base::FetcherRunReport;
 use proxy_core::models::{Protocol, Proxy, ProxyFilter, WarpInstance};
+use proxy_core::capability::{CapabilityStore, CapabilityTag};
 use proxy_core::route_debug::RouteDecision;
 use proxy_core::status::{
     XrayStatus, collect_readiness, collect_service_status, render_prometheus_metrics,
@@ -22,7 +23,9 @@ use proxy_core::xray_status::XrayStatusSnapshot;
 use proxy_sub::ops::{
     SubscriptionRefreshMode, SubscriptionSourceReport, SubscriptionSourcesSnapshot,
 };
+use proxy_sub::{airport::load_airport_accounts, checkin};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path as FilePath;
 
 use crate::AppState;
@@ -176,6 +179,20 @@ pub struct SettingsUpdateRequest {
     pub settings: Settings,
 }
 
+/// Body for `POST /api/airports/checkin` (manual check-in trigger).
+#[derive(Serialize)]
+pub struct AirportCheckinResponse {
+    pub status: String,
+    pub results: Vec<checkin::CheckinResult>,
+}
+
+/// Body for `GET /api/airports/checkin/status`.
+#[derive(Serialize)]
+pub struct AirportCheckinStatusResponse {
+    pub status: String,
+    pub checkins: Vec<checkin::CheckinStatus>,
+}
+
 #[derive(Serialize)]
 pub struct SettingsResponse {
     pub status: String,
@@ -203,6 +220,11 @@ pub fn create_router() -> Router<AppState> {
             "/api/subscriptions/sources/{id}/refresh",
             post(refresh_subscription_source),
         )
+        .route("/api/airports/checkin", post(airport_checkin_trigger))
+        .route(
+            "/api/airports/checkin/status",
+            get(airport_checkin_status),
+        )
         .route("/api/proxies/scores", get(explain_proxy_scores))
         .route("/api/proxies", get(list_proxies))
         .route("/api/proxies/stats", get(proxy_stats))
@@ -213,6 +235,11 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/proxies/refresh", post(refresh_pool))
         .route("/api/proxy/{key}", delete(delete_proxy))
         .route("/api/proxy/{key}/mark-failed", post(mark_failed_proxy))
+        .route("/api/proxies/capabilities", get(list_proxy_capabilities))
+        .route(
+            "/api/proxies/capabilities/{key}",
+            get(get_proxy_capabilities),
+        )
         .route("/api/metrics", get(metrics))
         .route("/api/xray/status", get(xray_status))
         .route("/api/warp", get(warp_status))
@@ -466,6 +493,117 @@ async fn get_best_proxy(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Capability endpoints
+// ---------------------------------------------------------------------------
+
+/// One proxy node and the capability tags currently assigned to it.
+#[derive(Serialize)]
+pub struct ProxyCapabilityEntry {
+    /// Proxy key (`host:port`).
+    pub key: String,
+    /// Protocol the proxy is stored under.
+    pub protocol: String,
+    /// Capability tags assigned to this proxy.
+    pub tags: Vec<CapabilityTag>,
+}
+
+/// List of all proxy nodes and their capability tags.
+#[derive(Serialize)]
+pub struct ProxyCapabilitiesResponse {
+    /// Number of proxy nodes returned.
+    pub count: usize,
+    /// Per-proxy capability entries.
+    pub proxies: Vec<ProxyCapabilityEntry>,
+}
+
+/// Single-proxy capability lookup response.
+#[derive(Serialize)]
+pub struct ProxyCapabilityEntrySingle {
+    /// Proxy key (`host:port`).
+    pub key: String,
+    /// Capability tags assigned to this proxy.
+    pub tags: Vec<CapabilityTag>,
+}
+
+/// List every proxy in the pool together with its capability tags.
+async fn list_proxy_capabilities(State(state): State<AppState>) -> impl IntoResponse {
+    let cap_store = CapabilityStore::new(state.store.raw_conn());
+
+    // Build a proxy_key -> tags reverse map from the tag indexes (cheap, fixed
+    // number of SMEMBERS calls regardless of proxy count).
+    let mut tag_map: HashMap<String, Vec<CapabilityTag>> = HashMap::new();
+    for tag in CapabilityTag::all() {
+        match cap_store.get_proxies_with_tag(tag).await {
+            Ok(keys) => {
+                for k in keys {
+                    tag_map.entry(k).or_default().push(*tag);
+                }
+            }
+            Err(e) => {
+                tracing::error!("list_proxy_capabilities: index read failed: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ProxyCapabilitiesResponse {
+                    count: 0,
+                    proxies: vec![],
+                }))
+                .into_response();
+            }
+        }
+    }
+
+    let mut entries: Vec<ProxyCapabilityEntry> = Vec::new();
+    for protocol in Protocol::all() {
+        match state.store.all(*protocol).await {
+            Ok(proxies) => {
+                for p in proxies {
+                    let key = p.key();
+                    let tags = tag_map.get(&key).cloned().unwrap_or_default();
+                    entries.push(ProxyCapabilityEntry {
+                        key,
+                        protocol: protocol.to_string(),
+                        tags,
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::error!("list_proxy_capabilities: store read failed: {e}");
+            }
+        }
+    }
+
+    Json(ProxyCapabilitiesResponse {
+        count: entries.len(),
+        proxies: entries,
+    })
+    .into_response()
+}
+
+/// Return the capability tags assigned to a single proxy key.
+async fn get_proxy_capabilities(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    let cap_store = CapabilityStore::new(state.store.raw_conn());
+    match cap_store.get(&key).await {
+        Ok(tags) => (
+            StatusCode::OK,
+            Json(ProxyCapabilityEntrySingle { key, tags }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("get_proxy_capabilities error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ProxyCapabilityEntrySingle {
+                    key,
+                    tags: vec![],
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn refresh_pool(State(state): State<AppState>) -> impl IntoResponse {
     match state.scheduler_handle.refresh().await {
         Ok(result) => Json(RefreshResponse {
@@ -599,6 +737,59 @@ async fn refresh_subscription_source(
         )
             .into_response(),
     }
+}
+
+/// Trigger a manual check-in for all registered airport (VPN panel) accounts.
+///
+/// Loads the persisted airport accounts and POSTs each panel's `/user/checkin`
+/// endpoint, persisting each result. A failing site does not block the others.
+async fn airport_checkin_trigger(State(state): State<AppState>) -> impl IntoResponse {
+    let store = state.store.clone();
+    let accounts = load_airport_accounts(&store).await;
+    if accounts.is_empty() {
+        return (
+            StatusCode::OK,
+            Json(AirportCheckinResponse {
+                status: "no_registered_airports".into(),
+                results: vec![],
+            }),
+        )
+            .into_response();
+    }
+
+    let client = reqwest::Client::new();
+    let mut results = Vec::with_capacity(accounts.len());
+    for account in &accounts {
+        let Some(token) = &account.token else {
+            continue;
+        };
+        let result = checkin::checkin(&account.domain, token, &client).await;
+        let _ = checkin::save_checkin_result(&store, &result).await;
+        results.push(result);
+    }
+
+    (
+        StatusCode::OK,
+        Json(AirportCheckinResponse {
+            status: "ok".into(),
+            results,
+        }),
+    )
+        .into_response()
+}
+
+/// Get the last check-in status for all registered airport accounts.
+async fn airport_checkin_status(State(state): State<AppState>) -> impl IntoResponse {
+    let store = state.store.clone();
+    let checkins = checkin::load_checkin_statuses(&store).await;
+    (
+        StatusCode::OK,
+        Json(AirportCheckinStatusResponse {
+            status: "ok".into(),
+            checkins,
+        }),
+    )
+        .into_response()
 }
 
 async fn delete_proxy(State(state): State<AppState>, Path(key): Path<String>) -> impl IntoResponse {
@@ -844,6 +1035,9 @@ mod tests {
             kind: proxy_sub::ops::SubscriptionSourceKind::StaticUrl,
             label: "https://example.com/sub".into(),
             enabled: true,
+            origin: proxy_core::source_origin::SourceOrigin::Manual,
+            last_success_at: None,
+            consecutive_failures: 0,
         };
         let report = SubscriptionSourceReport {
             source: descriptor.clone(),
@@ -879,6 +1073,7 @@ mod tests {
                     parsed_nodes_per_url: Some(20.0),
                 },
             },
+            metadata: None,
         };
         let resp = SubscriptionSourcesResponse {
             status: "ok".into(),
@@ -908,6 +1103,28 @@ mod tests {
         let default_query: SubscriptionRefreshQuery =
             serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(default_query.apply, None);
+    }
+
+    #[test]
+    fn test_airport_checkin_response_serialization() {
+        let resp = AirportCheckinResponse {
+            status: "ok".into(),
+            results: vec![],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"results\":[]"));
+    }
+
+    #[test]
+    fn test_airport_checkin_status_response_serialization() {
+        let resp = AirportCheckinStatusResponse {
+            status: "ok".into(),
+            checkins: vec![],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"checkins\":[]"));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! Contains data models, configuration, fetchers, validator, store,
 //! scheduler, GeoIP lookup, domain router, and WARP integration.
 
+pub mod capability;
 pub mod circuit;
 pub mod config;
 pub mod dedup;
@@ -14,6 +15,7 @@ pub mod pacing;
 pub mod route_debug;
 pub mod router;
 pub mod scheduler;
+pub mod source_origin;
 pub mod status;
 pub mod store;
 pub mod validator;

@@ -1,12 +1,16 @@
 //! Source discovery infrastructure: the [`Discover`] trait and built-in discoverers.
 
 pub mod aggregator;
+pub mod airport;
 pub mod github_search;
 pub mod static_url;
+pub mod telegram;
 
 pub use aggregator::{AggregatorConfig, AggregatorDiscover};
+pub use airport::{AirportConfig, AirportDiscover};
 pub use github_search::{GitHubSearchConfig, GitHubSearchDiscover};
 pub use static_url::StaticUrlDiscover;
+pub use telegram::{TelegramChannelConfig, TelegramConfig, TelegramDiscover};
 
 /// A source discoverer: finds subscription URLs from a specific channel.
 ///

@@ -7,13 +7,16 @@ use std::time::Instant;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use proxy_core::config::SubscriptionConfig;
+use proxy_core::source_origin::{CredibilityLevel, SourceOrigin};
 use proxy_core::store::ProxyStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::convert::partition;
 use crate::discover::{
-    AggregatorConfig, AggregatorDiscover, Discover, GitHubSearchConfig, GitHubSearchDiscover,
+    AggregatorConfig, AggregatorDiscover, AirportConfig, AirportDiscover, Discover,
+    GitHubSearchConfig, GitHubSearchDiscover, TelegramChannelConfig, TelegramConfig,
+    TelegramDiscover,
 };
 use crate::models::SubscriptionProxy;
 use crate::parser::parse_subscription;
@@ -27,6 +30,8 @@ pub enum SubscriptionSourceKind {
     StaticUrl,
     GithubSearch,
     Aggregator,
+    Telegram,
+    Airport,
 }
 
 /// Stable, safe-to-display description of a configured subscription source.
@@ -36,6 +41,19 @@ pub struct SubscriptionSourceDescriptor {
     pub kind: SubscriptionSourceKind,
     pub label: String,
     pub enabled: bool,
+    /// Origin credibility tag for this source.
+    #[serde(default = "default_origin")]
+    pub origin: SourceOrigin,
+    /// Timestamp of the last successful refresh (used for credibility degradation).
+    #[serde(default)]
+    pub last_success_at: Option<DateTime<Utc>>,
+    /// Consecutive refresh failures since last success.
+    #[serde(default)]
+    pub consecutive_failures: u32,
+}
+
+fn default_origin() -> SourceOrigin {
+    SourceOrigin::Manual
 }
 
 /// Manual refresh mode. Preview is the safe default and performs no writes.
@@ -128,6 +146,111 @@ pub struct SubscriptionSourceReport {
     pub errors: Vec<SubscriptionSourceError>,
     #[serde(default = "default_apply_recommendation")]
     pub recommendation: SubscriptionApplyRecommendation,
+    /// Subscription metadata (traffic/expiry) parsed from response headers.
+    #[serde(default)]
+    pub metadata: Option<SubscriptionMeta>,
+}
+
+/// Parsed subscription-userinfo header data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubscriptionMeta {
+    /// Bytes uploaded.
+    pub upload: u64,
+    /// Bytes downloaded.
+    pub download: u64,
+    /// Total bytes allowed.
+    pub total: u64,
+    /// Expiry timestamp (Unix seconds), if provided.
+    pub expire: Option<i64>,
+    /// Ratio of remaining traffic (0.0–1.0).
+    pub remaining_ratio: f64,
+    /// Days remaining until expiry, if known.
+    pub remaining_days: Option<f64>,
+    /// Composite health score (0.0–1.0) combining traffic and time.
+    pub health: f64,
+}
+
+impl SubscriptionMeta {
+    /// Parse a `subscription-userinfo` header value.
+    ///
+    /// Format: `upload=U; download=D; total=T; expire=E`
+    /// where U/D/T are in bytes and E is a Unix timestamp.
+    pub fn parse(header: &str) -> Option<Self> {
+        let mut upload: Option<u64> = None;
+        let mut download: Option<u64> = None;
+        let mut total: Option<u64> = None;
+        let mut expire: Option<i64> = None;
+
+        for part in header.split(';') {
+            let part = part.trim();
+            if let Some((key, value)) = part.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+                match key {
+                    "upload" => upload = value.parse().ok(),
+                    "download" => download = value.parse().ok(),
+                    "total" => total = value.parse().ok(),
+                    "expire" => expire = value.parse().ok(),
+                    _ => {}
+                }
+            }
+        }
+
+        let upload = upload?;
+        let download = download?;
+        let total = total?;
+
+        let remaining_bytes = total.saturating_sub(upload + download);
+        let remaining_ratio = if total > 0 {
+            remaining_bytes as f64 / total as f64
+        } else {
+            0.0
+        };
+
+        let now_ts = Utc::now().timestamp();
+        let remaining_days = expire.map(|exp| {
+            let remaining_secs = (exp - now_ts).max(0);
+            remaining_secs as f64 / 86400.0
+        });
+
+        // Health = geometric mean of traffic ratio and time ratio.
+        // If no expiry, health = remaining_ratio.
+        let health = match (remaining_days, expire) {
+            (Some(days), Some(_)) if days > 0.0 => {
+                let time_ratio = (days / 30.0).min(1.0); // normalize to 30-day window
+                (remaining_ratio * time_ratio).sqrt()
+            }
+            _ => remaining_ratio,
+        };
+
+        Some(Self {
+            upload,
+            download,
+            total,
+            expire,
+            remaining_ratio,
+            remaining_days,
+            health,
+        })
+    }
+
+    /// Whether this subscription is effectively expired (no traffic or past expiry).
+    pub fn is_expired(&self) -> bool {
+        if self.remaining_ratio < 0.01 {
+            return true;
+        }
+        if let Some(days) = self.remaining_days
+            && days < 0.5
+        {
+            return true;
+        }
+        false
+    }
+
+    /// Whether this subscription is in low-health state (needs attention).
+    pub fn is_low_health(&self) -> bool {
+        self.remaining_ratio < 0.1 || self.remaining_days.is_some_and(|d| d < 3.0)
+    }
 }
 
 /// Status for a configured source plus its latest report, if any.
@@ -159,7 +282,7 @@ impl SubscriptionOpsHandle {
         store: Arc<ProxyStore>,
         pending: Arc<PendingStore>,
     ) -> Self {
-        let state = SubscriptionOpsState::from_config(&config);
+        let state = SubscriptionOpsState::from_config(&config, Some(store.clone()));
         let source = Arc::new(Mutex::new(SubscriptionSource::new(
             config.cache_ttl_sec,
             config.fetch_timeout_sec,
@@ -206,6 +329,45 @@ impl SubscriptionOpsHandle {
         }
         reports
     }
+
+    /// Perform check-in + renewal across all registered airport accounts.
+    ///
+    /// Loads the persisted accounts, POSTs each panel's `/user/checkin`
+    /// endpoint, persists the result, and triggers a free-plan renewal when the
+    /// subscription is low on traffic or near expiry. A failure for one site is
+    /// logged and never blocks the others.
+    pub async fn run_checkin(&self) {
+        let store = self.store.clone();
+        let accounts = crate::airport::load_airport_accounts(&store).await;
+        if accounts.is_empty() {
+            tracing::info!("airport check-in skipped: no registered accounts");
+            return;
+        }
+        let client = reqwest::Client::new();
+        for account in &accounts {
+            let Some(token) = &account.token else {
+                continue;
+            };
+            let result = crate::checkin::checkin(&account.domain, token, &client).await;
+            if result.success {
+                tracing::info!(domain = %account.domain, "airport check-in succeeded");
+            } else {
+                tracing::warn!(
+                    domain = %account.domain,
+                    msg = %result.message,
+                    "airport check-in failed"
+                );
+            }
+            if let Err(e) = crate::checkin::save_checkin_result(&store, &result).await {
+                tracing::warn!(
+                    domain = %account.domain,
+                    error = %e,
+                    "failed to persist airport check-in result"
+                );
+            }
+            crate::checkin::renew_if_needed(account, None, &client).await;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -219,10 +381,10 @@ struct SubscriptionOpsInner {
 }
 
 impl SubscriptionOpsState {
-    fn from_config(config: &SubscriptionConfig) -> Self {
+    fn from_config(config: &SubscriptionConfig, store: Option<Arc<ProxyStore>>) -> Self {
         Self {
             inner: Arc::new(RwLock::new(SubscriptionOpsInner {
-                entries: entries_from_config(config),
+                entries: entries_from_config(config, store),
                 reports: HashMap::new(),
             })),
         }
@@ -291,6 +453,8 @@ impl SubscriptionSourceEntry {
 
 pub async fn subscription_ops_loop(config: SubscriptionConfig, ops: SubscriptionOpsHandle) {
     let interval = std::time::Duration::from_secs(config.refresh_interval_sec);
+    let checkin_interval = std::time::Duration::from_secs(config.checkin.interval_sec);
+    let mut last_checkin: Option<Instant> = None;
 
     loop {
         tracing::info!("subscription refresh cycle starting");
@@ -305,6 +469,19 @@ pub async fn subscription_ops_loop(config: SubscriptionConfig, ops: Subscription
             failed_urls,
             "subscription refresh cycle completed"
         );
+
+        // Check-in phase: runs on its own (independent) interval so it does not
+        // couple to the refresh cycle cadence. Failures are isolated per-site.
+        if config.checkin.enabled {
+            let due = last_checkin
+                .map(|t| t.elapsed() >= checkin_interval)
+                .unwrap_or(true);
+            if due {
+                last_checkin = Some(Instant::now());
+                ops.run_checkin().await;
+            }
+        }
+
         tracing::info!(
             sleep_secs = interval.as_secs(),
             "subscription refresh cycle sleeping"
@@ -352,6 +529,38 @@ async fn run_entry(
     let mut staged_encrypted = Vec::new();
 
     for url in unique_urls {
+        // Protocol direct links (vmess://, trojan://, etc.) are parsed directly
+        // without fetching — they are already the node content.
+        if is_protocol_direct_link(&url) {
+            let proxies: Vec<SubscriptionProxy> = parse_subscription(&url);
+            if !proxies.is_empty() {
+                report.fetched_urls += 1;
+                for proxy in &proxies {
+                    *report
+                        .protocol_counts
+                        .entry(proxy.protocol_label().to_string())
+                        .or_insert(0) += 1;
+                    if !seen_nodes.insert(proxy.dedup_key()) {
+                        report.duplicate_nodes += 1;
+                    }
+                    if matches!(proxy, SubscriptionProxy::Unknown { .. }) {
+                        report.unknown_nodes += 1;
+                    }
+                }
+                report.parsed_nodes += proxies.len();
+                let (basics, encrypted) = partition(&proxies, &url);
+                report.direct_nodes += basics.len();
+                report.encrypted_nodes += encrypted.len();
+                if mode.applies() {
+                    staged_basics.extend(basics.into_iter().map(|p| (p, "direct-link".into())));
+                    if !encrypted.is_empty() {
+                        staged_encrypted.push((encrypted, "direct-link".into()));
+                    }
+                }
+            }
+            continue;
+        }
+
         let display_url = redact_url(&url);
         let content = match source.fetch(&url).await {
             Ok(content) => {
@@ -430,6 +639,17 @@ async fn run_entry(
     report.elapsed_ms = timer.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     report.outcome = report_outcome(&report);
     report.last_error = report.errors.first().map(|error| error.message.clone());
+
+    // Update credibility tracking on the descriptor.
+    if report.outcome == SubscriptionRefreshOutcome::Ok
+        || report.outcome == SubscriptionRefreshOutcome::Partial
+    {
+        report.source.last_success_at = Some(report.finished_at);
+        report.source.consecutive_failures = 0;
+    } else {
+        report.source.consecutive_failures = report.source.consecutive_failures.saturating_add(1);
+    }
+
     report
 }
 
@@ -461,6 +681,7 @@ fn empty_report(
         protocol_counts: BTreeMap::new(),
         errors: Vec::new(),
         recommendation: default_apply_recommendation(),
+        metadata: None,
     }
 }
 
@@ -498,6 +719,29 @@ fn recommend_apply(report: &SubscriptionSourceReport) -> SubscriptionApplyRecomm
     let supported_nodes = report.direct_nodes + report.encrypted_nodes;
     let mut reasons = Vec::new();
 
+    // --- Credibility degradation (long-term, days-level) ---
+    // This works alongside the circuit breaker (short-term, seconds-level).
+    if let Some(level) = credibility_degradation(&report.source) {
+        match level {
+            CredibilityLevel::Expired => {
+                reasons.push(format!(
+                    "source_origin_{}_expired_{:.0}_days_past_2x_window",
+                    report.source.origin,
+                    days_since_last_success(&report.source).unwrap_or(0.0)
+                ));
+            }
+            CredibilityLevel::Stale => {
+                reasons.push(format!(
+                    "source_origin_{}_stale_{:.0}_days_past_window",
+                    report.source.origin,
+                    days_since_last_success(&report.source).unwrap_or(0.0)
+                ));
+            }
+            CredibilityLevel::Fresh => {}
+        }
+    }
+
+    // --- Standard quality gate checks ---
     if report.unique_urls == 0 {
         reasons.push("no_subscription_urls_discovered".into());
     }
@@ -529,6 +773,19 @@ fn recommend_apply(report: &SubscriptionSourceReport) -> SubscriptionApplyRecomm
         reasons.push("duplicate_node_ratio_above_95_percent".into());
     }
 
+    // Credibility-based degradation overrides the standard decision.
+    let credibility_level = credibility_degradation(&report.source);
+
+    // If credibility is Expired, force Reject regardless of quality metrics.
+    if credibility_level == Some(CredibilityLevel::Expired) && !reasons.is_empty() {
+        return SubscriptionApplyRecommendation {
+            decision: SubscriptionApplyDecision::Reject,
+            grade: source_quality_grade(&metrics),
+            reasons,
+            metrics,
+        };
+    }
+
     if !reasons.is_empty() {
         return SubscriptionApplyRecommendation {
             decision: SubscriptionApplyDecision::Reject,
@@ -539,6 +796,10 @@ fn recommend_apply(report: &SubscriptionSourceReport) -> SubscriptionApplyRecomm
     }
 
     let mut review_reasons = Vec::new();
+    // Stale credibility forces Review even if quality metrics would allow Apply.
+    if credibility_level == Some(CredibilityLevel::Stale) {
+        review_reasons.push("source_credibility_stale_forces_review".into());
+    }
     if metrics.fetch_success_rate.is_some_and(|rate| rate < 0.60) {
         review_reasons.push("fetch_success_rate_below_60_percent".into());
     }
@@ -622,6 +883,31 @@ fn ratio(numerator: usize, denominator: usize) -> Option<f64> {
     }
 }
 
+/// Compute credibility degradation level for a source based on its origin
+/// and time since last successful refresh.
+fn credibility_degradation(source: &SubscriptionSourceDescriptor) -> Option<CredibilityLevel> {
+    let days = days_since_last_success(source)?;
+    source.origin.degradation(days as u32)
+}
+
+/// Days elapsed since the last successful refresh. Returns `None` if never
+/// refreshed successfully (treated as "day 0" for permanent origins, or a
+/// large value for non-permanent origins to trigger immediate degradation).
+fn days_since_last_success(source: &SubscriptionSourceDescriptor) -> Option<f64> {
+    match source.last_success_at {
+        Some(ts) => Some((Utc::now() - ts).num_seconds() as f64 / 86400.0),
+        None => {
+            // Never succeeded: permanent origins are fine, others are very stale.
+            if source.origin.is_permanent() {
+                None
+            } else {
+                // Use a large value to ensure degradation kicks in.
+                Some(999.0)
+            }
+        }
+    }
+}
+
 fn apply_reject_policy(report: &mut SubscriptionSourceReport) -> bool {
     if report.mode == SubscriptionRefreshMode::Apply
         && report.recommendation.decision == SubscriptionApplyDecision::Reject
@@ -640,7 +926,10 @@ fn apply_reject_policy(report: &mut SubscriptionSourceReport) -> bool {
     }
 }
 
-fn entries_from_config(config: &SubscriptionConfig) -> Vec<SubscriptionSourceEntry> {
+fn entries_from_config(
+    config: &SubscriptionConfig,
+    store: Option<Arc<ProxyStore>>,
+) -> Vec<SubscriptionSourceEntry> {
     let mut entries = Vec::new();
 
     for (idx, url) in config.urls.iter().enumerate() {
@@ -651,6 +940,9 @@ fn entries_from_config(config: &SubscriptionConfig) -> Vec<SubscriptionSourceEnt
                 kind: SubscriptionSourceKind::StaticUrl,
                 label: redact_url(url),
                 enabled: true,
+                origin: SourceOrigin::Manual,
+                last_success_at: None,
+                consecutive_failures: 0,
             },
             target: SubscriptionSourceTarget::StaticUrl { url: url.clone() },
         });
@@ -669,6 +961,9 @@ fn entries_from_config(config: &SubscriptionConfig) -> Vec<SubscriptionSourceEnt
                 kind: SubscriptionSourceKind::GithubSearch,
                 label: "GitHub search".into(),
                 enabled: true,
+                origin: SourceOrigin::GitHub,
+                last_success_at: None,
+                consecutive_failures: 0,
             },
             target: SubscriptionSourceTarget::Discoverer { discoverer },
         });
@@ -687,6 +982,65 @@ fn entries_from_config(config: &SubscriptionConfig) -> Vec<SubscriptionSourceEnt
                 kind: SubscriptionSourceKind::Aggregator,
                 label: redact_url(&aggregator.url),
                 enabled: true,
+                origin: SourceOrigin::Aggregator,
+                last_success_at: None,
+                consecutive_failures: 0,
+            },
+            target: SubscriptionSourceTarget::Discoverer { discoverer },
+        });
+    }
+
+    if config.telegram.enabled {
+        let channels: Vec<TelegramChannelConfig> = config
+            .telegram
+            .channels
+            .iter()
+            .map(|c| TelegramChannelConfig {
+                name: c.name.clone(),
+                pages: c.pages,
+                include: c.include.clone(),
+                exclude: c.exclude.clone(),
+                enabled: c.enabled,
+            })
+            .collect();
+        let discoverer = Arc::new(TelegramDiscover::new(TelegramConfig {
+            channels,
+            timeout_sec: config.fetch_timeout_sec,
+        }));
+        entries.push(SubscriptionSourceEntry {
+            descriptor: SubscriptionSourceDescriptor {
+                id: "telegram".into(),
+                kind: SubscriptionSourceKind::Telegram,
+                label: "Telegram channels".into(),
+                enabled: true,
+                origin: SourceOrigin::Telegram,
+                last_success_at: None,
+                consecutive_failures: 0,
+            },
+            target: SubscriptionSourceTarget::Discoverer { discoverer },
+        });
+    }
+
+    if config.airport.enabled {
+        let discoverer = Arc::new(AirportDiscover::new(
+            AirportConfig {
+                aggregator_sites: config.airport.aggregator_sites.clone(),
+                cloudflare_worker_url: config.airport.cloudflare_worker_url.clone(),
+                cloudflare_admin_auth: config.airport.cloudflare_admin_auth.clone(),
+                max_concurrent: config.airport.max_concurrent,
+                timeout_sec: config.fetch_timeout_sec,
+            },
+            store.clone(),
+        ));
+        entries.push(SubscriptionSourceEntry {
+            descriptor: SubscriptionSourceDescriptor {
+                id: "airport".into(),
+                kind: SubscriptionSourceKind::Airport,
+                label: "Airport auto-registration".into(),
+                enabled: true,
+                origin: SourceOrigin::Airport,
+                last_success_at: None,
+                consecutive_failures: 0,
             },
             target: SubscriptionSourceTarget::Discoverer { discoverer },
         });
@@ -701,6 +1055,26 @@ fn github_keywords(config: &SubscriptionConfig) -> Vec<String> {
     } else {
         config.github.keywords.clone()
     }
+}
+
+/// Protocol schemes that represent a single node rather than a subscription URL.
+const DIRECT_LINK_SCHEMES: &[&str] = &[
+    "vmess://",
+    "trojan://",
+    "ss://",
+    "ssr://",
+    "vless://",
+    "hysteria2://",
+    "hysteria://",
+    "tuic://",
+    "snell://",
+    "anytls://",
+];
+
+/// Returns `true` if the URL is a protocol direct link (e.g. `vmess://…`).
+fn is_protocol_direct_link(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    DIRECT_LINK_SCHEMES.iter().any(|s| lower.starts_with(s))
 }
 
 fn sanitize_error_message(message: &str, raw_url: &str) -> String {
@@ -733,7 +1107,7 @@ fn redact_url(raw_url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxy_core::config::{AggregatorEntryConfig, GitHubDiscoverConfig};
+    use proxy_core::config::{AggregatorEntryConfig, GitHubDiscoverConfig, TelegramDiscoverConfig};
     use proxy_core::models::Protocol;
 
     fn config_with_sources() -> SubscriptionConfig {
@@ -754,15 +1128,33 @@ mod tests {
                 format: "yaml".into(),
                 refresh_interval_sec: 43200,
             }],
+            telegram: TelegramDiscoverConfig {
+                enabled: false,
+                channels: vec![],
+            },
             refresh_interval_sec: 3600,
             fetch_timeout_sec: 10,
             cache_ttl_sec: 300,
+            airport: proxy_core::config::AirportDiscoverConfig::default(),
+            checkin: proxy_core::config::CheckinConfig::default(),
+        }
+    }
+
+    fn test_descriptor() -> SubscriptionSourceDescriptor {
+        SubscriptionSourceDescriptor {
+            id: "static-url-1".into(),
+            kind: SubscriptionSourceKind::StaticUrl,
+            label: "https://example.com/sub".into(),
+            enabled: true,
+            origin: SourceOrigin::Manual,
+            last_success_at: None,
+            consecutive_failures: 0,
         }
     }
 
     #[tokio::test]
     async fn test_snapshot_empty_config() {
-        let state = SubscriptionOpsState::from_config(&SubscriptionConfig::default());
+        let state = SubscriptionOpsState::from_config(&SubscriptionConfig::default(), None);
         let snapshot = state.snapshot().await;
         assert!(!snapshot.enabled);
         assert_eq!(snapshot.source_count, 0);
@@ -771,7 +1163,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_descriptors_from_config_are_stable_and_redacted() {
-        let state = SubscriptionOpsState::from_config(&config_with_sources());
+        let state = SubscriptionOpsState::from_config(&config_with_sources(), None);
         let snapshot = state.snapshot().await;
         assert!(snapshot.enabled);
         assert_eq!(snapshot.source_count, 4);
@@ -808,12 +1200,7 @@ mod tests {
 
     #[test]
     fn test_report_outcome_matrix() {
-        let descriptor = SubscriptionSourceDescriptor {
-            id: "static-url-1".into(),
-            kind: SubscriptionSourceKind::StaticUrl,
-            label: "https://example.com/sub".into(),
-            enabled: true,
-        };
+        let descriptor = test_descriptor();
         let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
         assert_eq!(report_outcome(&report), SubscriptionRefreshOutcome::Empty);
 
@@ -833,12 +1220,7 @@ mod tests {
 
     #[test]
     fn test_report_serialization_uses_snake_case_modes() {
-        let descriptor = SubscriptionSourceDescriptor {
-            id: "static-url-1".into(),
-            kind: SubscriptionSourceKind::StaticUrl,
-            label: "https://example.com/sub".into(),
-            enabled: true,
-        };
+        let descriptor = test_descriptor();
         let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
         report.protocol_counts.insert("basic".into(), 1);
         let json = serde_json::to_string(&report).unwrap();
@@ -851,12 +1233,7 @@ mod tests {
 
     #[test]
     fn test_recommend_apply_when_source_meets_thresholds() {
-        let descriptor = SubscriptionSourceDescriptor {
-            id: "static-url-1".into(),
-            kind: SubscriptionSourceKind::StaticUrl,
-            label: "https://example.com/sub".into(),
-            enabled: true,
-        };
+        let descriptor = test_descriptor();
         let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
         report.unique_urls = 4;
         report.fetched_urls = 3;
@@ -881,12 +1258,7 @@ mod tests {
 
     #[test]
     fn test_recommend_review_when_source_is_usable_but_small() {
-        let descriptor = SubscriptionSourceDescriptor {
-            id: "static-url-1".into(),
-            kind: SubscriptionSourceKind::StaticUrl,
-            label: "https://example.com/sub".into(),
-            enabled: true,
-        };
+        let descriptor = test_descriptor();
         let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
         report.unique_urls = 1;
         report.fetched_urls = 1;
@@ -906,12 +1278,7 @@ mod tests {
 
     #[test]
     fn test_recommend_review_when_noisy_source_has_enough_supported_nodes() {
-        let descriptor = SubscriptionSourceDescriptor {
-            id: "static-url-1".into(),
-            kind: SubscriptionSourceKind::StaticUrl,
-            label: "https://example.com/sub".into(),
-            enabled: true,
-        };
+        let descriptor = test_descriptor();
         let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
         report.unique_urls = 1;
         report.fetched_urls = 1;
@@ -937,12 +1304,7 @@ mod tests {
 
     #[test]
     fn test_recommend_reject_when_no_supported_nodes() {
-        let descriptor = SubscriptionSourceDescriptor {
-            id: "static-url-1".into(),
-            kind: SubscriptionSourceKind::StaticUrl,
-            label: "https://example.com/sub".into(),
-            enabled: true,
-        };
+        let descriptor = test_descriptor();
         let mut report = empty_report(descriptor, SubscriptionRefreshMode::Preview, Utc::now());
         report.unique_urls = 1;
         report.fetched_urls = 1;
@@ -966,12 +1328,7 @@ mod tests {
 
     #[test]
     fn test_rejected_apply_policy_blocks_writes() {
-        let descriptor = SubscriptionSourceDescriptor {
-            id: "static-url-1".into(),
-            kind: SubscriptionSourceKind::StaticUrl,
-            label: "https://example.com/sub".into(),
-            enabled: true,
-        };
+        let descriptor = test_descriptor();
         let mut report = empty_report(descriptor, SubscriptionRefreshMode::Apply, Utc::now());
         report.unique_urls = 1;
         report.fetched_urls = 1;

@@ -13,6 +13,7 @@ pub mod rest_client;
 pub mod serve;
 
 use proxy_core::geoip::GeoIPLookup;
+use proxy_core::capability::{CapabilityStore, CapabilityTag};
 use proxy_core::models::ProxyFilter;
 use proxy_core::status::{parse_bool_env, split_image_ref};
 use proxy_core::store::ProxyStore;
@@ -532,6 +533,49 @@ impl ProxyPoolMcp {
         }
     }
 
+    #[tool(
+        description = "List proxy node capabilities (tags like chat_gpt/openai assigned by the scheduler's capability probing). Returns every proxy and the capabilities it satisfies."
+    )]
+    async fn proxy_capabilities(&self) -> Result<String, String> {
+        let cap_store = CapabilityStore::new(self.store.raw_conn());
+
+        let mut tag_map: std::collections::HashMap<String, Vec<CapabilityTag>> =
+            std::collections::HashMap::new();
+        for tag in CapabilityTag::all() {
+            match cap_store.get_proxies_with_tag(tag).await {
+                Ok(keys) => {
+                    for k in keys {
+                        tag_map.entry(k).or_default().push(*tag);
+                    }
+                }
+                Err(e) => return Err(format!("Error: {e}")),
+            }
+        }
+
+        let mut entries = Vec::new();
+        for proto in proxy_core::models::Protocol::all() {
+            match self.store.all(*proto).await {
+                Ok(proxies) => {
+                    for p in proxies {
+                        let key = p.key();
+                        let tags = tag_map.get(&key).cloned().unwrap_or_default();
+                        entries.push(serde_json::json!({
+                            "key": key,
+                            "protocol": proto.to_string(),
+                            "tags": tags,
+                        }));
+                    }
+                }
+                Err(e) => return Err(format!("Error: {e}")),
+            }
+        }
+
+        Ok(to_json(serde_json::json!({
+            "count": entries.len(),
+            "proxies": entries,
+        })))
+    }
+
     #[tool(description = "Check if a specific proxy is working by testing connectivity")]
     async fn check_proxy(&self, params: Parameters<CheckProxyParam>) -> String {
         let host = &params.0.host;
@@ -712,6 +756,18 @@ impl ProxyPoolMcp {
     async fn refresh_fetcher(&self, params: Parameters<RefreshFetcherParam>) -> String {
         let path = format!("/api/fetchers/{}/refresh", urlencode(&params.0.fetcher));
         Self::rest_result(self.rest.post_json(&path, None).await)
+    }
+
+    #[tool(description = "Trigger a manual check-in for all registered airport (VPN panel) accounts")]
+    async fn airport_checkin(&self) -> String {
+        Self::rest_result(self.rest.post_json("/api/airports/checkin", None).await)
+    }
+
+    #[tool(
+        description = "Get the last check-in status for all registered airport accounts"
+    )]
+    async fn airport_checkin_status(&self) -> String {
+        Self::rest_result(self.rest.get_json("/api/airports/checkin/status", &[]).await)
     }
 
     #[tool(

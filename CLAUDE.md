@@ -3,6 +3,9 @@
 ## 项目概述
 Rust workspace 代理池服务，包含代理获取、验证、网关路由、MCP 接口和 WARP 链式代理。
 
+## 子代理规范
+· 编码，git提交推送等使用子代理 haiku模型
+
 ## Workspace 结构
 - `crates/proxy-core` — 核心模型、存储、验证、GeoIP、WARP 模型
 - `crates/proxy-api` — REST API (axum)

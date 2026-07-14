@@ -353,6 +353,11 @@ impl ProxyStore {
         (*self.conn).clone()
     }
 
+    /// Return a cloned Redis connection for ad-hoc key access (e.g. airport account persistence).
+    pub fn raw_conn(&self) -> MultiplexedConnection {
+        self.conn()
+    }
+
     /// Add a proxy to the store (upsert by dedup key).
     ///
     /// Removes any existing entry for the same logical proxy (host:port:protocol)

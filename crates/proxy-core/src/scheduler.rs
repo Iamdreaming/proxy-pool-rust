@@ -1,8 +1,10 @@
 //! Scheduler: runs the fetch → dedup → validate → store pipeline periodically.
 
+use crate::capability::{CapabilityStore, CapabilityTag, CapabilityTarget};
 use crate::circuit;
-use crate::config::PoolSettings;
+use crate::config::{CapabilityConfig, PoolSettings};
 use crate::dedup;
+use std::str::FromStr;
 use crate::fetcher::Fetcher;
 use crate::fetcher::base::{FetcherOutput, FetcherRunReport};
 use crate::geoip::GeoIPLookup;
@@ -110,6 +112,7 @@ pub struct Scheduler {
     validator: Arc<Validator>,
     store: Arc<ProxyStore>,
     settings: PoolSettings,
+    capability: CapabilityConfig,
     geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     fetcher_statuses: Arc<RwLock<Vec<FetcherRunReport>>>,
 }
@@ -120,6 +123,7 @@ impl Scheduler {
         validator: Validator,
         store: Arc<ProxyStore>,
         settings: PoolSettings,
+        capability: CapabilityConfig,
         geoip: Option<Arc<Mutex<GeoIPLookup>>>,
     ) -> Self {
         let fetcher_statuses = Arc::new(RwLock::new(
@@ -134,6 +138,7 @@ impl Scheduler {
             validator: Arc::new(validator),
             store,
             settings,
+            capability,
             geoip,
             fetcher_statuses,
         }
@@ -411,6 +416,106 @@ impl Scheduler {
                     }
                 }
             }
+        }
+
+        if self.capability.enabled && self.capability.test_on_revalidate
+            && let Err(e) = self.run_capability_tests().await
+        {
+            tracing::warn!("capability revalidation failed: {e}");
+        }
+
+        Ok(())
+    }
+
+    /// Probe top-K proxies against the configured capability targets and tag
+    /// proxies that satisfy each target.
+    ///
+    /// Probes run bounded by a semaphore so a large candidate set cannot
+    /// overwhelm the network. A failed probe never removes an existing tag;
+    /// tags are only assigned on a successful probe.
+    async fn run_capability_tests(&self) -> anyhow::Result<()> {
+        let top_k = self.capability.top_k.max(1);
+        let mut seen = std::collections::HashSet::new();
+        let mut candidates: Vec<Proxy> = Vec::new();
+        for protocol in [Protocol::Http, Protocol::Https, Protocol::Socks5] {
+            match self.store.get_top_candidates(protocol, top_k, top_k).await {
+                Ok(mut tops) => {
+                    tops.retain(|p| seen.insert(p.key()));
+                    candidates.extend(tops);
+                }
+                Err(e) => tracing::warn!(
+                    "capability: failed to list {protocol:?} candidates: {e}"
+                ),
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        let targets: Vec<CapabilityTarget> = self
+            .capability
+            .targets
+            .iter()
+            .filter_map(|t| {
+                CapabilityTag::from_str(&t.tag).ok().map(|tag| CapabilityTarget {
+                    name: t.name.clone(),
+                    url: t.url.clone(),
+                    expected_status: t.expected_status,
+                    tag,
+                })
+            })
+            .collect();
+        if targets.is_empty() {
+            return Ok(());
+        }
+
+        let cap_store = CapabilityStore::new(self.store.raw_conn());
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+        let mut handles = Vec::new();
+        for proxy in candidates {
+            for target in targets.clone() {
+                let sem = sem.clone();
+                let cap = cap_store.clone();
+                let proxy_key = proxy.key();
+                let proxy = proxy.clone();
+                handles.push(tokio::spawn(async move {
+                    let _permit = sem.acquire().await.ok();
+                    match cap.test_capability(&proxy, &target).await {
+                        Ok(true) => {
+                            if let Err(e) = cap.assign(&proxy_key, &target.tag).await {
+                                tracing::warn!(
+                                    proxy = %proxy_key,
+                                    tag = %target.tag,
+                                    "capability: assign failed: {e}"
+                                );
+                            } else {
+                                tracing::info!(
+                                    proxy = %proxy_key,
+                                    tag = %target.tag,
+                                    "capability: tagged proxy"
+                                );
+                            }
+                        }
+                        Ok(false) => {
+                            tracing::debug!(
+                                proxy = %proxy_key,
+                                target = %target.name,
+                                "capability: probe negative"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                proxy = %proxy_key,
+                                target = %target.name,
+                                "capability: probe error: {e}"
+                            );
+                        }
+                    }
+                }));
+            }
+        }
+        for h in handles {
+            let _ = h.await;
         }
         Ok(())
     }
