@@ -1,0 +1,5 @@
+{"file": ".trellis/tasks/07-14-aggregator-enhancement/prd.md", "reason": "Acceptance criteria for all 6 Rs — each AC item must pass"}
+{"file": ".trellis/tasks/07-14-aggregator-enhancement/design.md", "reason": "Verify implementation matches data flow, Redis schema, config schema, and trade-off decisions"}
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "Verify SourceOrigin, CapabilityTag, CapabilityStore conform to proxy-core patterns"}
+{"file": ".trellis/spec/proxy-sub/backend/index.md", "reason": "Verify TelegramDiscover, AirportDiscover, SubscriptionMeta, Checkin conform to proxy-sub Discover trait and ops patterns"}
+{"file": ".trellis/spec/proxy-gateway/backend/index.md", "reason": "Verify capability routing integrates cleanly with existing UpstreamSelector"}

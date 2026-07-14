@@ -344,12 +344,192 @@ pub struct SubscriptionConfig {
     pub github: GitHubDiscoverConfig,
     #[serde(default)]
     pub aggregators: Vec<AggregatorEntryConfig>,
+    #[serde(default)]
+    pub telegram: TelegramDiscoverConfig,
+    /// Airport (VPN panel) auto-discovery configuration.
+    #[serde(default)]
+    pub airport: AirportDiscoverConfig,
+    /// Airport (VPN panel) auto check-in and renewal configuration.
+    #[serde(default)]
+    pub checkin: CheckinConfig,
     #[serde(default = "default_sub_interval")]
     pub refresh_interval_sec: u64,
     #[serde(default = "default_sub_timeout")]
     pub fetch_timeout_sec: u64,
     #[serde(default = "default_cache_ttl")]
     pub cache_ttl_sec: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TelegramDiscoverConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub channels: Vec<TelegramChannelConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramChannelConfig {
+    /// Channel name (the `{channel}` segment in `t.me/s/{channel}`).
+    pub name: String,
+    #[serde(default = "default_telegram_pages")]
+    pub pages: u32,
+    #[serde(default)]
+    pub include: String,
+    #[serde(default)]
+    pub exclude: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// Aggregator site that lists candidate airport (VPN panel) domains.
+///
+/// Used by the airport auto-discovery discoverer to seed its crawl for
+/// free-panel registration targets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregatorSiteConfig {
+    /// URL of the aggregator page that lists airport domains.
+    pub url: String,
+    /// Response format: `html`, `json`, or `text`. Defaults to `html`.
+    #[serde(default = "default_agg_site_format")]
+    pub format: String,
+}
+
+/// Configuration for the airport auto-discovery discoverer.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AirportDiscoverConfig {
+    /// Whether airport auto-discovery is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Aggregator sites that list candidate airport domains.
+    #[serde(default)]
+    pub aggregator_sites: Vec<AggregatorSiteConfig>,
+    /// Base URL of the Cloudflare Worker temp-email service.
+    #[serde(default)]
+    pub cloudflare_worker_url: String,
+    /// Optional admin auth token for the temp-email worker.
+    #[serde(default)]
+    pub cloudflare_admin_auth: Option<String>,
+    /// Maximum number of airport registrations to run concurrently.
+    #[serde(default = "default_airport_concurrent")]
+    pub max_concurrent: usize,
+}
+
+/// Configuration for airport (VPN panel) auto check-in and renewal.
+///
+/// When enabled, the subscription ops loop periodically POSTs each registered
+/// airport's `/user/checkin` endpoint and re-orders the free plan when traffic
+/// or time is running low.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckinConfig {
+    /// Whether airport auto check-in is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Interval in seconds between check-in cycles.
+    #[serde(default = "default_checkin_interval")]
+    pub interval_sec: u64,
+}
+
+impl Default for CheckinConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_sec: default_checkin_interval(),
+        }
+    }
+}
+
+fn default_telegram_pages() -> u32 {
+    1
+}
+
+fn default_agg_site_format() -> String {
+    "html".into()
+}
+
+fn default_airport_concurrent() -> usize {
+    3
+}
+
+fn default_checkin_interval() -> u64 {
+    86400
+}
+
+// ---------------------------------------------------------------------------
+// Capability tagging
+// ---------------------------------------------------------------------------
+
+/// A single capability target probed during capability tagging.
+///
+/// Stored under `capabilities.targets` in settings. `tag` must match a
+/// `CapabilityTag` variant name (e.g. `"chat_gpt"`, `"openai"`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityTargetConfig {
+    /// Human-readable name for logging.
+    pub name: String,
+    /// URL to probe through the candidate proxy.
+    pub url: String,
+    /// HTTP status expected on a successful probe.
+    pub expected_status: u16,
+    /// Capability tag assigned on success (matches a `CapabilityTag`).
+    pub tag: String,
+}
+
+/// Configuration for node capability tagging.
+///
+/// When enabled, the scheduler probes top-K proxies against the configured
+/// targets and tags proxies that satisfy each target. A failed probe never
+/// removes an existing tag; tags are only added on a successful probe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityConfig {
+    /// Master switch for capability tagging.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Probe targets during the normal validate pass.
+    #[serde(default)]
+    pub test_on_validate: bool,
+    /// Probe targets during the revalidate pass.
+    #[serde(default = "default_true")]
+    pub test_on_revalidate: bool,
+    /// How many top candidates to probe per protocol.
+    #[serde(default = "default_capability_top_k")]
+    pub top_k: usize,
+    /// Capability targets to probe.
+    #[serde(default = "default_capability_targets")]
+    pub targets: Vec<CapabilityTargetConfig>,
+}
+
+impl Default for CapabilityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            test_on_validate: false,
+            test_on_revalidate: true,
+            top_k: default_capability_top_k(),
+            targets: default_capability_targets(),
+        }
+    }
+}
+
+fn default_capability_top_k() -> usize {
+    8
+}
+
+fn default_capability_targets() -> Vec<CapabilityTargetConfig> {
+    vec![
+        CapabilityTargetConfig {
+            name: "ChatGPT".into(),
+            url: "https://chat.openai.com/favicon.ico".into(),
+            expected_status: 200,
+            tag: "chat_gpt".into(),
+        },
+        CapabilityTargetConfig {
+            name: "OpenAI".into(),
+            url: "https://api.openai.com/v1/engines".into(),
+            expected_status: 401,
+            tag: "openai".into(),
+        },
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +561,9 @@ pub struct Settings {
     pub routes_path: Option<String>,
     #[serde(default)]
     pub xray: XraySettings,
+    /// Node capability tagging configuration.
+    #[serde(default)]
+    pub capabilities: CapabilityConfig,
 }
 
 impl Default for Settings {

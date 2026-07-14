@@ -7,6 +7,7 @@ edition.workspace = true
 proxy-core = { workspace = true }
 proxy-sub = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }

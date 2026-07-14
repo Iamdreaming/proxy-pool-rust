@@ -4,6 +4,8 @@
 //! formats into `SubscriptionProxy` nodes. Discoveres subscription URLs
 //! from static config, GitHub search, and aggregator projects.
 
+pub mod airport;
+pub mod checkin;
 pub mod convert;
 pub mod discover;
 pub mod models;

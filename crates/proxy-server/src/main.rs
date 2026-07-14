@@ -127,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
         validator,
         store.clone(),
         settings.pool.clone(),
+        settings.capabilities.clone(),
         geoip.clone(),
     ));
 

@@ -1,5 +1,6 @@
 //! Traceable gateway route selection and route diagnostics.
 
+use crate::capability::{CapabilityStore, CapabilityTag};
 use crate::geoip::GeoIPLookup;
 use crate::models::{EncryptedProxyState, Protocol, Proxy, WarpInstance};
 use crate::router::{RouteMatch, Router};
@@ -321,6 +322,7 @@ pub struct UpstreamSelector {
     metrics: Arc<GatewayRouteMetrics>,
     pool_proxy_failed_until: Arc<RwLock<HashMap<String, Instant>>>,
     xray_failed_until: Arc<RwLock<HashMap<u16, Instant>>>,
+    cap_store: CapabilityStore,
 }
 
 impl UpstreamSelector {
@@ -348,6 +350,7 @@ impl UpstreamSelector {
         geoip: Option<Arc<Mutex<GeoIPLookup>>>,
         metrics: Arc<GatewayRouteMetrics>,
     ) -> Self {
+        let cap_store = CapabilityStore::new(store.raw_conn());
         Self {
             store,
             balancer,
@@ -356,6 +359,7 @@ impl UpstreamSelector {
             metrics,
             pool_proxy_failed_until: Arc::new(RwLock::new(HashMap::new())),
             xray_failed_until: Arc::new(RwLock::new(HashMap::new())),
+            cap_store,
         }
     }
 
@@ -437,7 +441,7 @@ impl UpstreamSelector {
         let mut selected = None;
 
         for exit in plan.exits.iter().copied() {
-            let resolved = self.resolve_exit(exit, &protocol).await;
+            let resolved = self.resolve_exit(exit, &protocol, host).await;
             let source = plan.matched_reason.clone();
             match resolved {
                 ResolvedExit::Available { upstreams } => {
@@ -590,7 +594,7 @@ impl UpstreamSelector {
         }
     }
 
-    async fn resolve_exit(&self, exit: RouteExit, protocol: &str) -> ResolvedExit {
+    async fn resolve_exit(&self, exit: RouteExit, protocol: &str, host: &str) -> ResolvedExit {
         match exit {
             RouteExit::Direct => ResolvedExit::Available {
                 upstreams: vec![ResolvedUpstream {
@@ -600,7 +604,7 @@ impl UpstreamSelector {
             },
             RouteExit::FreePool => {
                 let proxies = self
-                    .try_pool_candidates(protocol, FREE_POOL_CANDIDATE_LIMIT)
+                    .try_pool_candidates(protocol, FREE_POOL_CANDIDATE_LIMIT, host)
                     .await;
                 if proxies.is_empty() {
                     ResolvedExit::Unavailable {
@@ -654,9 +658,15 @@ impl UpstreamSelector {
         }
     }
 
-    async fn try_pool_candidates(&self, protocol: &str, limit: usize) -> Vec<Proxy> {
+    /// Whether `host` should prefer proxies tagged for ChatGPT/OpenAI access.
+    fn host_indicates_chatgpt(host: &str) -> bool {
+        let h = host.to_ascii_lowercase();
+        h.contains("openai.com") || h.contains("chatgpt.com")
+    }
+
+    async fn try_pool_candidates(&self, protocol: &str, limit: usize, host: &str) -> Vec<Proxy> {
         let proto = Protocol::from_str_loose(protocol).unwrap_or(Protocol::Http);
-        match self
+        let filtered = match self
             .store
             .get_top_candidates(proto, POOL_TOP_CANDIDATE_POOL, limit)
             .await
@@ -671,13 +681,33 @@ impl UpstreamSelector {
                             && proxy.encrypted_state.is_none()
                             && !pool_proxy_cooldown_active(&failed_until, &proxy.dedup_key(), now)
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
             }
             Err(e) => {
                 tracing::debug!("try_pool_candidates: failed to query store: {e}");
-                Vec::new()
+                return Vec::new();
+            }
+        };
+
+        // Prefer proxies tagged for ChatGPT/OpenAI when routing to those hosts.
+        if Self::host_indicates_chatgpt(host)
+            && let Ok(preferred_keys) = self
+                .cap_store
+                .get_proxies_with_tag(&CapabilityTag::ChatGPT)
+                .await
+        {
+            let preferred: std::collections::HashSet<String> =
+                preferred_keys.into_iter().collect();
+            if !preferred.is_empty() {
+                let (pref, rest): (Vec<_>, Vec<_>) =
+                    filtered.into_iter().partition(|p| preferred.contains(&p.key()));
+                let mut ordered = pref;
+                ordered.extend(rest);
+                return ordered.into_iter().take(limit).collect();
             }
         }
+
+        filtered
     }
 
     async fn try_warp(&self) -> Option<WarpInstance> {

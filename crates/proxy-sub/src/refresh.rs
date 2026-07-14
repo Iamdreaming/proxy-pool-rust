@@ -8,8 +8,9 @@ use proxy_core::store::ProxyStore;
 
 use crate::convert::partition;
 use crate::discover::{
-    AggregatorConfig, AggregatorDiscover, Discover, GitHubSearchConfig, GitHubSearchDiscover,
-    StaticUrlDiscover,
+    AggregatorConfig, AggregatorDiscover, AirportConfig, AirportDiscover, Discover,
+    GitHubSearchConfig, GitHubSearchDiscover, StaticUrlDiscover, TelegramChannelConfig,
+    TelegramConfig, TelegramDiscover,
 };
 use crate::models::SubscriptionProxy;
 use crate::parser::parse_subscription;
@@ -52,6 +53,40 @@ pub fn build_discoverers(config: &SubscriptionConfig) -> Vec<Arc<dyn Discover>> 
             format: agg.format.clone(),
             timeout_sec: config.fetch_timeout_sec,
         })));
+    }
+
+    // Telegram channels
+    if config.telegram.enabled {
+        let channels: Vec<TelegramChannelConfig> = config
+            .telegram
+            .channels
+            .iter()
+            .map(|c| TelegramChannelConfig {
+                name: c.name.clone(),
+                pages: c.pages,
+                include: c.include.clone(),
+                exclude: c.exclude.clone(),
+                enabled: c.enabled,
+            })
+            .collect();
+        discoverers.push(Arc::new(TelegramDiscover::new(TelegramConfig {
+            channels,
+            timeout_sec: config.fetch_timeout_sec,
+        })));
+    }
+
+    // Airport auto-discovery (no store available here; only runtime registration).
+    if config.airport.enabled {
+        discoverers.push(Arc::new(AirportDiscover::new(
+            AirportConfig {
+                aggregator_sites: config.airport.aggregator_sites.clone(),
+                cloudflare_worker_url: config.airport.cloudflare_worker_url.clone(),
+                cloudflare_admin_auth: config.airport.cloudflare_admin_auth.clone(),
+                max_concurrent: config.airport.max_concurrent,
+                timeout_sec: config.fetch_timeout_sec,
+            },
+            None,
+        )));
     }
 
     discoverers
@@ -171,7 +206,9 @@ pub async fn subscription_refresh_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxy_core::config::{AggregatorEntryConfig, GitHubDiscoverConfig, SubscriptionConfig};
+    use proxy_core::config::{
+        AggregatorEntryConfig, GitHubDiscoverConfig, SubscriptionConfig, TelegramDiscoverConfig,
+    };
 
     fn make_config(
         urls: Vec<String>,
@@ -188,6 +225,12 @@ mod tests {
                 keywords: vec!["test keyword".to_string()],
             },
             aggregators,
+            telegram: TelegramDiscoverConfig {
+                enabled: false,
+                channels: vec![],
+            },
+            airport: proxy_core::config::AirportDiscoverConfig::default(),
+            checkin: proxy_core::config::CheckinConfig::default(),
             refresh_interval_sec: 3600,
             fetch_timeout_sec: 30,
             cache_ttl_sec: 1800,

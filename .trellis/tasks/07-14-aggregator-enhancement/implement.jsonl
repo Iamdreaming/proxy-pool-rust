@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "R4 SourceOrigin + R5 CapabilityTag + config schema changes in proxy-core"}
+{"file": ".trellis/spec/proxy-sub/backend/index.md", "reason": "R1 TelegramDiscover + R2 AirportDiscover + R3 SubscriptionMeta + R6 Checkin — all in proxy-sub"}
+{"file": ".trellis/spec/proxy-gateway/backend/index.md", "reason": "R5 capability-based routing enhancement in upstream selector"}
+{"file": ".trellis/spec/proxy-api/backend/index.md", "reason": "R3/R5/R6 new API endpoints for metadata, capabilities, checkin"}
+{"file": ".trellis/spec/proxy-mcp/backend/index.md", "reason": "R3/R5/R6 new MCP tools for metadata, capabilities, checkin"}
+{"file": ".trellis/tasks/07-14-aggregator-enhancement/prd.md", "reason": "Full requirements and acceptance criteria for all 6 Rs"}
+{"file": ".trellis/tasks/07-14-aggregator-enhancement/design.md", "reason": "Technical design: data flow, module boundaries, Redis schema, config schema, trade-offs"}
+{"file": ".trellis/tasks/07-14-aggregator-enhancement/implement.md", "reason": "Execution plan: phased implementation order, validation commands, rollback points"}
