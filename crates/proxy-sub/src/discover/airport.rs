@@ -11,11 +11,11 @@ use std::time::Duration;
 use futures::stream::{self, StreamExt};
 use proxy_core::store::ProxyStore;
 
-use crate::airport::{
-    discover_airport_domains, load_airport_accounts, save_airport_account, AirportAccount,
-    AirportRegistrar,
-};
 use crate::airport::panel::{is_registerable, probe_panel};
+use crate::airport::{
+    AirportAccount, AirportRegistrar, discover_airport_domains, load_airport_accounts,
+    save_airport_account,
+};
 use crate::discover::Discover;
 
 /// Configuration for [`AirportDiscover`].
@@ -27,6 +27,8 @@ pub struct AirportConfig {
     pub cloudflare_worker_url: String,
     /// Optional admin auth token for the temp-email worker.
     pub cloudflare_admin_auth: Option<String>,
+    /// Email domain to request from the temp-email worker (empty = worker default).
+    pub cloudflare_email_domain: String,
     /// Maximum number of airport registrations to run concurrently.
     pub max_concurrent: usize,
     /// Per-request HTTP timeout, in seconds.
@@ -66,6 +68,8 @@ impl Discover for AirportDiscover {
         let mut result: Vec<String> = Vec::new();
 
         // Step 1-2: surface subscription URLs from already-registered accounts.
+        // The loaded account set is reused in step 4 to skip known domains.
+        let mut known: std::collections::HashSet<String> = std::collections::HashSet::new();
         if let Some(store) = &self.store {
             let accounts = load_airport_accounts(store).await;
             for a in &accounts {
@@ -73,38 +77,29 @@ impl Discover for AirportDiscover {
                     result.push(u.clone());
                 }
             }
+            known = accounts.into_iter().map(|a| a.domain).collect();
         }
 
         // Step 3: discover candidate domains from aggregator sites.
         let domains = discover_airport_domains(&self.config.aggregator_sites, &self.client).await;
 
-        // Step 4: skip domains we already have accounts for.
-        let known: std::collections::HashSet<String> = if let Some(store) = &self.store {
-            load_airport_accounts(store)
-                .await
-                .into_iter()
-                .map(|a| a.domain)
-                .collect()
-        } else {
-            std::collections::HashSet::new()
-        };
-        let new_domains: Vec<String> = domains
-            .into_iter()
-            .filter(|d| !known.contains(d))
-            .collect();
+        // Step 4: skip domains we already have accounts for (reuses `known`).
+        let new_domains: Vec<String> = domains.into_iter().filter(|d| !known.contains(d)).collect();
         if new_domains.is_empty() {
             return dedupe(result);
         }
 
         // Register on each new domain concurrently (bounded).
         let max_concurrent = self.config.max_concurrent.max(1);
+        let registrar = AirportRegistrar::new(
+            self.config.cloudflare_worker_url.clone(),
+            self.config.cloudflare_admin_auth.clone(),
+            self.config.cloudflare_email_domain.clone(),
+        );
         let entries: Vec<Option<AirportAccount>> = stream::iter(new_domains)
             .map(|domain: String| {
                 let client = self.client.clone();
-                let registrar = AirportRegistrar::new(
-                    self.config.cloudflare_worker_url.clone(),
-                    self.config.cloudflare_admin_auth.clone(),
-                );
+                let registrar = registrar.clone();
                 let store = self.store.clone();
                 async move {
                     let req = match probe_panel(&domain, &client).await {
@@ -121,7 +116,8 @@ impl Discover for AirportDiscover {
                     match registrar.register_airport(&domain, &req).await {
                         Ok(acct) => {
                             if let Some(s) = &store
-                                && let Err(e) = save_airport_account(s, &acct).await {
+                                && let Err(e) = save_airport_account(s, &acct).await
+                            {
                                 tracing::warn!(
                                     domain = %domain,
                                     "failed to persist airport account: {e}"

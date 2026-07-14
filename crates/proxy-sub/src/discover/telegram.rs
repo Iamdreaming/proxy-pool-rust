@@ -119,9 +119,10 @@ impl TelegramDiscover {
                 None => break,
             };
 
-            urls.extend(extract_urls_from_html(&html));
+            let doc = Html::parse_document(&html);
+            urls.extend(extract_urls_from_html(&doc));
 
-            match find_next_before(&html) {
+            match find_next_before(&doc) {
                 Some(before) => next_before = Some(before),
                 None => break,
             }
@@ -171,24 +172,8 @@ impl Discover for TelegramDiscover {
     }
 }
 
-/// Protocol-link schemes we extract directly from message text.
-const PROTOCOL_PREFIXES: &[&str] = &[
-    "vmess://",
-    "trojan://",
-    "ss://",
-    "ssr://",
-    "vless://",
-    "hysteria2://",
-    "hysteria://",
-    "tuic://",
-    "snell://",
-    "anytls://",
-];
-
 /// Extract subscription and protocol URLs from a `t.me/s` HTML page.
-fn extract_urls_from_html(html: &str) -> Vec<String> {
-    let doc = Html::parse_document(html);
-
+fn extract_urls_from_html(doc: &Html) -> Vec<String> {
     let msg_sel = match Selector::parse(".tgme_widget_message") {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -284,7 +269,10 @@ fn looks_like_subscription(url: &str) -> bool {
 
     if let Some(idx) = url.find("subscribe?token=") {
         let token = &url[idx + "subscribe?token=".len()..];
-        let token_val = token.split(|c| !is_ascii_alnum(c)).next().unwrap_or("");
+        let token_val = token
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .next()
+            .unwrap_or("");
         return (16..=32).contains(&token_val.len());
     }
 
@@ -294,7 +282,10 @@ fn looks_like_subscription(url: &str) -> bool {
 
     if let Some(idx) = url.find("/sub/") {
         let rest = &url[idx + "/sub/".len()..];
-        let hash = rest.split(|c| !is_ascii_alnum(c)).next().unwrap_or("");
+        let hash = rest
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .next()
+            .unwrap_or("");
         return hash.len() == 32;
     }
 
@@ -303,7 +294,7 @@ fn looks_like_subscription(url: &str) -> bool {
 
 /// Whether `token` is a direct protocol link (>= 10 chars after the scheme).
 fn is_protocol_link(token: &str) -> bool {
-    for prefix in PROTOCOL_PREFIXES {
+    for prefix in crate::models::PROTOCOL_LINK_SCHEMES {
         if let Some(stripped) = token.strip_prefix(prefix) {
             return stripped.len() >= 10;
         }
@@ -312,8 +303,7 @@ fn is_protocol_link(token: &str) -> bool {
 }
 
 /// Find the `before=` post id for the next page's "load more" link.
-fn find_next_before(html: &str) -> Option<String> {
-    let doc = Html::parse_document(html);
+fn find_next_before(doc: &Html) -> Option<String> {
     let a_sel = Selector::parse("a").ok()?;
     for a in doc.select(&a_sel) {
         if let Some(href) = a.value().attr("href")
@@ -381,11 +371,6 @@ fn push_unique(url: String, seen: &mut HashSet<String>, out: &mut Vec<String>) {
     }
 }
 
-/// ASCII alphanumeric predicate used for token/segment extraction.
-fn is_ascii_alnum(c: char) -> bool {
-    c.is_ascii_alphanumeric()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,7 +394,7 @@ mod tests {
 
     #[test]
     fn test_extract_urls_from_sample_html() {
-        let urls = extract_urls_from_html(SAMPLE_HTML);
+        let urls = extract_urls_from_html(&Html::parse_document(SAMPLE_HTML));
 
         assert!(
             urls.iter().any(|u| u.contains("/link/abc123?sub=1")),
@@ -438,12 +423,16 @@ mod tests {
 
     #[test]
     fn test_pagination_detection() {
-        let html = r#"<a class="tgme_widget_message_more" href="/s/mychannel?before=12345">Load more</a>"#;
-        assert_eq!(find_next_before(html), Some("12345".to_string()));
+        let html =
+            r#"<a class="tgme_widget_message_more" href="/s/mychannel?before=12345">Load more</a>"#;
+        assert_eq!(
+            find_next_before(&Html::parse_document(html)),
+            Some("12345".to_string())
+        );
 
         // No pagination link -> None.
         let no_pager = r#"<a href="/s/mychannel/67890">message</a>"#;
-        assert_eq!(find_next_before(no_pager), None);
+        assert_eq!(find_next_before(&Html::parse_document(no_pager)), None);
     }
 
     #[test]
@@ -509,7 +498,7 @@ mod tests {
             </div>
             <a href="https://dup.example.com/link/abc?sub=1">same</a>
         "#;
-        let urls = extract_urls_from_html(html);
+        let urls = extract_urls_from_html(&Html::parse_document(html));
         assert_eq!(urls.len(), 1);
     }
 }

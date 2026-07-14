@@ -53,11 +53,7 @@ pub struct CheckinStatus {
 /// and parses the panel JSON response for a success flag and message. Network
 /// or parse failures are captured in the returned [`CheckinResult`] rather than
 /// propagated, so a single failing site never aborts a batch.
-pub async fn checkin(
-    domain: &str,
-    token: &str,
-    client: &reqwest::Client,
-) -> CheckinResult {
+pub async fn checkin(domain: &str, token: &str, client: &reqwest::Client) -> CheckinResult {
     let url = format!("https://{domain}/user/checkin");
     let response = client
         .post(&url)
@@ -138,11 +134,7 @@ pub async fn renew_if_needed(
 ///
 /// Fetches available plans and, if a free (price 0 or name containing a free
 /// marker) plan exists, submits an order. Returns the panel message on success.
-async fn order_free_plan(
-    domain: &str,
-    token: &str,
-    client: &reqwest::Client,
-) -> Result<String> {
+async fn order_free_plan(domain: &str, token: &str, client: &reqwest::Client) -> Result<String> {
     let fetch_url = format!("https://{domain}/api/v1/user/server/fetch");
     let resp = client
         .get(&fetch_url)
@@ -153,41 +145,19 @@ async fn order_free_plan(
         anyhow::bail!("free plan fetch returned {}", resp.status());
     }
     let v: serde_json::Value = resp.json().await?;
-    let plans = v
-        .get("data")
-        .and_then(|d| d.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let free_plan = plans.iter().find(|p| {
-        let price = p.get("price").and_then(|x| x.as_f64()).unwrap_or(0.0);
-        let name = p.get("name").and_then(|x| x.as_str()).unwrap_or("");
-        price == 0.0 || name.contains("free") || name.contains("试用") || name.contains("免费")
-    });
-    match free_plan {
-        Some(plan) => {
-            let plan_id = plan
-                .get("id")
-                .and_then(|x| x.as_u64())
-                .or_else(|| {
-                    plan.get("id")
-                        .and_then(|x| x.as_str())
-                        .and_then(|s| s.parse::<u64>().ok())
-                });
-            let id = plan_id.ok_or_else(|| anyhow::anyhow!("free plan has no id"))?;
-            let order_url = format!("https://{domain}/api/v1/user/order/save");
-            let resp = client
-                .post(&order_url)
-                .header("Authorization", format!("Bearer {token}"))
-                .json(&serde_json::json!({ "plan_id": id }))
-                .send()
-                .await?;
-            if resp.status().is_success() {
-                Ok("free plan ordered".into())
-            } else {
-                anyhow::bail!("order request returned {}", resp.status())
-            }
-        }
-        None => anyhow::bail!("no free plan found"),
+    let id = crate::airport::panel::find_free_plan_id(&v)
+        .ok_or_else(|| anyhow::anyhow!("no free plan found"))?;
+    let order_url = format!("https://{domain}/api/v1/user/order/save");
+    let resp = client
+        .post(&order_url)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&serde_json::json!({ "plan_id": id }))
+        .send()
+        .await?;
+    if resp.status().is_success() {
+        Ok("free plan ordered".into())
+    } else {
+        anyhow::bail!("order request returned {}", resp.status())
     }
 }
 
@@ -379,7 +349,11 @@ mod tests {
         // Meta is unhealthy → returns Some (network attempt may fail, but the
         // decision to renew is made). We only assert it is not None.
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(renew_if_needed(&account, Some(&meta), &reqwest::Client::new()));
+        let result = rt.block_on(renew_if_needed(
+            &account,
+            Some(&meta),
+            &reqwest::Client::new(),
+        ));
         assert!(result.is_some());
     }
 
@@ -415,8 +389,16 @@ mod tests {
             health: 0.5,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let triggered = rt.block_on(renew_if_needed(&account, Some(&meta), &reqwest::Client::new()));
-        let skipped = rt.block_on(renew_if_needed(&account, Some(&healthy), &reqwest::Client::new()));
+        let triggered = rt.block_on(renew_if_needed(
+            &account,
+            Some(&meta),
+            &reqwest::Client::new(),
+        ));
+        let skipped = rt.block_on(renew_if_needed(
+            &account,
+            Some(&healthy),
+            &reqwest::Client::new(),
+        ));
         assert!(triggered.is_some());
         assert!(skipped.is_none());
     }

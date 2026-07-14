@@ -3,6 +3,21 @@
 use proxy_core::models::Protocol;
 use serde::{Deserialize, Serialize};
 
+/// Protocol schemes that represent a single proxy node URI (as opposed to a
+/// subscription URL that must be fetched).
+pub const PROTOCOL_LINK_SCHEMES: &[&str] = &[
+    "vmess://",
+    "trojan://",
+    "ss://",
+    "ssr://",
+    "vless://",
+    "hysteria2://",
+    "hysteria://",
+    "tuic://",
+    "snell://",
+    "anytls://",
+];
+
 /// A proxy node parsed from a subscription, carrying full protocol parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SubscriptionProxy {

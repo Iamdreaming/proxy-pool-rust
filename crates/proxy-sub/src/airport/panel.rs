@@ -137,7 +137,11 @@ async fn fetch_v2board_config(url: &str, client: &reqwest::Client) -> Option<Reg
     let email_whitelist: Vec<String> = body
         .get("email_whitelist_suffix")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|e| e.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     Some(RegisterRequirement {
@@ -155,4 +159,23 @@ async fn status_is_200(req: reqwest::RequestBuilder) -> bool {
         Ok(r) => r.status() == reqwest::StatusCode::OK,
         Err(_) => false,
     }
+}
+
+/// Find the id of a free plan in a v2board `/user/server/fetch` response body.
+///
+/// A plan is considered free when its price is 0 or its name contains a
+/// free-tier marker. Returns the plan id (numeric or numeric string), or
+/// `None` when no free plan is present or it has no usable id.
+pub fn find_free_plan_id(body: &Value) -> Option<u64> {
+    let plans = body.get("data").and_then(|d| d.as_array())?;
+    let plan = plans.iter().find(|p| {
+        let price = p.get("price").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let name = p.get("name").and_then(|x| x.as_str()).unwrap_or("");
+        price == 0.0 || name.contains("free") || name.contains("试用") || name.contains("免费")
+    })?;
+    plan.get("id").and_then(|x| x.as_u64()).or_else(|| {
+        plan.get("id")
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.parse::<u64>().ok())
+    })
 }

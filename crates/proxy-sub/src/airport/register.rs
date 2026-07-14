@@ -36,11 +36,19 @@ pub struct AirportAccount {
 pub struct AirportRegistrar {
     client: reqwest::Client,
     email_client: CloudflareEmailClient,
+    email_domain: String,
 }
 
 impl AirportRegistrar {
     /// Create a new registrar backed by a Cloudflare temp-email worker.
-    pub fn new(cloudflare_worker_url: String, cloudflare_admin_auth: Option<String>) -> Self {
+    ///
+    /// `email_domain` is the domain requested from the temp-email worker (a
+    /// domain the worker owns); an empty string lets the worker pick its default.
+    pub fn new(
+        cloudflare_worker_url: String,
+        cloudflare_admin_auth: Option<String>,
+        email_domain: String,
+    ) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent("proxy-pool-rust")
@@ -50,6 +58,7 @@ impl AirportRegistrar {
         Self {
             client,
             email_client,
+            email_domain,
         }
     }
 
@@ -63,7 +72,7 @@ impl AirportRegistrar {
         domain: &str,
         req: &RegisterRequirement,
     ) -> anyhow::Result<AirportAccount> {
-        let temp = self.email_client.create_temp_email(domain).await?;
+        let temp = self.email_client.create_temp_email(&self.email_domain).await?;
         let pw = generate_password(16);
 
         let reg_url = format!("https://{domain}/api/v1/passport/auth/register");
@@ -121,7 +130,8 @@ impl AirportRegistrar {
 
         // Best-effort: order a free plan so the subscription URL is active.
         if let Some(t) = &token
-            && let Err(e) = self.order_free_plan(domain, t).await {
+            && let Err(e) = self.order_free_plan(domain, t).await
+        {
             tracing::warn!(domain = %domain, "airport order free plan failed: {e}");
         }
 
@@ -170,38 +180,18 @@ impl AirportRegistrar {
                 return Ok(());
             }
         };
-        let plans = v
-            .get("data")
-            .and_then(|d| d.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let free_plan = plans.iter().find(|p| {
-            let price = p.get("price").and_then(|x| x.as_f64()).unwrap_or(0.0);
-            let name = p.get("name").and_then(|x| x.as_str()).unwrap_or("");
-            price == 0.0 || name.contains("free") || name.contains("试用") || name.contains("免费")
-        });
-        match free_plan {
-            Some(plan) => {
-                let plan_id = plan
-                    .get("id")
-                    .and_then(|x| x.as_u64())
-                    .or_else(|| {
-                        plan.get("id")
-                            .and_then(|x| x.as_str())
-                            .and_then(|s| s.parse::<u64>().ok())
-                    });
-                if let Some(id) = plan_id {
-                    let order_url = format!("https://{domain}/api/v1/user/order/save");
-                    if let Err(e) = self
-                        .client
-                        .post(&order_url)
-                        .header("Authorization", format!("Bearer {token}"))
-                        .json(&serde_json::json!({ "plan_id": id }))
-                        .send()
-                        .await
-                    {
-                        tracing::warn!(domain = %domain, "airport order request failed: {e}");
-                    }
+        match crate::airport::panel::find_free_plan_id(&v) {
+            Some(id) => {
+                let order_url = format!("https://{domain}/api/v1/user/order/save");
+                if let Err(e) = self
+                    .client
+                    .post(&order_url)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .json(&serde_json::json!({ "plan_id": id }))
+                    .send()
+                    .await
+                {
+                    tracing::warn!(domain = %domain, "airport order request failed: {e}");
                 }
             }
             None => {
@@ -226,7 +216,8 @@ impl AirportRegistrar {
             .await?;
         if resp.status().is_success()
             && let Ok(v) = resp.json::<serde_json::Value>().await
-            && let Some(u) = extract_sub_url(&v) {
+            && let Some(u) = extract_sub_url(&v)
+        {
             return Ok(u);
         }
 
@@ -239,7 +230,8 @@ impl AirportRegistrar {
             .await?;
         if resp.status().is_success()
             && let Ok(v) = resp.json::<serde_json::Value>().await
-            && let Some(u) = extract_sub_url(&v) {
+            && let Some(u) = extract_sub_url(&v)
+        {
             return Ok(u);
         }
 
@@ -280,6 +272,7 @@ mod tests {
         let _ = AirportRegistrar::new(
             "https://mail.example.com".into(),
             Some("admin-token".into()),
+            String::new(),
         );
     }
 

@@ -718,10 +718,11 @@ fn recommend_apply(report: &SubscriptionSourceReport) -> SubscriptionApplyRecomm
     let metrics = source_quality_metrics(report);
     let supported_nodes = report.direct_nodes + report.encrypted_nodes;
     let mut reasons = Vec::new();
+    let credibility_level = credibility_degradation(&report.source);
 
     // --- Credibility degradation (long-term, days-level) ---
     // This works alongside the circuit breaker (short-term, seconds-level).
-    if let Some(level) = credibility_degradation(&report.source) {
+    if let Some(level) = credibility_level {
         match level {
             CredibilityLevel::Expired => {
                 reasons.push(format!(
@@ -771,19 +772,6 @@ fn recommend_apply(report: &SubscriptionSourceReport) -> SubscriptionApplyRecomm
             .is_some_and(|ratio| ratio > 0.95)
     {
         reasons.push("duplicate_node_ratio_above_95_percent".into());
-    }
-
-    // Credibility-based degradation overrides the standard decision.
-    let credibility_level = credibility_degradation(&report.source);
-
-    // If credibility is Expired, force Reject regardless of quality metrics.
-    if credibility_level == Some(CredibilityLevel::Expired) && !reasons.is_empty() {
-        return SubscriptionApplyRecommendation {
-            decision: SubscriptionApplyDecision::Reject,
-            grade: source_quality_grade(&metrics),
-            reasons,
-            metrics,
-        };
     }
 
     if !reasons.is_empty() {
@@ -1027,6 +1015,7 @@ fn entries_from_config(
                 aggregator_sites: config.airport.aggregator_sites.clone(),
                 cloudflare_worker_url: config.airport.cloudflare_worker_url.clone(),
                 cloudflare_admin_auth: config.airport.cloudflare_admin_auth.clone(),
+                cloudflare_email_domain: config.airport.cloudflare_email_domain.clone(),
                 max_concurrent: config.airport.max_concurrent,
                 timeout_sec: config.fetch_timeout_sec,
             },
@@ -1057,24 +1046,12 @@ fn github_keywords(config: &SubscriptionConfig) -> Vec<String> {
     }
 }
 
-/// Protocol schemes that represent a single node rather than a subscription URL.
-const DIRECT_LINK_SCHEMES: &[&str] = &[
-    "vmess://",
-    "trojan://",
-    "ss://",
-    "ssr://",
-    "vless://",
-    "hysteria2://",
-    "hysteria://",
-    "tuic://",
-    "snell://",
-    "anytls://",
-];
-
 /// Returns `true` if the URL is a protocol direct link (e.g. `vmess://…`).
 fn is_protocol_direct_link(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
-    DIRECT_LINK_SCHEMES.iter().any(|s| lower.starts_with(s))
+    crate::models::PROTOCOL_LINK_SCHEMES
+        .iter()
+        .any(|s| lower.starts_with(s))
 }
 
 fn sanitize_error_message(message: &str, raw_url: &str) -> String {

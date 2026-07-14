@@ -71,11 +71,15 @@ impl SourceOrigin {
 
 impl std::fmt::Display for SourceOrigin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = serde_json::to_value(self)
-            .ok()
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default();
-        f.write_str(&s)
+        let s = match self {
+            SourceOrigin::Owned => "owned",
+            SourceOrigin::Manual => "manual",
+            SourceOrigin::GitHub => "git_hub",
+            SourceOrigin::Airport => "airport",
+            SourceOrigin::Aggregator => "aggregator",
+            SourceOrigin::Telegram => "telegram",
+        };
+        f.write_str(s)
     }
 }
 
@@ -180,6 +184,25 @@ mod tests {
         let origin = SourceOrigin::Telegram;
         let s = origin.to_string();
         assert_eq!(s, "telegram");
+    }
+
+    #[test]
+    fn test_display_matches_serde() {
+        for origin in [
+            SourceOrigin::Owned,
+            SourceOrigin::Manual,
+            SourceOrigin::GitHub,
+            SourceOrigin::Airport,
+            SourceOrigin::Aggregator,
+            SourceOrigin::Telegram,
+        ] {
+            let via_serde = serde_json::to_value(origin)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(origin.to_string(), via_serde);
+        }
     }
 
     #[test]
