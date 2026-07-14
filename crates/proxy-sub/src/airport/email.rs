@@ -55,8 +55,9 @@ struct ParsedMail {
 impl CloudflareEmailClient {
     /// Create a new client for the given Cloudflare Worker base URL.
     ///
-    /// `admin_auth` is an optional admin bearer token sent on address creation
-    /// (some workers require it). The internal HTTP client times out after 30s.
+    /// `admin_auth` is the optional site access password sent as the
+    /// `x-custom-auth` header on address creation (some workers require it).
+    /// The internal HTTP client times out after 30s.
     pub fn new(base_url: String, admin_auth: Option<String>) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -82,7 +83,7 @@ impl CloudflareEmailClient {
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "domain": domain }));
         if let Some(auth) = &self.admin_auth {
-            req = req.header("Authorization", format!("Bearer {auth}"));
+            req = req.header("x-custom-auth", auth);
         }
         let resp = req.send().await?;
         if !resp.status().is_success() {

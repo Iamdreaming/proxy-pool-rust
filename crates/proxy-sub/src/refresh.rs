@@ -82,6 +82,7 @@ pub fn build_discoverers(config: &SubscriptionConfig) -> Vec<Arc<dyn Discover>> 
                 aggregator_sites: config.airport.aggregator_sites.clone(),
                 cloudflare_worker_url: config.airport.cloudflare_worker_url.clone(),
                 cloudflare_admin_auth: config.airport.cloudflare_admin_auth.clone(),
+                cloudflare_email_domain: config.airport.cloudflare_email_domain.clone(),
                 max_concurrent: config.airport.max_concurrent,
                 timeout_sec: config.fetch_timeout_sec,
             },

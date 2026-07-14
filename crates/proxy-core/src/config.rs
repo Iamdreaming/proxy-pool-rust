@@ -410,6 +410,10 @@ pub struct AirportDiscoverConfig {
     /// Optional admin auth token for the temp-email worker.
     #[serde(default)]
     pub cloudflare_admin_auth: Option<String>,
+    /// Email domain to request from the temp-email worker. Empty string lets the
+    /// worker pick its default domain. Must be a domain the worker owns.
+    #[serde(default)]
+    pub cloudflare_email_domain: String,
     /// Maximum number of airport registrations to run concurrently.
     #[serde(default = "default_airport_concurrent")]
     pub max_concurrent: usize,
