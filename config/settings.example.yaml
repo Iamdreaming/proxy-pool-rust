@@ -126,6 +126,15 @@ xray:
 #       - "clash free sub"
 #       - "v2ray free nodes"
 #       - "free vpn subscriptions clash"
+#   search:
+#     # LLM web-search (grok) candidate lane. Low-trust; links go through the
+#     # normal validate-then-admit pipeline. See docs/subscription-source-packs.md.
+#     enabled: false
+#     mcp_url: "http://host:33000/mcp/search"
+#     # tool_name: ""      # empty → "grok-search-web_search"
+#     # auth_token: ""     # empty → read SEARCH_MCP_TOKEN env var (keep tokens out of yaml)
+#     # queries: []        # empty → built-in default queries
+#     max_queries: 3
 #   aggregators:
 #     # Aggregator list URL. Supported formats: text, json, yaml.
 #     # - url: "https://raw.githubusercontent.com/example/repo/main/subscriptions.txt"

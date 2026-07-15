@@ -89,6 +89,58 @@ subscription:
 Enable it only when you want candidate discovery. Search results are not trusted
 curated sources. They still need preview recommendations and post-apply scoring.
 
+## LLM Web-Search (grok) Candidate Lane
+
+The `search` discoverer queries an MCP `web_search` tool (a grok-backed search
+service) and extracts subscription URLs from the free-text results. Like GitHub
+Search it is a **low-trust candidate lane** — discovered links flow through the
+normal validate-then-admit pipeline, so bad or dead links are filtered out
+downstream. It is disabled by default.
+
+```yaml
+subscription:
+  search:
+    enabled: true
+    mcp_url: "http://<host>:33000/mcp/search"
+    # tool_name: ""       # empty → defaults to "grok-search-web_search"
+    # auth_token: ""       # empty → read from the SEARCH_MCP_TOKEN env var
+    # queries: []          # empty → built-in default queries
+    max_queries: 3
+```
+
+Credibility: the `search` origin carries a 3-day window (same low-trust tier as
+Telegram), after which links from it are downgraded in the recommendation gate.
+
+### Token handling
+
+Do **not** put the token in `settings.yaml`. Leave `auth_token` empty and provide
+`SEARCH_MCP_TOKEN` via the environment. `deploy/docker-compose.yml` already passes
+it through to the `proxy-pool` service:
+
+```yaml
+    environment:
+      - SEARCH_MCP_TOKEN=${SEARCH_MCP_TOKEN:-}
+```
+
+Set it in a `.env` file next to the compose file (or the host env):
+
+```
+SEARCH_MCP_TOKEN=<your-token>
+```
+
+### Applying the change on a deployed host
+
+The env var and `settings.yaml` edits are read at process start, not by
+Watchtower's image pull. After editing them, re-apply the compose so the running
+container picks them up:
+
+```bash
+cd deploy && docker compose up -d
+```
+
+The discoverer then runs on the next subscription refresh cycle, using the
+built-in default queries unless you set your own.
+
 ## Curated Source Lane
 
 For stable operation, prefer explicit sources:
@@ -112,5 +164,6 @@ Rollback is configuration-first:
 
 - remove/comment the source entry,
 - set `subscription.github.enabled: false`,
+- set `subscription.search.enabled: false`,
 - restart/reload using the normal deployment path,
 - run low-score cleanup in dry-run mode before applying cleanup.
