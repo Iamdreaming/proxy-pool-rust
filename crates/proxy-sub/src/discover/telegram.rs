@@ -17,6 +17,7 @@
 use std::collections::HashSet;
 
 use crate::discover::Discover;
+use crate::discover::extract::extract_from_blob;
 use scraper::{Html, Selector};
 
 /// Configuration for a single Telegram channel to crawl.
@@ -215,93 +216,6 @@ fn extract_urls_from_html(doc: &Html) -> Vec<String> {
     urls
 }
 
-/// Classify and extract URLs from a single text/href blob.
-fn extract_from_blob(blob: &str, seen: &mut HashSet<String>, out: &mut Vec<String>) {
-    // `#MANAGED-CONFIG` / `#订阅链接` comment lines carry a plain URL on the
-    // same line; those URLs are not otherwise recognized as subscriptions.
-    if blob.contains("#MANAGED-CONFIG") || blob.contains("#订阅链接") {
-        for line in blob.split('\n') {
-            if line.contains("#MANAGED-CONFIG") || line.contains("#订阅链接") {
-                for token in tokenize(line) {
-                    if is_http_url(token) {
-                        push_unique(token.to_string(), seen, out);
-                    }
-                }
-            }
-        }
-    }
-
-    for token in tokenize(blob) {
-        if looks_like_subscription(token) || is_protocol_link(token) {
-            push_unique(token.to_string(), seen, out);
-        }
-    }
-}
-
-/// Split a blob into candidate tokens on whitespace and link-breaking punctuation.
-fn tokenize(text: &str) -> Vec<&str> {
-    text.split(|c: char| {
-        c.is_whitespace()
-            || matches!(
-                c,
-                '"' | '<' | '>' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | '`' | '\'' | '|'
-            )
-    })
-    .filter(|t| !t.is_empty())
-    .collect()
-}
-
-/// Whether `s` is an `http://` or `https://` URL.
-fn is_http_url(s: &str) -> bool {
-    s.starts_with("http://") || s.starts_with("https://")
-}
-
-/// Heuristically detect whether a token is a proxy subscription URL.
-///
-/// Matches three common shapes without regex:
-/// - `/api/v1/client/subscribe?token=` with a 16–32 char alphanumeric token
-/// - `/link/{id}?sub=` / `?mu=` / `?clash=`
-/// - `/sub/{32-char alphanumeric hash}`
-fn looks_like_subscription(url: &str) -> bool {
-    if !is_http_url(url) {
-        return false;
-    }
-
-    if let Some(idx) = url.find("subscribe?token=") {
-        let token = &url[idx + "subscribe?token=".len()..];
-        let token_val = token
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .next()
-            .unwrap_or("");
-        return (16..=32).contains(&token_val.len());
-    }
-
-    if url.contains("/link/") {
-        return url.contains("?sub=") || url.contains("?mu=") || url.contains("?clash=");
-    }
-
-    if let Some(idx) = url.find("/sub/") {
-        let rest = &url[idx + "/sub/".len()..];
-        let hash = rest
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .next()
-            .unwrap_or("");
-        return hash.len() == 32;
-    }
-
-    false
-}
-
-/// Whether `token` is a direct protocol link (>= 10 chars after the scheme).
-fn is_protocol_link(token: &str) -> bool {
-    for prefix in crate::models::PROTOCOL_LINK_SCHEMES {
-        if let Some(stripped) = token.strip_prefix(prefix) {
-            return stripped.len() >= 10;
-        }
-    }
-    false
-}
-
 /// Find the `before=` post id for the next page's "load more" link.
 fn find_next_before(doc: &Html) -> Option<String> {
     let a_sel = Selector::parse("a").ok()?;
@@ -362,13 +276,6 @@ fn passes_filter(url: &str, include: &str, exclude: &str) -> bool {
     }
 
     true
-}
-
-/// Append `url` to `out` unless it has already been seen.
-fn push_unique(url: String, seen: &mut HashSet<String>, out: &mut Vec<String>) {
-    if seen.insert(url.clone()) {
-        out.push(url);
-    }
 }
 
 #[cfg(test)]
@@ -433,37 +340,6 @@ mod tests {
         // No pagination link -> None.
         let no_pager = r#"<a href="/s/mychannel/67890">message</a>"#;
         assert_eq!(find_next_before(&Html::parse_document(no_pager)), None);
-    }
-
-    #[test]
-    fn test_protocol_link_detection() {
-        assert!(is_protocol_link("vmess://abcdefghij123456"));
-        assert!(is_protocol_link("trojan://abcdefghij"));
-        // Too short after the scheme.
-        assert!(!is_protocol_link("vmess://short"));
-        // Not a protocol link.
-        assert!(!is_protocol_link("https://example.com/sub"));
-    }
-
-    #[test]
-    fn test_looks_like_subscription() {
-        assert!(looks_like_subscription(
-            "https://sub.example.com/link/abc123?sub=1"
-        ));
-        assert!(looks_like_subscription(
-            "https://panel.example.com/api/v1/client/subscribe?token=ABCDEF1234567890"
-        ));
-        assert!(looks_like_subscription(
-            "https://x.example.com/sub/0123456789abcdef0123456789abcdef"
-        ));
-        // Token too short to be valid (only 5 chars).
-        assert!(!looks_like_subscription(
-            "https://panel.example.com/api/v1/client/subscribe?token=ABCDE"
-        ));
-        // Not a subscription shape.
-        assert!(!looks_like_subscription("https://example.com/notasub"));
-        // Protocol links are not http(s) subscription URLs.
-        assert!(!looks_like_subscription("vmess://abcdefghij"));
     }
 
     #[test]

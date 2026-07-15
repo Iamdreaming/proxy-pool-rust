@@ -30,6 +30,8 @@ pub enum SourceOrigin {
     Aggregator,
     /// Discovered via Telegram channels (3-day window).
     Telegram,
+    /// Discovered via LLM web-search (grok). Low-trust, 3-day window.
+    Search,
 }
 
 impl SourceOrigin {
@@ -41,6 +43,7 @@ impl SourceOrigin {
             Self::Airport => 7,
             Self::Aggregator => 10,
             Self::Telegram => 3,
+            Self::Search => 3,
         }
     }
 
@@ -78,6 +81,7 @@ impl std::fmt::Display for SourceOrigin {
             SourceOrigin::Airport => "airport",
             SourceOrigin::Aggregator => "aggregator",
             SourceOrigin::Telegram => "telegram",
+            SourceOrigin::Search => "search",
         };
         f.write_str(s)
     }
@@ -115,6 +119,7 @@ mod tests {
         assert_eq!(SourceOrigin::Airport.expiry_days(), 7);
         assert_eq!(SourceOrigin::Aggregator.expiry_days(), 10);
         assert_eq!(SourceOrigin::Telegram.expiry_days(), 3);
+        assert_eq!(SourceOrigin::Search.expiry_days(), 3);
     }
 
     #[test]
@@ -195,6 +200,7 @@ mod tests {
             SourceOrigin::Airport,
             SourceOrigin::Aggregator,
             SourceOrigin::Telegram,
+            SourceOrigin::Search,
         ] {
             let via_serde = serde_json::to_value(origin)
                 .unwrap()
@@ -214,6 +220,7 @@ mod tests {
             SourceOrigin::Airport,
             SourceOrigin::Aggregator,
             SourceOrigin::Telegram,
+            SourceOrigin::Search,
         ] {
             let json = serde_json::to_string(&origin).unwrap();
             let back: SourceOrigin = serde_json::from_str(&json).unwrap();

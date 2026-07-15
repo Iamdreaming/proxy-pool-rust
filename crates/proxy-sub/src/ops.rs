@@ -15,8 +15,8 @@ use tokio::sync::{Mutex, RwLock};
 use crate::convert::partition;
 use crate::discover::{
     AggregatorConfig, AggregatorDiscover, AirportConfig, AirportDiscover, Discover,
-    GitHubSearchConfig, GitHubSearchDiscover, TelegramChannelConfig, TelegramConfig,
-    TelegramDiscover,
+    GitHubSearchConfig, GitHubSearchDiscover, SearchConfig, SearchDiscover, TelegramChannelConfig,
+    TelegramConfig, TelegramDiscover,
 };
 use crate::models::SubscriptionProxy;
 use crate::parser::parse_subscription;
@@ -32,6 +32,7 @@ pub enum SubscriptionSourceKind {
     Aggregator,
     Telegram,
     Airport,
+    Search,
 }
 
 /// Stable, safe-to-display description of a configured subscription source.
@@ -1035,6 +1036,29 @@ fn entries_from_config(
         });
     }
 
+    if config.search.enabled {
+        let discoverer = Arc::new(SearchDiscover::new(SearchConfig {
+            mcp_url: config.search.mcp_url.clone(),
+            auth_token: config.search.auth_token.clone(),
+            tool_name: config.search.tool_name.clone(),
+            queries: config.search.queries.clone(),
+            max_queries: config.search.max_queries,
+            timeout_sec: config.fetch_timeout_sec,
+        }));
+        entries.push(SubscriptionSourceEntry {
+            descriptor: SubscriptionSourceDescriptor {
+                id: "search".into(),
+                kind: SubscriptionSourceKind::Search,
+                label: "LLM web search".into(),
+                enabled: true,
+                origin: SourceOrigin::Search,
+                last_success_at: None,
+                consecutive_failures: 0,
+            },
+            target: SubscriptionSourceTarget::Discoverer { discoverer },
+        });
+    }
+
     entries
 }
 
@@ -1109,6 +1133,7 @@ mod tests {
                 enabled: false,
                 channels: vec![],
             },
+            search: proxy_core::config::SearchDiscoverConfig::default(),
             refresh_interval_sec: 3600,
             fetch_timeout_sec: 10,
             cache_ttl_sec: 300,

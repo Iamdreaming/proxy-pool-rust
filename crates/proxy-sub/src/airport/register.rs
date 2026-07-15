@@ -72,7 +72,10 @@ impl AirportRegistrar {
         domain: &str,
         req: &RegisterRequirement,
     ) -> anyhow::Result<AirportAccount> {
-        let temp = self.email_client.create_temp_email(&self.email_domain).await?;
+        let temp = self
+            .email_client
+            .create_temp_email(&self.email_domain)
+            .await?;
         let pw = generate_password(16);
 
         let reg_url = format!("https://{domain}/api/v1/passport/auth/register");

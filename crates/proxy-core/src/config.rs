@@ -327,6 +327,33 @@ pub struct GitHubDiscoverConfig {
     pub keywords: Vec<String>,
 }
 
+/// Configuration for the LLM web-search (grok) discoverer.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SearchDiscoverConfig {
+    /// Whether the search discoverer is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// MCP streamable-HTTP endpoint URL of the grok search service.
+    #[serde(default)]
+    pub mcp_url: String,
+    /// Bearer auth token. If empty, falls back to the SEARCH_MCP_TOKEN env var.
+    #[serde(default)]
+    pub auth_token: String,
+    /// MCP `web_search` tool name. If empty, defaults to `grok-search-web_search`.
+    #[serde(default)]
+    pub tool_name: String,
+    /// Search queries to run. If empty, built-in default queries are used.
+    #[serde(default)]
+    pub queries: Vec<String>,
+    /// Maximum number of queries to run per discovery cycle.
+    #[serde(default = "default_search_max_queries")]
+    pub max_queries: usize,
+}
+
+fn default_search_max_queries() -> usize {
+    3
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregatorEntryConfig {
     pub url: String,
@@ -342,6 +369,8 @@ pub struct SubscriptionConfig {
     pub urls: Vec<String>,
     #[serde(default)]
     pub github: GitHubDiscoverConfig,
+    #[serde(default)]
+    pub search: SearchDiscoverConfig,
     #[serde(default)]
     pub aggregators: Vec<AggregatorEntryConfig>,
     #[serde(default)]
