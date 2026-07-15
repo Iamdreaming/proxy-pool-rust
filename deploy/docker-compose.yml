@@ -31,6 +31,9 @@ services:
     environment:
       - RUST_LOG=info
       - PROXY_POOL_CONFIG=/app/config/settings.yaml
+      # Auth token for the LLM web-search (grok) discoverer. Set it in the host
+      # env or a .env file next to this compose file; leave unset to disable.
+      - SEARCH_MCP_TOKEN=${SEARCH_MCP_TOKEN:-}
     restart: unless-stopped
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
