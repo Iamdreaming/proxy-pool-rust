@@ -98,6 +98,29 @@ impl RestClient {
         Self::send(self.http.delete(&url)).await
     }
 
+    /// PUT `path` with an optional JSON body, returning parsed JSON.
+    pub async fn put_json(&self, path: &str, body: Option<&Value>) -> Result<Value, RestError> {
+        self.put_json_query(path, &[], body).await
+    }
+
+    /// PUT `path` with query pairs and an optional JSON body.
+    pub async fn put_json_query(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+    ) -> Result<Value, RestError> {
+        let url = build_url(&self.base, path);
+        let mut req = self.http.put(&url);
+        if !query.is_empty() {
+            req = req.query(query);
+        }
+        if let Some(body) = body {
+            req = req.json(body);
+        }
+        Self::send(req).await
+    }
+
     async fn send(req: reqwest::RequestBuilder) -> Result<Value, RestError> {
         let resp = req
             .send()

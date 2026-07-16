@@ -172,6 +172,14 @@ pub struct ContainerLogsParam {
     pub tail: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateConfigParam {
+    /// Partial settings JSON to merge into the current configuration.
+    /// Only include the top-level sections you want to change;
+    /// unspecified sections retain their current values.
+    pub settings: serde_json::Value,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -182,6 +190,27 @@ pub struct ContainerLogsParam {
 /// `expect` instead of `unwrap_or_default` to make that clear.
 fn to_json(value: serde_json::Value) -> String {
     serde_json::to_string_pretty(&value).expect("infallible: Value serialization")
+}
+
+/// Merge a partial JSON object into a current JSON object at the top-level.
+///
+/// For each key in `partial`, the corresponding key in `current` is replaced
+/// entirely. Keys not present in `partial` are left unchanged. Returns an
+/// error if `partial` is not a JSON object.
+fn merge_json_partial(
+    current: &serde_json::Value,
+    partial: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut merged = current.clone();
+    let partial_obj = partial
+        .as_object()
+        .ok_or_else(|| "partial settings must be a JSON object".to_string())?;
+    if let Some(obj) = merged.as_object_mut() {
+        for (key, value) in partial_obj {
+            obj.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(merged)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -894,6 +923,114 @@ impl ProxyPoolMcp {
                 "status": "error",
                 "container": container,
                 "message": e,
+            })),
+        }
+    }
+
+    #[tool(description = "Get the current proxy-pool configuration (redacted). \
+        Sensitive fields like redis.url and subscription.github.token are replaced \
+        with placeholders. Use this to inspect settings before making changes.")]
+    async fn get_config(&self) -> String {
+        match self.rest.get_json("/api/settings", &[]).await {
+            Ok(value) => to_json(value),
+            Err(e) => to_json(serde_json::json!({
+                "status": "error",
+                "message": e.to_string(),
+            })),
+        }
+    }
+
+    #[tool(
+        description = "Update proxy-pool configuration by merging a partial JSON \
+        into the current settings. Only include top-level sections you want to change \
+        (e.g. {\"subscription\": {\"search\": {\"enabled\": true}}}). Unspecified \
+        sections are preserved. Subscription changes are hot-reloadable; other changes \
+        require a restart (indicated by restart_required in the response)."
+    )]
+    async fn update_config(&self, params: Parameters<UpdateConfigParam>) -> String {
+        // First, read current config and merge the partial
+        let current = match self.rest.get_json("/api/settings", &[]).await {
+            Ok(v) => v,
+            Err(e) => {
+                return to_json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("failed to read current config: {e}"),
+                }));
+            }
+        };
+
+        let current_settings = match current.get("settings") {
+            Some(s) => s.clone(),
+            None => current.clone(),
+        };
+
+        // Merge partial into current settings
+        let merged = match merge_json_partial(&current_settings, &params.0.settings) {
+            Ok(m) => m,
+            Err(e) => {
+                return to_json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("merge failed: {e}"),
+                }));
+            }
+        };
+
+        // Write merged settings via REST API
+        let body = serde_json::json!({ "settings": merged });
+        match self.rest.put_json("/api/settings", Some(&body)).await {
+            Ok(value) => {
+                // If subscription changed and restart_required is false, auto-reload
+                let restart_required = value
+                    .get("restart_required")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let changed_sections: Vec<String> = value
+                    .get("changed_sections")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let subscription_changed = changed_sections.iter().any(|s| s == "subscription");
+
+                if subscription_changed && !restart_required {
+                    // Auto-reload subscription sources
+                    if let Err(e) = self.rest.post_json("/api/subscription/reload", None).await {
+                        tracing::warn!("auto-reload subscription failed: {e}");
+                        // Still return the update result, but note the reload failure
+                        let mut result = value;
+                        result["reload_status"] = serde_json::json!({
+                            "status": "error",
+                            "message": e.to_string(),
+                        });
+                        return to_json(result);
+                    }
+                }
+
+                to_json(value)
+            }
+            Err(e) => to_json(serde_json::json!({
+                "status": "error",
+                "message": e.to_string(),
+            })),
+        }
+    }
+
+    #[tool(
+        description = "Reload subscription source entries from the current YAML \
+        config file. Use this after manually editing the config file, or when you \
+        want to refresh the source list without changing config. New sources will \
+        appear in subscription_sources immediately."
+    )]
+    async fn reload_subscription_sources(&self) -> String {
+        match self.rest.post_json("/api/subscription/reload", None).await {
+            Ok(value) => to_json(value),
+            Err(e) => to_json(serde_json::json!({
+                "status": "error",
+                "message": e.to_string(),
             })),
         }
     }

@@ -9,7 +9,8 @@ use axum::{
 };
 use proxy_core::capability::{CapabilityStore, CapabilityTag};
 use proxy_core::config::{
-    Settings, SettingsEditError, read_settings_for_edit, redact_settings, write_settings_for_edit,
+    Settings, SettingsEditError, read_settings_for_edit, redact_settings,
+    settings_changed_sections, write_settings_for_edit,
 };
 use proxy_core::fetcher::base::FetcherRunReport;
 use proxy_core::models::{Protocol, Proxy, ProxyFilter, WarpInstance};
@@ -193,11 +194,19 @@ pub struct AirportCheckinStatusResponse {
     pub checkins: Vec<checkin::CheckinStatus>,
 }
 
+/// Body for `POST /api/subscription/reload`.
+#[derive(Serialize)]
+pub struct SubscriptionReloadResponse {
+    pub status: String,
+    pub source_count: usize,
+}
+
 #[derive(Serialize)]
 pub struct SettingsResponse {
     pub status: String,
     pub path: String,
     pub restart_required: bool,
+    pub changed_sections: Vec<String>,
     pub redacted_fields: Vec<String>,
     pub settings: Settings,
 }
@@ -220,6 +229,7 @@ pub fn create_router() -> Router<AppState> {
             "/api/subscriptions/sources/{id}/refresh",
             post(refresh_subscription_source),
         )
+        .route("/api/subscription/reload", post(reload_subscription))
         .route("/api/airports/checkin", post(airport_checkin_trigger))
         .route("/api/airports/checkin/status", get(airport_checkin_status))
         .route("/api/proxies/scores", get(explain_proxy_scores))
@@ -255,12 +265,19 @@ fn uptime_sec(state: &AppState) -> u64 {
     state.started_at.elapsed().as_secs()
 }
 
-fn settings_response(path: &FilePath, settings: Settings) -> SettingsResponse {
+fn settings_response(
+    path: &FilePath,
+    settings: Settings,
+    changed_sections: Vec<String>,
+) -> SettingsResponse {
     let (settings, redacted_fields) = redact_settings(&settings);
+    // Only subscription changes are hot-reloadable; everything else requires restart.
+    let restart_required = !changed_sections.iter().all(|s| s == "subscription");
     SettingsResponse {
         status: "ok".into(),
         path: path.display().to_string(),
-        restart_required: true,
+        restart_required,
+        changed_sections,
         redacted_fields,
         settings,
     }
@@ -337,7 +354,9 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn get_settings(State(state): State<AppState>) -> impl IntoResponse {
     match read_settings_for_edit(&state.config_path) {
-        Ok(settings) => Json(settings_response(&state.config_path, settings)).into_response(),
+        Ok(settings) => {
+            Json(settings_response(&state.config_path, settings, Vec::new())).into_response()
+        }
         Err(error) => settings_error_response("get_settings", error),
     }
 }
@@ -346,8 +365,15 @@ async fn update_settings(
     State(state): State<AppState>,
     Json(request): Json<SettingsUpdateRequest>,
 ) -> impl IntoResponse {
+    let old = read_settings_for_edit(&state.config_path);
     match write_settings_for_edit(&state.config_path, request.settings) {
-        Ok(settings) => Json(settings_response(&state.config_path, settings)).into_response(),
+        Ok(new_settings) => {
+            let changed = match &old {
+                Ok(old_settings) => settings_changed_sections(old_settings, &new_settings),
+                Err(_) => Vec::new(),
+            };
+            Json(settings_response(&state.config_path, new_settings, changed)).into_response()
+        }
         Err(error) => settings_error_response("update_settings", error),
     }
 }
@@ -726,6 +752,48 @@ async fn refresh_subscription_source(
                     .into_response()
             }
         },
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(SimpleResponse {
+                status: "subscription ops unavailable".into(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Reload subscription source entries from the current YAML config.
+///
+/// Reads the on-disk settings, rebuilds the subscription entry list, and
+/// returns the new source count. Operators should call this after updating
+/// subscription config via `PUT /api/settings`.
+async fn reload_subscription(State(state): State<AppState>) -> impl IntoResponse {
+    match &state.subscription_ops {
+        Some(ops) => {
+            let config = match read_settings_for_edit(&state.config_path) {
+                Ok(s) => s.subscription,
+                Err(e) => {
+                    tracing::error!(handler = "reload_subscription", error = %e, "failed to read settings");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(SimpleResponse {
+                            status: "failed to read settings".into(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            ops.reload_config(&config).await;
+            let snapshot = ops.status().await;
+            (
+                StatusCode::OK,
+                Json(SubscriptionReloadResponse {
+                    status: "ok".into(),
+                    source_count: snapshot.source_count,
+                }),
+            )
+                .into_response()
+        }
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(SimpleResponse {
@@ -1158,6 +1226,7 @@ mod tests {
             status: "ok".into(),
             path: "config/settings.yaml".into(),
             restart_required: true,
+            changed_sections: vec!["pool".into()],
             redacted_fields: vec!["redis.url".into()],
             settings: Settings::default(),
         };
@@ -1167,6 +1236,7 @@ mod tests {
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"path\":\"config/settings.yaml\""));
         assert!(json.contains("\"restart_required\":true"));
+        assert!(json.contains("\"changed_sections\":[\"pool\"]"));
         assert!(json.contains("\"redacted_fields\":[\"redis.url\"]"));
         assert!(json.contains("\"settings\""));
     }

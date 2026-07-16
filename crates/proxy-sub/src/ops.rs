@@ -296,6 +296,18 @@ impl SubscriptionOpsHandle {
         }
     }
 
+    /// Rebuild subscription source entries from a fresh config.
+    ///
+    /// Swaps the entry list and clears reports. The background refresh loop
+    /// will pick up new entries on its next cycle, or the operator can call
+    /// [`refresh_all`](Self::refresh_all) immediately after reload.
+    pub async fn reload_config(&self, config: &SubscriptionConfig) {
+        let new_entries = entries_from_config(config, Some(self.store.clone()));
+        let mut inner = self.state.inner.write().await;
+        inner.entries = new_entries;
+        inner.reports.clear();
+    }
+
     pub async fn status(&self) -> SubscriptionSourcesSnapshot {
         self.state.snapshot().await
     }

@@ -1,6 +1,7 @@
 //! Configuration: YAML loading with defaults.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -39,6 +40,8 @@ pub enum SettingsEditError {
     WriteTemp { path: PathBuf, source: io::Error },
     #[error("cannot replace config file {path}: {source}")]
     Replace { path: PathBuf, source: io::Error },
+    #[error("invalid partial settings: {0}")]
+    InvalidPartial(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +698,61 @@ pub fn merge_redacted_settings(mut submitted: Settings, current: &Settings) -> S
     }
 
     submitted
+}
+
+/// Merge a partial JSON value into the current settings.
+///
+/// For each top-level key present in `partial`, the corresponding section in
+/// `current` is replaced entirely. Keys not present in `partial` are left
+/// unchanged. Returns the merged `Settings` ready for validation and persistence.
+pub fn merge_settings_partial(
+    current: &Settings,
+    partial: Value,
+) -> Result<Settings, SettingsEditError> {
+    let Value::Object(partial_map) = partial else {
+        return Err(SettingsEditError::InvalidPartial(
+            "partial must be a JSON object".into(),
+        ));
+    };
+
+    let mut current_value =
+        serde_json::to_value(current).expect("Settings serialization should not fail");
+    let Value::Object(ref mut current_map) = current_value else {
+        unreachable!("Settings should serialize to a JSON object");
+    };
+
+    for (key, value) in partial_map {
+        // Only replace keys that exist in current settings.
+        if current_map.contains_key(&key) {
+            current_map.insert(key, value);
+        }
+        // Unknown top-level keys are silently ignored.
+    }
+
+    serde_json::from_value(current_value)
+        .map_err(|e| SettingsEditError::Validation(format!("merged settings are invalid: {e}")))
+}
+
+/// Compare two settings and return the list of top-level section names that differ.
+pub fn settings_changed_sections(old: &Settings, new: &Settings) -> Vec<String> {
+    let old_value = serde_json::to_value(old).expect("Settings serialization should not fail");
+    let new_value = serde_json::to_value(new).expect("Settings serialization should not fail");
+
+    let Value::Object(old_map) = old_value else {
+        unreachable!("Settings should serialize to a JSON object");
+    };
+    let Value::Object(new_map) = new_value else {
+        unreachable!("Settings should serialize to a JSON object");
+    };
+
+    let mut changed: Vec<String> = Vec::new();
+    for key in old_map.keys().chain(new_map.keys()).collect::<Vec<_>>() {
+        if !changed.contains(key) && old_map.get(key) != new_map.get(key) {
+            changed.push(key.clone());
+        }
+    }
+
+    changed
 }
 
 /// Validate settings before writing them from an operator edit surface.
@@ -1497,5 +1555,62 @@ monosans: { enabled: false }
             std::process::id(),
             stamp
         ))
+    }
+
+    #[test]
+    fn test_merge_settings_partial_subscription() {
+        let current = Settings::default();
+        let partial = serde_json::json!({
+            "subscription": {
+                "refresh_interval_sec": 7200,
+                "fetch_timeout_sec": 45
+            }
+        });
+        let merged = merge_settings_partial(&current, partial).unwrap();
+        assert_eq!(merged.subscription.refresh_interval_sec, 7200);
+        assert_eq!(merged.subscription.fetch_timeout_sec, 45);
+        // Other sections should remain at defaults.
+        assert_eq!(
+            merged.pool.fetch_interval_sec,
+            current.pool.fetch_interval_sec
+        );
+    }
+
+    #[test]
+    fn test_merge_settings_partial_empty() {
+        let current = Settings::default();
+        let partial = serde_json::json!({});
+        let merged = merge_settings_partial(&current, partial).unwrap();
+        assert_eq!(
+            serde_json::to_value(&merged).unwrap(),
+            serde_json::to_value(&current).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_merge_settings_partial_unknown_key() {
+        let current = Settings::default();
+        let partial = serde_json::json!({"unknown_section": {"foo": 1}});
+        let merged = merge_settings_partial(&current, partial).unwrap();
+        assert_eq!(
+            serde_json::to_value(&merged).unwrap(),
+            serde_json::to_value(&current).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_settings_changed_sections_same() {
+        let settings = Settings::default();
+        let changed = settings_changed_sections(&settings, &settings);
+        assert!(changed.is_empty());
+    }
+
+    #[test]
+    fn test_settings_changed_sections_different() {
+        let old = Settings::default();
+        let mut new = Settings::default();
+        new.subscription.refresh_interval_sec = 9999;
+        let changed = settings_changed_sections(&old, &new);
+        assert_eq!(changed, vec!["subscription"]);
     }
 }
