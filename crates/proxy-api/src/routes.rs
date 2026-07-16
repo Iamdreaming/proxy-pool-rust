@@ -301,7 +301,7 @@ fn settings_error_response(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(SimpleResponse {
-                    status: "settings operation failed".into(),
+                    status: format!("settings operation failed: {error}"),
                 }),
             )
                 .into_response()
@@ -357,7 +357,15 @@ async fn get_settings(State(state): State<AppState>) -> impl IntoResponse {
         Ok(settings) => {
             Json(settings_response(&state.config_path, settings, Vec::new())).into_response()
         }
-        Err(error) => settings_error_response("get_settings", error),
+        Err(error) => {
+            // If the config file does not exist, return defaults instead of 500.
+            if !state.config_path.exists() {
+                let settings = Settings::default();
+                return Json(settings_response(&state.config_path, settings, Vec::new()))
+                    .into_response();
+            }
+            settings_error_response("get_settings", error)
+        }
     }
 }
 
