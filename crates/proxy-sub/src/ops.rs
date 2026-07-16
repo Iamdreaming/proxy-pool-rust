@@ -892,21 +892,12 @@ fn credibility_degradation(source: &SubscriptionSourceDescriptor) -> Option<Cred
 }
 
 /// Days elapsed since the last successful refresh. Returns `None` if never
-/// refreshed successfully (treated as "day 0" for permanent origins, or a
-/// large value for non-permanent origins to trigger immediate degradation).
+/// refreshed successfully — first-time sources are given initial trust rather
+/// than being penalised as "infinitely stale".
 fn days_since_last_success(source: &SubscriptionSourceDescriptor) -> Option<f64> {
-    match source.last_success_at {
-        Some(ts) => Some((Utc::now() - ts).num_seconds() as f64 / 86400.0),
-        None => {
-            // Never succeeded: permanent origins are fine, others are very stale.
-            if source.origin.is_permanent() {
-                None
-            } else {
-                // Use a large value to ensure degradation kicks in.
-                Some(999.0)
-            }
-        }
-    }
+    source
+        .last_success_at
+        .map(|ts| (Utc::now() - ts).num_seconds() as f64 / 86400.0)
 }
 
 fn apply_reject_policy(report: &mut SubscriptionSourceReport) -> bool {
