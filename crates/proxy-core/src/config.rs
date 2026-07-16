@@ -657,10 +657,21 @@ pub fn read_settings_for_edit(path: impl AsRef<Path>) -> Result<Settings, Settin
         path: path.to_path_buf(),
         source,
     })?;
-    serde_yaml::from_str(&text).map_err(|source| SettingsEditError::Parse {
-        path: path.to_path_buf(),
-        source,
-    })
+    match serde_yaml::from_str(&text) {
+        Ok(settings) => Ok(settings),
+        Err(source) => {
+            // Back up the corrupt file so the operator can inspect it later.
+            let bak = path.with_extension("yaml.corrupt");
+            let _ = std::fs::rename(path, &bak);
+            tracing::warn!(
+                "config file {} is corrupt ({}), moved to {}. Returning defaults.",
+                path.display(),
+                source,
+                bak.display(),
+            );
+            Ok(Settings::default())
+        }
+    }
 }
 
 /// Return a display-safe settings clone plus field paths replaced by placeholders.
