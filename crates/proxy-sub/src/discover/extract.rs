@@ -45,12 +45,31 @@ pub(crate) fn extract_from_blob(blob: &str, seen: &mut HashSet<String>, out: &mu
 }
 
 /// Split a blob into candidate tokens on whitespace and link-breaking punctuation.
+///
+/// Includes CJK punctuation (full-width colon, ideographic comma, etc.) that
+/// commonly appears between a label and a URL in Chinese-language search results
+/// (e.g. "订阅链接：https://...").
 pub(crate) fn tokenize(text: &str) -> Vec<&str> {
     text.split(|c: char| {
         c.is_whitespace()
             || matches!(
                 c,
-                '"' | '<' | '>' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | '`' | '\'' | '|'
+                '"' | '<'
+                    | '>'
+                    | '('
+                    | ')'
+                    | '{'
+                    | '}'
+                    | '['
+                    | ']'
+                    | ','
+                    | '`'
+                    | '\''
+                    | '|'
+                    | '：'
+                    | '，'
+                    | '；'
+                    | '、'
             )
     })
     .filter(|t| !t.is_empty())
@@ -110,7 +129,7 @@ pub(crate) fn is_protocol_link(token: &str) -> bool {
 
 /// Whether `url` looks like a raw subscription *content* file commonly surfaced
 /// by web search (clash/v2ray config files, `/sub` endpoints), as opposed to a
-/// panel API link. Matches on well-known content suffixes and `/sub` endpoints.
+/// panel API link. Matches on well-known content suffixes and `/sub` path segments.
 pub(crate) fn looks_like_sub_file(url: &str) -> bool {
     if !is_http_url(url) {
         return false;
@@ -122,6 +141,16 @@ pub(crate) fn looks_like_sub_file(url: &str) -> bool {
         || lower.ends_with(".yml")
         || lower.ends_with(".txt")
         || lower.ends_with("/sub")
+        || (lower.contains("/sub/") && !is_non_sub_path(&lower))
+}
+
+/// Check whether a path containing `/sub/` is a false positive (e.g. `/submit`,
+/// `/subscribe` without the panel API shape, `/subsection`).
+fn is_non_sub_path(lower_path: &str) -> bool {
+    lower_path.contains("/submit")
+        || lower_path.contains("/subsection")
+        || lower_path.contains("/subdirectory")
+        || lower_path.contains("/subpage")
 }
 
 /// Strip trailing sentence/CJK punctuation that prose commonly appends to an
