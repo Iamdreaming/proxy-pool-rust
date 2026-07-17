@@ -63,5 +63,7 @@ pub struct SyncStats {
     pub failed: usize,
     /// Active nodes demoted after consecutive health-check failures.
     pub demoted: usize,
+    /// Pending candidates that failed the cheap TCP precheck before admission.
+    pub precheck_failed: usize,
     pub total_active: usize,
 }

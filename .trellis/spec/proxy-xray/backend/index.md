@@ -20,6 +20,7 @@ proxy-xray manages xray-core integration for encrypted proxy protocols (Shadowso
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns, testing | Filled |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels, sensitive data | Filled |
 | [Active Health Demotion](./active-health-demotion.md) | Post-active revalidation, D1 demotion, shared teardown | Filled |
+| [TCP Admission Precheck](./tcp-admission-precheck.md) | Cheap TCP precheck before port/xray/HTTP admission | Filled |
 
 ---
 
@@ -36,6 +37,8 @@ proxy-xray manages xray-core integration for encrypted proxy protocols (Shadowso
 5. **Sync pause on disconnect**: `OutboundSync` skips sync cycles when gRPC is disconnected and triggers an immediate sync on reconnection.
 
 6. **Active health demotion (D1)**: Each `sync_once` revalidates Active nodes first (budget `min(active, 32, attempt_limit)`). Demote after **2 consecutive** revalidation failures via shared teardown + registry reason `active_health_check_failed` + validation cooldown. Success resets the fail streak and merges quality onto the existing pool entry (must not wipe `encrypted_config`). Route eligibility freshness is owned by `proxy-core` (see its xray-route-eligibility code-spec).
+
+7. **TCP admission precheck**: Before allocating a local port / pushing xray config / running HTTP validation, dial remote `host:port` with a **2s** TCP connect timeout (budget **200**/cycle). Failures only increment `SyncStats.precheck_failed` + DEBUG — they do **not** consume HTTP attempt budget, apply the 600s validation cooldown, or call `mark_failed`. Precheck success alone never marks Active.
 
 ---
 

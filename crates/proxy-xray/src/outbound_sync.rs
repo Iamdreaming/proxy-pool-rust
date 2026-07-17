@@ -28,6 +28,10 @@ const ACTIVE_HEALTH_FAIL_THRESHOLD: u32 = 2;
 const ACTIVE_REVALIDATE_BUDGET_CAP: usize = 32;
 /// Stable reason written to the lifecycle registry on health demotion.
 const ACTIVE_HEALTH_FAIL_REASON: &str = "active_health_check_failed";
+/// TCP connect timeout for admission precheck (Decision D2).
+const TCP_PRECHECK_TIMEOUT: Duration = Duration::from_secs(2);
+/// Max TCP prechecks per sync cycle, independent of HTTP attempt limit (D5).
+const TCP_PRECHECK_BUDGET_PER_CYCLE: usize = 200;
 
 /// Admission-validation plan for xray nodes before they become routeable.
 #[derive(Debug, Clone)]
@@ -142,6 +146,7 @@ impl OutboundSync {
 
         let labels = ["ss", "vmess", "trojan", "vless"];
         let mut validation_attempts = 0usize;
+        let mut precheck_attempts = 0usize;
 
         'labels: for label in labels {
             let pending = match self
@@ -203,6 +208,36 @@ impl OutboundSync {
                     continue;
                 }
 
+                // Cheap TCP precheck before port allocation / xray config / HTTP
+                // validation. Failures do not consume HTTP attempt budget, apply
+                // cooldown, or mark_failed (D3/D4/D6).
+                if precheck_attempts >= TCP_PRECHECK_BUDGET_PER_CYCLE {
+                    tracing::debug!(
+                        "outbound_sync: tcp precheck budget ({TCP_PRECHECK_BUDGET_PER_CYCLE}) exhausted, stopping pending scan"
+                    );
+                    break 'labels;
+                }
+                precheck_attempts += 1;
+
+                let remote_host = node.host().unwrap_or("");
+                let remote_port = node.port().unwrap_or(0);
+                let precheck_started = Instant::now();
+                if let Err(err) =
+                    tcp_precheck_remote(remote_host, remote_port, TCP_PRECHECK_TIMEOUT).await
+                {
+                    let elapsed = precheck_started.elapsed();
+                    stats.precheck_failed += 1;
+                    tracing::debug!(
+                        "outbound_sync: tcp precheck failed for {tag} {remote_host}:{remote_port} elapsed={elapsed:?} err={err}"
+                    );
+                    continue;
+                }
+                tracing::debug!(
+                    "outbound_sync: tcp precheck ok for {tag} {remote_host}:{remote_port} elapsed={:?}",
+                    precheck_started.elapsed()
+                );
+
+                // HTTP attempt budget applies only after precheck success (D3).
                 if validation_attempts >= self.validation.attempt_limit_per_cycle {
                     tracing::warn!(
                         "outbound_sync: validation_attempt_limit_per_cycle ({}) reached",
@@ -380,12 +415,13 @@ impl OutboundSync {
         let stats = self.sync_once().await;
         active_count.store(stats.total_active, Ordering::Relaxed);
         tracing::info!(
-            "outbound_sync: {} -- added: {}, removed: {}, demoted: {}, failed: {}, total_active: {}",
+            "outbound_sync: {} -- added: {}, removed: {}, demoted: {}, failed: {}, precheck_failed: {}, total_active: {}",
             context,
             stats.added,
             stats.removed,
             stats.demoted,
             stats.failed,
+            stats.precheck_failed,
             stats.total_active
         );
     }
@@ -785,6 +821,42 @@ fn next_health_fail_streak(current: u32) -> (u32, bool) {
     (next, next >= ACTIVE_HEALTH_FAIL_THRESHOLD)
 }
 
+/// Error from a TCP precheck against a remote host:port.
+#[derive(Debug, thiserror::Error)]
+enum PrecheckError {
+    #[error("missing host")]
+    MissingHost,
+    #[error("invalid port")]
+    InvalidPort,
+    #[error("connect timed out after {0:?}")]
+    Timeout(Duration),
+    #[error("connect failed: {0}")]
+    Connect(#[source] std::io::Error),
+}
+
+/// Cheap TCP reachability precheck before expensive xray admission work.
+///
+/// Validates host/port, then dials via `tokio::net::TcpStream::connect` under
+/// `tokio::time::timeout`. Empty host or port 0 fails without dialing.
+async fn tcp_precheck_remote(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<(), PrecheckError> {
+    if host.trim().is_empty() {
+        return Err(PrecheckError::MissingHost);
+    }
+    if port == 0 {
+        return Err(PrecheckError::InvalidPort);
+    }
+
+    match tokio::time::timeout(timeout, tokio::net::TcpStream::connect((host, port))).await {
+        Ok(Ok(_stream)) => Ok(()),
+        Ok(Err(e)) => Err(PrecheckError::Connect(e)),
+        Err(_) => Err(PrecheckError::Timeout(timeout)),
+    }
+}
+
 /// Merge a successful revalidation result onto the existing pool entry.
 ///
 /// Prefer the known pool row for encrypted metadata (`encrypted_config`,
@@ -827,6 +899,7 @@ mod tests {
         assert_eq!(stats.removed, 0);
         assert_eq!(stats.failed, 0);
         assert_eq!(stats.demoted, 0);
+        assert_eq!(stats.precheck_failed, 0);
         assert_eq!(stats.total_active, 0);
     }
 
@@ -985,5 +1058,71 @@ mod tests {
         assert_eq!(merged.success_count, 1);
         assert_eq!(merged.encrypted_config, Some(serde_json::json!({"id": "abc"})));
         assert_eq!(merged.source.as_deref(), Some("xray:vmess:node"));
+    }
+
+    #[test]
+    fn tcp_precheck_rejects_missing_host_and_zero_port() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let missing = rt.block_on(tcp_precheck_remote("", 443, TCP_PRECHECK_TIMEOUT));
+        assert!(matches!(missing, Err(PrecheckError::MissingHost)));
+
+        let whitespace = rt.block_on(tcp_precheck_remote("   ", 443, TCP_PRECHECK_TIMEOUT));
+        assert!(matches!(whitespace, Err(PrecheckError::MissingHost)));
+
+        let zero_port = rt.block_on(tcp_precheck_remote("127.0.0.1", 0, TCP_PRECHECK_TIMEOUT));
+        assert!(matches!(zero_port, Err(PrecheckError::InvalidPort)));
+    }
+
+    #[tokio::test]
+    async fn tcp_precheck_succeeds_against_local_listener() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+
+        // Accept in background so the handshake can complete.
+        let accept = tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        tcp_precheck_remote("127.0.0.1", port, TCP_PRECHECK_TIMEOUT)
+            .await
+            .expect("local listener should pass precheck");
+
+        accept.await.expect("accept task");
+    }
+
+    #[tokio::test]
+    async fn tcp_precheck_fails_on_refused_or_timeout() {
+        // Port with no listener should fail quickly (connection refused on most OSes).
+        let refused = tcp_precheck_remote("127.0.0.1", 1, Duration::from_secs(1)).await;
+        assert!(
+            matches!(
+                refused,
+                Err(PrecheckError::Connect(_)) | Err(PrecheckError::Timeout(_))
+            ),
+            "expected connect/timeout error, got {refused:?}"
+        );
+
+        // Very short timeout against an unroutable blackhole address.
+        let timed_out =
+            tcp_precheck_remote("203.0.113.1", 9, Duration::from_millis(50)).await;
+        assert!(
+            matches!(
+                timed_out,
+                Err(PrecheckError::Timeout(_)) | Err(PrecheckError::Connect(_))
+            ),
+            "expected timeout/connect error, got {timed_out:?}"
+        );
+    }
+
+    #[test]
+    fn tcp_precheck_constants_match_decisions() {
+        assert_eq!(TCP_PRECHECK_TIMEOUT, Duration::from_secs(2));
+        assert_eq!(TCP_PRECHECK_BUDGET_PER_CYCLE, 200);
     }
 }
