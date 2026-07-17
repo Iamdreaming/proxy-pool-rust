@@ -45,7 +45,7 @@ crates/proxy-xray/
 | `port_manager` | Allocate/release/claim local SOCKS5 ports in a configurable range | `PortManager` | `tokio` (RwLock) |
 | `process` | Start/stop/restart xray-core subprocess with supervision | `XrayProcess` | `tokio` (process, watch) |
 | `xray_client` | gRPC + CLI hybrid client for xray HandlerService | `XrayClient` | `proto` (tonic), `tokio` (process, watch, RwLock) |
-| `outbound_sync` | Background loop: pending encrypted nodes → active xray outbounds | `OutboundSync` | All above + `proxy-core` (ProxyStore, Proxy), `proxy-sub` (PendingStore) |
+| `outbound_sync` | Background loop: active revalidate/demote → pending admission → stale remove | `OutboundSync`, `XrayValidationPlan`, `TeardownKind` | All above + `proxy-core` (ProxyStore, Proxy, Validator, XrayStatusRegistry), `proxy-sub` (PendingStore) |
 | `proto` | Generated protobuf/gRPC code from xray proto files | `HandlerServiceClient`, request/response types | `tonic`, `prost` |
 
 ### Dependency Flow

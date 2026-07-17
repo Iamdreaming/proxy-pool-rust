@@ -1,0 +1,6 @@
+{"file": ".trellis/tasks/07-17-xray-active-health-demotion/prd.md", "reason": "acceptance criteria AC1-AC7"}
+{"file": ".trellis/spec/proxy-xray/backend/index.md", "reason": "xray check conventions"}
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "core check conventions"}
+{"file": ".trellis/tasks/07-17-xray-active-health-demotion/design.md", "reason": "design constraints for review"}
+{"file": ".trellis/spec/proxy-xray/backend/quality-guidelines.md", "reason": "xray quality bar"}
+{"file": ".trellis/spec/proxy-core/backend/quality-guidelines.md", "reason": "core quality bar"}

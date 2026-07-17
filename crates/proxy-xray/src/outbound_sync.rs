@@ -22,6 +22,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::sync::watch;
 
+/// Consecutive active revalidation failures before demotion (Decision D1).
+const ACTIVE_HEALTH_FAIL_THRESHOLD: u32 = 2;
+/// Max active nodes revalidated per sync cycle (avoids starving admission).
+const ACTIVE_REVALIDATE_BUDGET_CAP: usize = 32;
+/// Stable reason written to the lifecycle registry on health demotion.
+const ACTIVE_HEALTH_FAIL_REASON: &str = "active_health_check_failed";
+
 /// Admission-validation plan for xray nodes before they become routeable.
 #[derive(Debug, Clone)]
 pub struct XrayValidationPlan {
@@ -86,6 +93,8 @@ pub struct OutboundSync {
     port_manager: Arc<PortManager>,
     active_nodes: Arc<RwLock<HashMap<String, XrayNode>>>,
     validation_failed_until: Arc<RwLock<HashMap<String, Instant>>>,
+    /// Consecutive active revalidation failures per tag. Cleared on success/demotion.
+    active_health_fail_streak: Arc<RwLock<HashMap<String, u32>>>,
     status_registry: XrayStatusRegistry,
     config: XraySettings,
     validation: XrayValidationPlan,
@@ -112,6 +121,7 @@ impl OutboundSync {
             port_manager,
             active_nodes: Arc::new(RwLock::new(HashMap::new())),
             validation_failed_until: Arc::new(RwLock::new(HashMap::new())),
+            active_health_fail_streak: Arc::new(RwLock::new(HashMap::new())),
             status_registry: options.status_registry,
             config: options.config,
             validation: options.validation,
@@ -121,11 +131,15 @@ impl OutboundSync {
 
     /// Run a single sync cycle.
     ///
-    /// Iterates over encrypted protocol labels (ss, vmess, trojan, vless), reads
-    /// pending nodes from Redis, and activates any that are not yet in the
-    /// active set.
+    /// 1. Revalidate currently Active nodes and demote after consecutive failures.
+    /// 2. Admit pending encrypted nodes (ss, vmess, trojan, vless) into the active set.
+    /// 3. Remove active nodes whose pending subscription entry no longer exists.
     pub async fn sync_once(&self) -> SyncStats {
         let mut stats = SyncStats::default();
+
+        // Prefer revalidating Active first so dead slots free before admission.
+        self.revalidate_active_nodes(&mut stats).await;
+
         let labels = ["ss", "vmess", "trojan", "vless"];
         let mut validation_attempts = 0usize;
 
@@ -346,47 +360,10 @@ impl OutboundSync {
             };
 
             for tag in tags_to_remove {
-                let node = {
-                    let mut active = self.active_nodes.write().await;
-                    active.remove(&tag)
-                };
-                if let Some(node) = node {
-                    self.port_manager.release(node.local_socks5_port).await;
-
-                    // Remove the pool Proxy entry for this node's local port so a
-                    // later port reuse cannot route traffic through the wrong
-                    // (torn-down) node (B2).
-                    let pool_entry =
-                        Proxy::new("127.0.0.1", node.local_socks5_port, Protocol::Socks5);
-                    if let Err(e) = self.proxy_store.remove(&pool_entry).await {
-                        tracing::warn!(
-                            "outbound_sync: failed to remove stale pool entry for port {}: {e}",
-                            node.local_socks5_port
-                        );
-                    }
-
-                    // Remove from xray via gRPC.
-                    // Use write lock because remove_inbound takes &mut self.
-                    let mut client = self.xray_client.write().await;
-                    if client.is_connected() {
-                        if let Err(e) = client.remove_routing_rule(&node.routing_rule_tag()).await {
-                            tracing::warn!("outbound_sync: remove_routing_rule failed: {e}");
-                        }
-                        if let Err(e) = client.remove_inbound(&node.inbound_tag()).await {
-                            tracing::warn!("outbound_sync: remove_inbound failed: {e}");
-                        }
-                        if let Err(e) = client.remove_outbound(&node.outbound_tag()).await {
-                            tracing::warn!("outbound_sync: remove_outbound failed: {e}");
-                        }
-                    }
-
-                    tracing::info!("outbound_sync: removed stale node {tag}");
-                    self.status_registry
-                        .mark_removed(
-                            &xray_identity_from_active(&node),
-                            Some(node.local_socks5_port),
-                        )
-                        .await;
+                if self
+                    .teardown_active_node(&tag, TeardownKind::StaleRemoved)
+                    .await
+                {
                     stats.removed += 1;
                 }
             }
@@ -403,10 +380,11 @@ impl OutboundSync {
         let stats = self.sync_once().await;
         active_count.store(stats.total_active, Ordering::Relaxed);
         tracing::info!(
-            "outbound_sync: {} -- added: {}, removed: {}, failed: {}, total_active: {}",
+            "outbound_sync: {} -- added: {}, removed: {}, demoted: {}, failed: {}, total_active: {}",
             context,
             stats.added,
             stats.removed,
+            stats.demoted,
             stats.failed,
             stats.total_active
         );
@@ -465,6 +443,181 @@ impl OutboundSync {
         &self,
     ) -> tokio::sync::RwLockReadGuard<'_, HashMap<String, XrayNode>> {
         self.active_nodes.read().await
+    }
+
+    /// Revalidate Active nodes via their local SOCKS5 ports.
+    ///
+    /// Success resets the fail streak and refreshes pool quality evidence.
+    /// Failure increments the streak; at [`ACTIVE_HEALTH_FAIL_THRESHOLD`] the
+    /// node is demoted (torn down + cooldown).
+    async fn revalidate_active_nodes(&self, stats: &mut SyncStats) {
+        let active_snapshot: Vec<(String, u16)> = {
+            let active = self.active_nodes.read().await;
+            active
+                .iter()
+                .map(|(tag, node)| (tag.clone(), node.local_socks5_port))
+                .collect()
+        };
+        if active_snapshot.is_empty() {
+            return;
+        }
+
+        let budget = active_snapshot
+            .len()
+            .min(ACTIVE_REVALIDATE_BUDGET_CAP)
+            .min(self.validation.attempt_limit_per_cycle.max(1));
+        if budget == 0 {
+            return;
+        }
+
+        // Load once per cycle so successful revalidation can preserve
+        // encrypted_config / source / counters instead of rewriting a bare probe.
+        let existing_by_port: HashMap<u16, Proxy> = match self.proxy_store.all(Protocol::Socks5).await
+        {
+            Ok(all) => all
+                .into_iter()
+                .filter(|p| p.host == "127.0.0.1")
+                .map(|p| (p.port, p))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("outbound_sync: failed to load pool for active revalidate: {e}");
+                HashMap::new()
+            }
+        };
+
+        for (tag, local_port) in active_snapshot.into_iter().take(budget) {
+            // Node may have been removed concurrently (e.g. stale path); skip.
+            {
+                let active = self.active_nodes.read().await;
+                if !active.contains_key(&tag) {
+                    continue;
+                }
+            }
+
+            let mut probe = existing_by_port.get(&local_port).cloned().unwrap_or_else(|| {
+                Proxy::new("127.0.0.1", local_port, Protocol::Socks5)
+            });
+            probe.encrypted_state = Some(EncryptedProxyState::Active {
+                local_socks5_port: local_port,
+            });
+
+            match self.validate_candidate(&probe).await {
+                Some(validated) => {
+                    {
+                        let mut streaks = self.active_health_fail_streak.write().await;
+                        streaks.remove(&tag);
+                    }
+                    // Merge quality onto the known pool entry so store.add cannot
+                    // wipe encrypted_config/source when the cycle-wide load failed
+                    // or the probe was reconstructed as a bare 127.0.0.1 entry.
+                    let refreshed =
+                        merge_active_revalidation_quality(local_port, &validated, &existing_by_port);
+                    if let Err(e) = self.proxy_store.add(&refreshed).await {
+                        tracing::warn!(
+                            "outbound_sync: failed to refresh pool quality for {tag} port={local_port}: {e}"
+                        );
+                    } else {
+                        tracing::debug!(
+                            "outbound_sync: active health ok for {tag} port={local_port}"
+                        );
+                    }
+                }
+                None => {
+                    let (streak, should_demote) = {
+                        let mut streaks = self.active_health_fail_streak.write().await;
+                        let entry = streaks.entry(tag.clone()).or_insert(0);
+                        let (next, demote) = next_health_fail_streak(*entry);
+                        *entry = next;
+                        (next, demote)
+                    };
+                    if should_demote {
+                        if self
+                            .teardown_active_node(&tag, TeardownKind::HealthFailed { streak })
+                            .await
+                        {
+                            stats.demoted += 1;
+                        }
+                    } else {
+                        tracing::debug!(
+                            "outbound_sync: active health fail for {tag} port={local_port} streak={streak}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Shared teardown for stale removal and health demotion.
+    ///
+    /// Returns `true` when an active node was present and torn down.
+    async fn teardown_active_node(&self, tag: &str, kind: TeardownKind) -> bool {
+        let node = {
+            let mut active = self.active_nodes.write().await;
+            active.remove(tag)
+        };
+        let Some(node) = node else {
+            return false;
+        };
+
+        {
+            let mut streaks = self.active_health_fail_streak.write().await;
+            streaks.remove(tag);
+        }
+
+        // Best-effort xray config cleanup (routing rule + outbound + inbound).
+        self.cleanup_active_xray_tags(&node).await;
+
+        self.port_manager.release(node.local_socks5_port).await;
+
+        let pool_entry = Proxy::new("127.0.0.1", node.local_socks5_port, Protocol::Socks5);
+        if let Err(e) = self.proxy_store.remove(&pool_entry).await {
+            tracing::warn!(
+                "outbound_sync: failed to remove pool entry for port {}: {e}",
+                node.local_socks5_port
+            );
+        }
+
+        let identity = xray_identity_from_active(&node);
+        match kind {
+            TeardownKind::StaleRemoved => {
+                tracing::info!("outbound_sync: removed stale node {tag}");
+                self.status_registry
+                    .mark_removed(&identity, Some(node.local_socks5_port))
+                    .await;
+            }
+            TeardownKind::HealthFailed { streak } => {
+                tracing::info!(
+                    "outbound_sync: demoted {tag} port={} streak={streak} reason={ACTIVE_HEALTH_FAIL_REASON}",
+                    node.local_socks5_port
+                );
+                self.status_registry
+                    .mark_failed(
+                        &identity,
+                        Some(node.local_socks5_port),
+                        ACTIVE_HEALTH_FAIL_REASON,
+                    )
+                    .await;
+                self.mark_validation_failed(tag.to_string()).await;
+            }
+        }
+
+        true
+    }
+
+    async fn cleanup_active_xray_tags(&self, node: &XrayNode) {
+        let mut client = self.xray_client.write().await;
+        if !client.is_connected() {
+            return;
+        }
+        if let Err(e) = client.remove_routing_rule(&node.routing_rule_tag()).await {
+            tracing::warn!("outbound_sync: remove_routing_rule failed: {e}");
+        }
+        if let Err(e) = client.remove_inbound(&node.inbound_tag()).await {
+            tracing::warn!("outbound_sync: remove_inbound failed: {e}");
+        }
+        if let Err(e) = client.remove_outbound(&node.outbound_tag()).await {
+            tracing::warn!("outbound_sync: remove_outbound failed: {e}");
+        }
     }
 
     async fn add_xray_config(&self, node_config: &XrayNodeConfig) -> Result<(), String> {
@@ -585,6 +738,12 @@ impl OutboundSync {
     }
 }
 
+/// Why an active node is being torn down.
+enum TeardownKind {
+    StaleRemoved,
+    HealthFailed { streak: u32 },
+}
+
 fn xray_identity(tag: String, node: &SubscriptionProxy) -> XrayNodeIdentity {
     XrayNodeIdentity::new(
         tag,
@@ -617,6 +776,45 @@ impl XrayNodeConfig {
     }
 }
 
+/// Pure helper: next fail streak and whether demotion should fire.
+///
+/// Shared by the active revalidation path and unit tests so D1 threshold
+/// behavior cannot drift between production and tests.
+fn next_health_fail_streak(current: u32) -> (u32, bool) {
+    let next = current.saturating_add(1);
+    (next, next >= ACTIVE_HEALTH_FAIL_THRESHOLD)
+}
+
+/// Merge a successful revalidation result onto the existing pool entry.
+///
+/// Prefer the known pool row for encrypted metadata (`encrypted_config`,
+/// `source`) so a bare probe cannot wipe them through `ProxyStore::add`.
+fn merge_active_revalidation_quality(
+    local_port: u16,
+    validated: &Proxy,
+    existing_by_port: &HashMap<u16, Proxy>,
+) -> Proxy {
+    let mut refreshed = existing_by_port
+        .get(&local_port)
+        .cloned()
+        .unwrap_or_else(|| validated.clone());
+    refreshed.latency_ms = validated.latency_ms;
+    refreshed.anonymity = validated.anonymity.or(refreshed.anonymity);
+    refreshed.last_check = validated.last_check;
+    refreshed.success_count = validated.success_count;
+    // Keep Active state authoritative for route selection.
+    refreshed.encrypted_state = Some(EncryptedProxyState::Active {
+        local_socks5_port: local_port,
+    });
+    if refreshed.encrypted_config.is_none() {
+        refreshed.encrypted_config = validated.encrypted_config.clone();
+    }
+    if refreshed.source.is_none() {
+        refreshed.source = validated.source.clone();
+    }
+    refreshed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,7 +826,54 @@ mod tests {
         assert_eq!(stats.added, 0);
         assert_eq!(stats.removed, 0);
         assert_eq!(stats.failed, 0);
+        assert_eq!(stats.demoted, 0);
         assert_eq!(stats.total_active, 0);
+    }
+
+    #[test]
+    fn health_fail_streak_demotes_at_two_not_one() {
+        let (streak1, demote1) = next_health_fail_streak(0);
+        assert_eq!(streak1, 1);
+        assert!(!demote1, "single failure must not demote (D1)");
+
+        let (streak2, demote2) = next_health_fail_streak(streak1);
+        assert_eq!(streak2, 2);
+        assert!(demote2, "second consecutive failure must demote (D1)");
+    }
+
+    #[test]
+    fn health_fail_streak_resets_conceptually_on_success() {
+        // Success path clears the map entry (streak back to 0). Verify threshold
+        // math from a reset base still requires two fails.
+        let after_success: u32 = 0;
+        let (s1, d1) = next_health_fail_streak(after_success);
+        assert_eq!(s1, 1);
+        assert!(!d1);
+        let (s2, d2) = next_health_fail_streak(s1);
+        assert_eq!(s2, 2);
+        assert!(d2);
+    }
+
+    #[test]
+    fn active_revalidate_budget_caps_at_32_or_attempt_limit() {
+        let active_count = 100usize;
+        let attempt_limit = 50usize;
+        let budget = active_count
+            .min(ACTIVE_REVALIDATE_BUDGET_CAP)
+            .min(attempt_limit.max(1));
+        assert_eq!(budget, 32);
+
+        let small_active = 5usize;
+        let budget_small = small_active
+            .min(ACTIVE_REVALIDATE_BUDGET_CAP)
+            .min(attempt_limit.max(1));
+        assert_eq!(budget_small, 5);
+
+        let low_limit = 3usize;
+        let budget_low = active_count
+            .min(ACTIVE_REVALIDATE_BUDGET_CAP)
+            .min(low_limit.max(1));
+        assert_eq!(budget_low, 3);
     }
 
     #[test]
@@ -677,5 +922,68 @@ mod tests {
         assert_eq!(plan.targets.len(), 1);
         assert_eq!(plan.targets[0].url, "https://xray.example/check");
         assert_eq!(plan.targets[0].expected_statuses, vec![200, 204]);
+    }
+
+    #[test]
+    fn active_health_fail_reason_is_stable() {
+        assert_eq!(ACTIVE_HEALTH_FAIL_REASON, "active_health_check_failed");
+        assert_eq!(ACTIVE_HEALTH_FAIL_THRESHOLD, 2);
+    }
+
+    #[test]
+    fn merge_active_revalidation_preserves_encrypted_metadata() {
+        let mut existing = Proxy::new("127.0.0.1", 20001, Protocol::Socks5);
+        existing.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20001,
+        });
+        existing.encrypted_config = Some(serde_json::json!({"method": "aes-256-gcm"}));
+        existing.source = Some("xray:ss:example.com".into());
+        existing.success_count = 4;
+        existing.fail_count = 1;
+
+        let mut validated = Proxy::new("127.0.0.1", 20001, Protocol::Socks5);
+        validated.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20001,
+        });
+        validated.success_count = 5;
+        validated.latency_ms = Some(120.0);
+        validated.last_check = Some(chrono::Utc::now());
+        // Deliberately omit encrypted_config/source to simulate bare probe.
+
+        let mut by_port = HashMap::new();
+        by_port.insert(20001, existing);
+
+        let merged = merge_active_revalidation_quality(20001, &validated, &by_port);
+        assert_eq!(merged.success_count, 5);
+        assert_eq!(merged.latency_ms, Some(120.0));
+        assert_eq!(merged.fail_count, 1);
+        assert_eq!(
+            merged.encrypted_config,
+            Some(serde_json::json!({"method": "aes-256-gcm"}))
+        );
+        assert_eq!(merged.source.as_deref(), Some("xray:ss:example.com"));
+        assert!(matches!(
+            merged.encrypted_state,
+            Some(EncryptedProxyState::Active {
+                local_socks5_port: 20001
+            })
+        ));
+    }
+
+    #[test]
+    fn merge_active_revalidation_falls_back_to_validated_without_existing() {
+        let mut validated = Proxy::new("127.0.0.1", 20002, Protocol::Socks5);
+        validated.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20002,
+        });
+        validated.encrypted_config = Some(serde_json::json!({"id": "abc"}));
+        validated.source = Some("xray:vmess:node".into());
+        validated.success_count = 1;
+        validated.last_check = Some(chrono::Utc::now());
+
+        let merged = merge_active_revalidation_quality(20002, &validated, &HashMap::new());
+        assert_eq!(merged.success_count, 1);
+        assert_eq!(merged.encrypted_config, Some(serde_json::json!({"id": "abc"})));
+        assert_eq!(merged.source.as_deref(), Some("xray:vmess:node"));
     }
 }

@@ -61,5 +61,7 @@ pub struct SyncStats {
     pub added: usize,
     pub removed: usize,
     pub failed: usize,
+    /// Active nodes demoted after consecutive health-check failures.
+    pub demoted: usize,
     pub total_active: usize,
 }

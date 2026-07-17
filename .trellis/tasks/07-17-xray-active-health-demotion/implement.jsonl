@@ -1,0 +1,8 @@
+{"file": ".trellis/tasks/07-17-xray-active-health-demotion/prd.md", "reason": "requirements and AC"}
+{"file": ".trellis/tasks/07-17-xray-active-health-demotion/design.md", "reason": "architecture"}
+{"file": ".trellis/tasks/07-17-xray-active-health-demotion/implement.md", "reason": "execution checklist"}
+{"file": ".trellis/spec/proxy-xray/backend/index.md", "reason": "xray package conventions"}
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "core routing/store conventions"}
+{"file": ".trellis/spec/guides/index.md", "reason": "shared guides"}
+{"file": ".trellis/spec/proxy-xray/backend/error-handling.md", "reason": "xray error handling"}
+{"file": ".trellis/spec/proxy-xray/backend/logging-guidelines.md", "reason": "xray logging"}

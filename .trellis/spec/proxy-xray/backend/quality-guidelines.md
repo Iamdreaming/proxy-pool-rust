@@ -129,6 +129,14 @@ let _ = std::fs::remove_file(&temp_path); // always, even on error
 
 All public structs, methods, and functions must have `///` doc comments explaining purpose, parameters, and return values.
 
+### 7. Active revalidation must merge pool quality
+
+On successful active health revalidation, never `proxy_store.add` a bare reconstructed `127.0.0.1` probe alone. Use `merge_active_revalidation_quality` (or equivalent) so `encrypted_config`, `source`, and counters survive when the cycle-wide pool load failed or the entry was missing from the snapshot.
+
+### 8. Shared teardown for stale remove and health demotion
+
+Stale-missing and health demotion must call the same teardown path (xray cleanup → port release → pool remove → drop active → registry update). Health demotion additionally applies validation failure cooldown and registry reason `active_health_check_failed`.
+
 ---
 
 ## Testing Requirements
@@ -142,7 +150,7 @@ All public structs, methods, and functions must have `///` doc comments explaini
 | `models` | Minimal — 1 test | Only `SyncStats::default` |
 | `process` | None | Hard to unit test subprocess; integration test with mock binary |
 | `xray_client` | None | Requires running xray-core; integration test |
-| `outbound_sync` | Minimal — 1 test | Only `SyncStats::default` (duplicated from models) |
+| `outbound_sync` | Medium — threshold/merge/budget tests | Active health demotion helpers (`next_health_fail_streak`, `merge_active_revalidation_quality`); full gRPC/Redis demote path still integration-only |
 
 ### Required Test Coverage for New Code
 

@@ -1,17 +1,22 @@
 //! Traceable gateway route selection and route diagnostics.
 
 use crate::capability::{CapabilityStore, CapabilityTag};
+use crate::circuit;
 use crate::geoip::GeoIPLookup;
 use crate::models::{EncryptedProxyState, Protocol, Proxy, WarpInstance};
 use crate::router::{RouteMatch, Router};
 use crate::store::ProxyStore;
 use crate::warp::balancer::WarpBalancer;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
+
+/// Fresh success window for xray route eligibility (Decision D2: 15 minutes).
+const XRAY_ROUTE_FRESH_SUCCESS_SECS: i64 = 900;
 
 const BUSINESS_OVERSEAS_DOMAINS: &[&str] = &[
     "openai.com",
@@ -726,18 +731,29 @@ impl UpstreamSelector {
             Ok(proxies) => {
                 let failed_until = self.xray_failed_until.read().await;
                 let now = Instant::now();
-                let active_xray: Vec<&Proxy> = proxies
+                let mut active_xray: Vec<&Proxy> = proxies
                     .iter()
                     .filter(|p| {
-                        matches!(p.encrypted_state, Some(EncryptedProxyState::Active { .. }))
-                            && xray_has_validation_evidence(p)
+                        xray_is_route_eligible(p)
                             && !xray_cooldown_active(p, &failed_until, now)
                     })
                     .collect();
                 if active_xray.is_empty() {
                     return None;
                 }
-                let idx = rand::random_range(0..active_xray.len());
+                // Prefer lowest latency among eligible; random among ties.
+                active_xray.sort_by(|a, b| {
+                    let la = a.latency_ms.unwrap_or(f64::MAX);
+                    let lb = b.latency_ms.unwrap_or(f64::MAX);
+                    la.partial_cmp(&lb).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let best_latency = active_xray[0].latency_ms.unwrap_or(f64::MAX);
+                let tie_count = active_xray
+                    .iter()
+                    .take_while(|p| p.latency_ms.unwrap_or(f64::MAX) == best_latency)
+                    .count()
+                    .max(1);
+                let idx = rand::random_range(0..tie_count);
                 if let Some(EncryptedProxyState::Active { local_socks5_port }) =
                     active_xray[idx].encrypted_state
                 {
@@ -901,8 +917,69 @@ fn pool_proxy_cooldown_active(
     matches!(cooldowns.get(key), Some(until) if *until > now)
 }
 
+/// Age in seconds of the latest successful evidence, if any.
+///
+/// Preference order:
+/// 1. Latest successful `quality_history` sample timestamp
+/// 2. `last_check` when `success_count > 0`
+fn xray_fresh_success_age_secs(proxy: &Proxy, now: DateTime<Utc>) -> Option<i64> {
+    if let Some(sample) = proxy
+        .quality_history
+        .samples
+        .iter()
+        .rev()
+        .find(|sample| sample.success)
+    {
+        return Some((now.timestamp() - sample.checked_at_unix_secs).max(0));
+    }
+    if proxy.success_count > 0 {
+        return proxy
+            .last_check
+            .map(|checked| (now.timestamp() - checked.timestamp()).max(0));
+    }
+    None
+}
+
+/// Whether an xray pool entry has fresh success evidence for routing.
+///
+/// Requires `success_count > 0` and latest successful evidence within
+/// [`XRAY_ROUTE_FRESH_SUCCESS_SECS`] (Decision D2: 15m). Circuit-open and
+/// Active-state checks live in [`xray_is_route_eligible`].
 fn xray_has_validation_evidence(proxy: &Proxy) -> bool {
-    proxy.last_check.is_some() && proxy.success_count > 0
+    if proxy.success_count == 0 {
+        return false;
+    }
+    let now = Utc::now();
+    match xray_fresh_success_age_secs(proxy, now) {
+        Some(age) => age <= XRAY_ROUTE_FRESH_SUCCESS_SECS,
+        None => false,
+    }
+}
+
+/// Full route eligibility for an xray pool entry (excluding gateway cooldown).
+fn xray_is_route_eligible(proxy: &Proxy) -> bool {
+    matches!(
+        proxy.encrypted_state,
+        Some(EncryptedProxyState::Active { .. })
+    ) && !circuit::is_circuit_open(proxy)
+        && xray_has_validation_evidence(proxy)
+}
+
+/// Pick the lowest-latency eligible xray proxy; random among equal latency ties.
+///
+/// Exposed for unit tests of selection preference.
+#[cfg(test)]
+fn select_lowest_latency_xray<'a>(candidates: &[&'a Proxy]) -> Option<&'a Proxy> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut ordered: Vec<&Proxy> = candidates.to_vec();
+    ordered.sort_by(|a, b| {
+        let la = a.latency_ms.unwrap_or(f64::MAX);
+        let lb = b.latency_ms.unwrap_or(f64::MAX);
+        la.partial_cmp(&lb).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Some(ordered[0])
 }
 
 fn xray_cooldown_active(proxy: &Proxy, cooldowns: &HashMap<u16, Instant>, now: Instant) -> bool {
@@ -1163,6 +1240,113 @@ mod tests {
 
         proxy.success_count = 1;
         assert!(xray_has_validation_evidence(&proxy));
+    }
+
+    #[test]
+    fn xray_validation_evidence_rejects_stale_success() {
+        let mut proxy = Proxy::new("127.0.0.1", 20000, Protocol::Socks5);
+        proxy.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20000,
+        });
+        proxy.success_count = 3;
+        proxy.last_check = Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 1));
+
+        assert!(!xray_has_validation_evidence(&proxy));
+        assert!(!xray_is_route_eligible(&proxy));
+    }
+
+    #[test]
+    fn xray_validation_evidence_accepts_fresh_quality_history_success() {
+        let mut proxy = Proxy::new("127.0.0.1", 20000, Protocol::Socks5);
+        proxy.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20000,
+        });
+        proxy.success_count = 2;
+        // last_check is stale, but quality_history has a fresh success.
+        proxy.last_check = Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 60));
+        proxy
+            .quality_history
+            .record_success(Utc::now() - chrono::Duration::seconds(30), Some(120.0));
+
+        assert!(xray_has_validation_evidence(&proxy));
+        assert!(xray_is_route_eligible(&proxy));
+    }
+
+    #[test]
+    fn xray_route_eligibility_rejects_circuit_open() {
+        let mut proxy = Proxy::new("127.0.0.1", 20000, Protocol::Socks5);
+        proxy.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20000,
+        });
+        proxy.success_count = 5;
+        proxy.last_check = Some(Utc::now());
+        proxy.latency_ms = Some(80.0);
+        proxy.circuit_open = true;
+        proxy.circuit_open_until = Some(Utc::now() + chrono::Duration::seconds(600));
+
+        assert!(xray_has_validation_evidence(&proxy));
+        assert!(!xray_is_route_eligible(&proxy));
+    }
+
+    #[test]
+    fn xray_selection_prefers_lowest_latency_among_eligible() {
+        let mut slow = Proxy::new("127.0.0.1", 20001, Protocol::Socks5);
+        slow.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20001,
+        });
+        slow.success_count = 1;
+        slow.last_check = Some(Utc::now());
+        slow.latency_ms = Some(400.0);
+
+        let mut fast = Proxy::new("127.0.0.1", 20000, Protocol::Socks5);
+        fast.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20000,
+        });
+        fast.success_count = 1;
+        fast.last_check = Some(Utc::now());
+        fast.latency_ms = Some(90.0);
+
+        let mut stale = Proxy::new("127.0.0.1", 20002, Protocol::Socks5);
+        stale.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20002,
+        });
+        stale.success_count = 1;
+        stale.last_check = Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 10));
+        stale.latency_ms = Some(10.0);
+
+        let candidates: Vec<&Proxy> = [&slow, &fast, &stale]
+            .into_iter()
+            .filter(|p| xray_is_route_eligible(p))
+            .collect();
+        assert_eq!(candidates.len(), 2);
+        let chosen = select_lowest_latency_xray(&candidates).unwrap();
+        assert_eq!(chosen.port, 20000);
+    }
+
+    #[test]
+    fn xray_selection_empty_when_only_stale_or_open() {
+        let mut stale = Proxy::new("127.0.0.1", 20000, Protocol::Socks5);
+        stale.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20000,
+        });
+        stale.success_count = 2;
+        stale.last_check = Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 5));
+
+        let mut open = Proxy::new("127.0.0.1", 20001, Protocol::Socks5);
+        open.encrypted_state = Some(EncryptedProxyState::Active {
+            local_socks5_port: 20001,
+        });
+        open.success_count = 2;
+        open.last_check = Some(Utc::now());
+        open.circuit_open = true;
+        open.circuit_open_until = Some(Utc::now() + chrono::Duration::seconds(300));
+
+        let candidates: Vec<&Proxy> = [&stale, &open]
+            .into_iter()
+            .filter(|p| xray_is_route_eligible(p))
+            .collect();
+        assert!(candidates.is_empty());
+        assert!(select_lowest_latency_xray(&candidates).is_none());
     }
 
     #[test]
