@@ -192,3 +192,38 @@ Implemented D1 active revalidation demotion after 2 consecutive fails and D2 try
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: Xray TCP admission precheck deploy
+
+**Date**: 2026-07-17
+**Task**: Xray TCP admission precheck deploy
+**Package**: proxy-core
+**Branch**: `main`
+
+### Summary
+
+Implemented TCP precheck (2s/200 per cycle) before xray port/config/HTTP admission; D3-D6 no HTTP budget/cooldown/mark_failed. Spec tcp-admission-precheck.md. Pushed 5c7c678, CI green, update_service to dev; readonly smoke ok; xray still mostly HTTP-fail on public SS supply (precheck path live, active=0 after short settle).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0458f80` | (see git log) |
+| `5c7c678` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
