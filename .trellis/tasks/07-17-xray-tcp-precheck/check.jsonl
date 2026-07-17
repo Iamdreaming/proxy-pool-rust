@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/proxy-xray/backend/active-health-demotion.md", "reason": "ensure precheck does not regress revalidate-first sync_once contract"}
+{"file": ".trellis/spec/proxy-xray/backend/quality-guidelines.md", "reason": "review checklist for new sync behavior tests"}
+{"file": ".trellis/spec/proxy-xray/backend/logging-guidelines.md", "reason": "precheck log noise / levels"}
+{"file": ".trellis/tasks/07-17-xray-tcp-precheck/prd.md", "reason": "AC1-AC5 and D1-D7 verification"}
+{"file": ".trellis/tasks/07-17-xray-tcp-precheck/design.md", "reason": "flow and budget semantics"}
+{"file": ".trellis/tasks/07-17-xray-tcp-precheck/implement.md", "reason": "checklist completeness"}

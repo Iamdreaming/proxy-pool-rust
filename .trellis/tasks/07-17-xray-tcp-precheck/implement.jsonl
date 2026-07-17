@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/proxy-xray/backend/active-health-demotion.md", "reason": "sync_once order and admission vs revalidate boundary; do not break demotion path"}
+{"file": ".trellis/spec/proxy-xray/backend/quality-guidelines.md", "reason": "async lock, testing, no unwrap patterns for proxy-xray"}
+{"file": ".trellis/spec/proxy-xray/backend/directory-structure.md", "reason": "outbound_sync module ownership"}
+{"file": ".trellis/spec/proxy-xray/backend/logging-guidelines.md", "reason": "log levels for precheck DEBUG/INFO"}
+{"file": ".trellis/tasks/07-17-xray-tcp-precheck/prd.md", "reason": "requirements and D1-D7"}
+{"file": ".trellis/tasks/07-17-xray-tcp-precheck/design.md", "reason": "admission flow and constants"}
+{"file": ".trellis/tasks/07-17-xray-tcp-precheck/implement.md", "reason": "execution checklist"}
