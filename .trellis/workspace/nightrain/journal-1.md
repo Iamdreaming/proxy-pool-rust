@@ -158,3 +158,37 @@ Authenticated HTTP/SOCKS5 proxy support shipped and verified on dev (`514663b`).
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Xray active health demotion + route eligibility
+
+**Date**: 2026-07-17
+**Task**: Xray active health demotion + route eligibility
+**Package**: proxy-core
+**Branch**: `main`
+
+### Summary
+
+Implemented D1 active revalidation demotion after 2 consecutive fails and D2 try_xray 15m fresh-success eligibility with lowest-latency preference. Quality check fixed pool quality merge on revalidate success; code-specs added for proxy-xray demotion and proxy-core route eligibility.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7518f10` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
