@@ -63,9 +63,9 @@ pool:
 
 warp:
   instances:
-    - { id: 1, port: 1081 }
-    - { id: 2, port: 1082 }
-    - { id: 3, port: 1083 }
+    - { id: 1, host: "127.0.0.1", port: 1081 }
+    - { id: 2, host: "127.0.0.1", port: 1082 }
+    - { id: 3, host: "127.0.0.1", port: 1083 }
   health_check_interval_sec: 30
   health_check_timeout_sec: 10
   health_check_url: "https://www.cloudflare.com/cdn-cgi/trace"

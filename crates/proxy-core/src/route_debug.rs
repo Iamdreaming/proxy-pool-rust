@@ -32,11 +32,11 @@ pub enum Upstream {
     /// Route through a pool proxy.
     Proxy(Proxy),
     /// Route through a WARP instance.
-    Warp { id: u32, socks5_port: u16 },
+    Warp { id: u32, socks5_host: String, socks5_port: u16 },
     /// Route through an xray-node local SOCKS5 port.
     Xray { local_socks5_port: u16 },
     /// Chain through a pool proxy and then WARP.
-    WarpChain { proxy: Proxy, socks5_port: u16 },
+    WarpChain { proxy: Proxy, socks5_host: String, socks5_port: u16 },
     /// No upstream is available.
     NoProxy,
 }
@@ -371,11 +371,12 @@ impl UpstreamSelector {
     /// Feed concrete gateway attempt outcomes back into route health.
     pub async fn record_upstream_attempt(&self, upstream: &Upstream, status: GatewayAttemptStatus) {
         match (upstream, status) {
-            (Upstream::Warp { id, socks5_port }, GatewayAttemptStatus::Failure) => {
+            (Upstream::Warp { id, socks5_host, socks5_port }, GatewayAttemptStatus::Failure) => {
                 if let Some(balancer) = &self.balancer {
                     balancer.mark_failed(*id).await;
                     tracing::warn!(
                         warp_id = *id,
+                        socks5_host = socks5_host.as_str(),
                         socks5_port = *socks5_port,
                         "gateway marked WARP instance unhealthy after connection failure"
                     );
@@ -627,9 +628,10 @@ impl UpstreamSelector {
                     upstreams: vec![ResolvedUpstream {
                         upstream: Upstream::Warp {
                             id: inst.id,
+                            socks5_host: inst.socks5_host.clone(),
                             socks5_port: inst.socks5_port,
                         },
-                        detail: Some(format!("127.0.0.1:{}", inst.socks5_port)),
+                        detail: Some(format!("{}:{}", inst.socks5_host, inst.socks5_port)),
                     }],
                 },
                 None => ResolvedExit::Unavailable {

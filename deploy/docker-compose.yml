@@ -54,6 +54,21 @@ services:
           cpus: "2.0"
           pids: 512
 
+  warp-1:
+    image: monius/docker-warp-socks
+    container_name: warp-1
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+    # SOCKS5 listens on port 10800 inside the container.
+    # proxy-pool reaches it via container name "warp-1" on the default bridge network.
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
   proxy-mcp:
     # Standalone MCP server (same image, different binary). Decoupled from
     # proxy-pool so triggering update_service does not kill the MCP responder.

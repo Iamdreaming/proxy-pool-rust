@@ -84,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
         .warp
         .instances
         .iter()
-        .map(|c| WarpInstance::new(c.id, c.port))
+        .map(|c| WarpInstance::new(c.id, c.host.clone(), c.port))
         .collect();
     let warp_instances_arc = Arc::new(RwLock::new(warp_instances));
     let balancer = Arc::new(WarpBalancer::new(warp_instances_arc.clone()));

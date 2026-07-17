@@ -95,8 +95,8 @@ mod tests {
     #[tokio::test]
     async fn mark_failed_removes_instance_from_healthy_rotation() {
         let instances = Arc::new(RwLock::new(vec![
-            WarpInstance::new(1, 40000),
-            WarpInstance::new(2, 40001),
+            WarpInstance::new(1, "127.0.0.1".into(), 40000),
+            WarpInstance::new(2, "127.0.0.1".into(), 40001),
         ]));
         let balancer = WarpBalancer::new(instances.clone());
 

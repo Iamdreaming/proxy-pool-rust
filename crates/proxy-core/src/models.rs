@@ -388,6 +388,7 @@ impl WarpEndpoint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WarpInstance {
     pub id: u32,
+    pub socks5_host: String,
     pub socks5_port: u16,
     pub endpoint: Option<WarpEndpoint>,
     pub healthy: bool,
@@ -396,9 +397,10 @@ pub struct WarpInstance {
 }
 
 impl WarpInstance {
-    pub fn new(id: u32, socks5_port: u16) -> Self {
+    pub fn new(id: u32, socks5_host: String, socks5_port: u16) -> Self {
         Self {
             id,
+            socks5_host,
             socks5_port,
             endpoint: None,
             healthy: true,

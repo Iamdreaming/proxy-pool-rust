@@ -200,11 +200,12 @@ pub async fn connect_via_http_proxy(
 /// Step 2: On the resulting stream, perform another SOCKS5 CONNECT to the actual target.
 pub async fn connect_via_warp_chain(
     proxy: &Proxy,
+    warp_socks5_host: &str,
     warp_socks5_port: u16,
     target_addr: &str,
 ) -> anyhow::Result<tokio::net::TcpStream> {
     let proxy_addr = format!("{}:{}", proxy.host, proxy.port);
-    let warp_addr = format!("127.0.0.1:{warp_socks5_port}");
+    let warp_addr = format!("{warp_socks5_host}:{warp_socks5_port}");
 
     // Step 1: proxy -> WARP entry (authenticate to the pool proxy if it needs it)
     let mut stream = connect_via_socks5(&proxy_addr, &warp_addr, proxy.credentials()).await?;
@@ -233,8 +234,12 @@ pub async fn connect_to_upstream(
                 Protocol::Socks4 => anyhow::bail!("SOCKS4 upstream proxies are not supported"),
             }
         }
-        Upstream::Warp { socks5_port, .. } => {
-            let upstream_addr = format!("127.0.0.1:{socks5_port}");
+        Upstream::Warp {
+            socks5_host,
+            socks5_port,
+            ..
+        } => {
+            let upstream_addr = format!("{socks5_host}:{socks5_port}");
             connect_via_socks5(&upstream_addr, target_addr, None).await
         }
         Upstream::Xray {
@@ -243,8 +248,12 @@ pub async fn connect_to_upstream(
             let upstream_addr = format!("127.0.0.1:{socks5_port}");
             connect_via_socks5(&upstream_addr, target_addr, None).await
         }
-        Upstream::WarpChain { proxy, socks5_port } => {
-            connect_via_warp_chain(proxy, *socks5_port, target_addr).await
+        Upstream::WarpChain {
+            proxy,
+            socks5_host,
+            socks5_port,
+        } => {
+            connect_via_warp_chain(proxy, socks5_host, *socks5_port, target_addr).await
         }
         Upstream::NoProxy => anyhow::bail!("no upstream available"),
     }
@@ -328,6 +337,7 @@ mod tests {
         let _ = Upstream::NoProxy;
         let _ = Upstream::Warp {
             id: 1,
+            socks5_host: "127.0.0.1".into(),
             socks5_port: 40000,
         };
         let _ = Upstream::Xray {
@@ -341,6 +351,7 @@ mod tests {
         let proxy = Proxy::new("1.2.3.4", 1080, Protocol::Socks5);
         let _ = Upstream::WarpChain {
             proxy: proxy.clone(),
+            socks5_host: "127.0.0.1".into(),
             socks5_port: 40000,
         };
     }
@@ -350,10 +361,12 @@ mod tests {
         let proxy = Proxy::new("1.2.3.4", 1080, Protocol::Socks5);
         let upstream = Upstream::WarpChain {
             proxy: proxy.clone(),
+            socks5_host: "127.0.0.1".into(),
             socks5_port: 40000,
         };
         if let Upstream::WarpChain {
             proxy: p,
+            socks5_host: _,
             socks5_port: port,
         } = upstream
         {

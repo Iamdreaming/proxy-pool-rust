@@ -257,6 +257,8 @@ impl PoolSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WarpInstanceConfig {
     pub id: u32,
+    #[serde(default = "default_warp_host")]
+    pub host: String,
     pub port: u16,
 }
 
@@ -1086,6 +1088,9 @@ fn default_warp_health_url() -> String {
 }
 fn default_warp_fail_threshold() -> u32 {
     3
+}
+fn default_warp_host() -> String {
+    "127.0.0.1".into()
 }
 fn default_geoip_db_path() -> String {
     "/app/geoip/GeoLite2-Country.mmdb".into()

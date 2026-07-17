@@ -26,7 +26,7 @@ impl WarpHealthChecker {
             let instances = self.instances.read().await;
             let mut results = Vec::new();
             for inst in instances.iter() {
-                let ok = self.probe(inst.socks5_port).await;
+                let ok = self.probe(&inst.socks5_host, inst.socks5_port).await;
                 results.push((inst.id, ok));
             }
             results
@@ -50,9 +50,9 @@ impl WarpHealthChecker {
     }
 
     /// Probe a WARP instance via its SOCKS5 port.
-    async fn probe(&self, port: u16) -> bool {
+    async fn probe(&self, host: &str, port: u16) -> bool {
         let url = &self.settings.health_check_url;
-        let proxy_url = format!("socks5://127.0.0.1:{port}");
+        let proxy_url = format!("socks5://{host}:{port}");
 
         let client = match reqwest::Client::builder()
             .proxy(match reqwest::Proxy::all(&proxy_url) {
