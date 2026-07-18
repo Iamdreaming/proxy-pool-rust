@@ -3,7 +3,7 @@
   "name": "free-source-expansion-v2",
   "title": "Free source expansion v2",
   "description": "",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": "proxy-core",
@@ -11,7 +11,7 @@
   "creator": "nightrain",
   "assignee": "nightrain",
   "createdAt": "2026-07-07",
-  "completedAt": null,
+  "completedAt": "2026-07-18",
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Backlog hygiene 2026-07-18: code evidence shows deliverables already on main; archiving stale in_progress task metadata.",
   "meta": {}
 }
