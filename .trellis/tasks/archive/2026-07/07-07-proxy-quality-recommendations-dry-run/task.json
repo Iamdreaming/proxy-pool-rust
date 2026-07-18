@@ -3,7 +3,7 @@
   "name": "proxy-quality-recommendations-dry-run",
   "title": "proxy quality recommendations dry run",
   "description": "Add read-only dry-run proxy quality recommendations based on score explanations and recent quality trend.",
-  "status": "paused",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": "proxy-core",
@@ -11,7 +11,7 @@
   "creator": "nightrain",
   "assignee": "nightrain",
   "createdAt": "2026-07-07",
-  "completedAt": null,
+  "completedAt": "2026-07-18",
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Paused by user request on 2026-07-07; keep as later backlog, not current Ready/Next work.",
+  "notes": "Paused by user request on 2026-07-07; keep as later backlog, not current Ready/Next work.\nBacklog hygiene 2026-07-18: archived paused task (user requested cleanup). Stashes/WIP remain isolated if any; do not restore without explicit confirmation.",
   "meta": {}
 }
