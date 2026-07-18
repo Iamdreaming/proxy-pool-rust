@@ -6,9 +6,12 @@
 
 1. **Roadmap 管方向**：只记录优先级、范围和任务拆分，不替代 PRD / design / implement 文档。
 2. **Trellis 管执行**：进入开发前，为可独立验收的功能创建 `.trellis/tasks/<task>/prd.md`。
-3. **一次只做一个 In Progress**：避免多个大功能并行导致上下文漂移。
-4. **每个任务必须有验收标准**：没有验收标准的 TODO 先留在 Parking Lot。
-5. **完成后更新本文档**：每完成或取消一个任务，都同步调整状态。
+3. **一次只做一个 In Progress / Now（1-WIP）**：同时最多 1 个 `in_progress` 任务与 1 个 Now 条目，避免多条半开 WIP 与失真 Now。
+4. **新想法进 Parking Lot**：未经确认的方向先写入 Parking Lot，不直接堆半截 stash，也不抢占 Now。
+5. **暂停仪式**：更新 ROADMAP 对应行（Keep-Later）→ 可选 `git stash push -m "wip: paused <slug>"` → 清空 Trellis current task；**禁止**默认 `stash drop/apply`。
+6. **完成仪式**：归档 Trellis 任务 → 更新 ROADMAP Now/Done → 需要时再从 Ready 经 `task.py start` 开工下一条。
+7. **每个任务必须有验收标准**：没有验收标准的 TODO 先留在 Parking Lot。
+8. **完成后更新本文档**：每完成、暂停或取消一个任务，都同步调整状态。
 
 ## 状态定义
 
@@ -17,10 +20,10 @@
 | Now | 当前正在做，最多 1 个 |
 | Ready | PRD 清楚、验收标准明确，可以排队开工 |
 | Next | 优先级较高，但还需要细化 PRD |
-| Paused Closeout | 已有较大进展或代码已落地，但当前按用户要求暂不继续收尾 |
+| Keep-Later | 已暂停的 WIP/草稿；保留 stash 或 archive，待用户确认后再 Resume（原 Paused Closeout） |
 | Later | 后续增强，不阻塞近期迭代 |
 | Parking Lot | 想法池，暂不承诺实现 |
-| Done | 已完成并验证 |
+| Done | 已完成并验证（历史记录） |
 
 ## 优先级定义
 
@@ -33,120 +36,57 @@
 
 ## Current Planning Decision
 
-当前已按用户要求暂不推进 `update-failure-hardening` 和 `xray-config-dry-run-and-remove`，并已完成 `web-dashboard-real-ops-mvp`、`fetcher-source-circuit-breaker-mvp`、`validator-observability-v2` 与 `validator-observability-multitarget`：Web Dashboard 现在优先展示真实运维数据或明确的不可用状态，抓取源具备源级熔断和手动探测能力，`check_proxy` 能返回目标、耗时、HTTP 状态和出口信息，`check_proxy_matrix` / `/api/proxy/check-matrix` 也能按多个目标返回验证矩阵。
+**过程债收敛**（`process-debt-convergence`）已完成并归档：ROADMAP 失真 Now 已校准，7 条 `wip: paused ...` stash 登记为 Keep-Later（**仍保留、未 drop/apply**），过期 worktree/本地噪音已清理。**不改变**线上代理池业务语义。
 
-用户最新要求先不做 `mcp-api-contract-smoke-v2`，因此该契约 smoke 草稿已暂停并隔离，不作为当前 Ready/Next 主线。`dashboard-ops-polish-v2` 也继续保持暂停。`proxy-quality-history-lite` 已完成；用户随后明确“先不做” `proxy-quality-recommendations-dry-run`，因此该 dry-run 建议任务只保留暂停草稿，不进入当前主线。
-
-用户随后要求“先不做这个，规划新的 todo list”，因此 `revalidation-scheduler-priority-v1` 从当前主线移出并隔离。之后 `quality-dashboard-readonly-v1` 也按用户要求先不继续，当前 WIP 已隔离在 stash `wip: paused quality dashboard readonly`，不作为新的主线任务。新的 TODO 队列优先补齐 no-SSH、只读、低风险的发布验证和配置防漂移能力：先把已有 GitHub Actions、公开 HTTP 状态接口和 MCP 只读状态组合成可重复执行的本地 smoke runner，再做配置/文档漂移检查、Prometheus 低基数审计和最小只读契约 smoke。
-
-**工作区注意事项**：
-
-- 当前本地存在一组已隔离的 `dashboard-ops-polish-v2` WIP：`wip: paused dashboard ops polish v2`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
-- 当前本地存在一组已隔离的 `mcp-api-contract-smoke-v2` WIP：`wip: paused mcp api contract smoke v2`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
-- 当前本地存在一组已隔离的 `fetcher-source-quality-ranking` WIP：`wip: paused fetcher source quality ranking`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
-- 当前本地存在一组已隔离的 `revalidation-scheduler-priority-v1` WIP：`wip: paused revalidation scheduler priority`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
-- 当前本地存在一组已隔离的 `quality-dashboard-readonly-v1` WIP：`wip: paused quality dashboard readonly`。按用户最新要求先不继续，不要默认恢复、删除或混入后续任务。
-- 当前 Trellis 中存在 `proxy-quality-recommendations-dry-run` 暂停草稿。按用户最新要求先不继续，不作为 Ready/Next 主线；后续只有用户重新确认后再恢复。
-- 当前本地存在一组已隔离的 `update-failure-hardening` WIP：`wip: paused update failure hardening`。按用户要求先不继续，不要默认恢复、删除或混入后续任务。
-- 当前本地存在一组已隔离的 `fetcher-validator-quality` WIP：`wip: paused fetcher circuit work`。不要默认恢复、删除或混入后续任务。
-- 当前 Trellis 里 `gateway-route-debugging` 已完成收尾并归档到 `.trellis/tasks/archive/2026-07/07-07-gateway-route-debugging`；`fetcher-validator-quality` 仍保持 `paused`，当前会话任务指针已清空。
-- `warp-ops-enhancement` 曾创建 planning 任务目录；按用户最新要求先不继续，任务状态保留为 `paused`，不作为 current task。
-- `xray-config-dry-run-and-remove` 曾创建 planning 任务目录；按用户最新要求先不继续，任务状态保留为 `paused`，不作为 current task。
-- `.codex/config.toml` 属于非本任务改动，不纳入任何 roadmap 提交或后续功能提交。
-- 按用户要求，不直接 SSH 到 dev 地址；dev 验证默认走 HTTP、MCP、GitHub Actions、容器已有自更新入口和公开状态接口。
+- **D1 仍有效**：Keep-Later stash **禁止**默认 drop/apply/pop/clear；明细见  
+  `.trellis/tasks/archive/2026-07/07-18-process-debt-convergence/inventory.md`。
+- **D2**：当前 **无业务 Now**；下一条须从 Ready 经 Trellis `task.py start` 进入，禁止未 start 即写 Now。
+- **D5**：Ready / Next 未因本任务重排。
+- 旧 Now 文案中的 `business-e2e-smoke-v1` 已归档至 `.trellis/tasks/archive/2026-07/07-07-business-e2e-smoke-v1`，不得再冒充 Now。
+- 不直接 SSH 到 dev；默认验证仍走 GitHub Actions、公开 HTTP 状态与 MCP 只读入口（见 `docs/dev-validation.md`）。
 
 ## Now
 
-当前 Now 任务：`business-e2e-smoke-v1`（P0）。当前路线优先靠近业务可用性：先证明公开 gateway 和池内候选代理能否访问 OpenAI、Reddit、GitHub、Cloudflare 等真实目标站，并输出可重复、no-SSH、no-mutation 的业务冒烟报告。`metrics-low-cardinality-audit-v1`、`api-readonly-contract-minimal-v1` 等 metrics/纯契约任务后移，除非它们直接服务于业务目标站可达性诊断。
+**当前无业务 Now。**
 
-## Paused Closeout
+下一条从 §Ready 挑选后，经 Trellis `task.py start` 再写入本节。勿将已归档或 Keep-Later 项直接标为 Now。
 
-### P2 — `quality-dashboard-readonly-v1`
+## Keep-Later
 
-**目标**：在已有真实 Dashboard 基础上展示代理质量趋势、低质候选数量和近期失败原因，但不恢复已暂停的操作按钮草稿。
+> 明细与恢复注意以  
+> `.trellis/tasks/archive/2026-07/07-18-process-debt-convergence/inventory.md`  
+> 为准。stash **message** 为稳定键；`stash@{n}` 会漂移。处置当前均为 Keep-Later。
 
-**当前状态**：已按用户最新要求“先不做这个”暂停。此前已创建过 Trellis 任务草稿并有少量前端类型/页面 WIP，当前已隔离在 stash `wip: paused quality dashboard readonly`；Trellis current 指针已清空。后续只有用户重新确认后再恢复，不纳入当前 Ready/Next 主线。
+| slug | P | stash message | intent (1 line) | disposition | restore |
+|------|---|---------------|-----------------|-------------|---------|
+| `quality-dashboard-readonly-v1` | P2 | `wip: paused quality dashboard readonly` | 只读展示质量趋势/低质候选，不恢复操作按钮 | Keep-Later | 新任务 + message 定位；可能与 main 漂移 |
+| `revalidation-scheduler-priority-v1` | P1 | `wip: paused revalidation scheduler priority` | 用质量历史影响复验优先级，不直接清理 | Keep-Later | 触及 `scheduler.rs`；apply 前评估冲突 |
+| `update-failure-hardening` | P0 | `wip: paused update failure hardening` | 自更新失败路径结构化错误与 no-SSH 验证 | Keep-Later | 需安全窗口；禁误触 live update |
+| `dashboard-ops-polish-v2` | P2 | `wip: paused dashboard ops polish v2` | Dashboard 接入 xray/订阅/fetcher/validator 真实运维展示 | Keep-Later | 前端草稿；勿与 quality dashboard 混 apply |
+| `mcp-api-contract-smoke-v2` | P2 | `wip: paused mcp api contract smoke v2` | 完整 REST/MCP 运维契约 smoke（大于最小只读契约） | Keep-Later | 勿与 `api-readonly-contract-minimal-v1` 混做 |
+| `fetcher-source-quality-ranking` | P1 | `wip: paused fetcher source quality ranking` | 来源维度质量排名与风险标签（只读依据） | Keep-Later | 多文件大 diff；恢复成本高 |
+| `fetcher-validator-quality`（残余 WIP） | P1 | `wip: paused fetcher circuit work` | 历史 fetcher 增强草稿；源级熔断等已拆分完成 | Keep-Later | apply 前对照现行 main；部分能力可能已落地 |
 
-**暂缓 TODO**：
-
-- [ ] 首页或 Proxies 页面展示质量趋势摘要、低质候选数量和近期失败原因。
-- [ ] 如 `pool-quality-metrics-v1` 已完成，首页展示只读质量指标；否则显示明确的后端字段不可用状态。
-- [ ] Proxies 页面展示 `/api/proxies/scores` 中已有的 per-proxy trend 字段。
-- [ ] 所有新增 UI 都只消费真实后端字段；字段不可用时显示明确不可用状态。
-- [ ] 不新增 apply 操作，不触发 `update_service`，不依赖直接 SSH。
-
-### P1 — `revalidation-scheduler-priority-v1`
-
-**目标**：让已有质量历史影响复验顺序，优先复查长期未检查、近期退化、失败压力高或来源风险高的代理，同时避免单一来源长期占满复验预算。
-
-**当前状态**：已按用户最新要求“先不做这个”暂停。此前已有一组可继续的本地 WIP，已隔离在 stash `wip: paused revalidation scheduler priority`；Trellis current 指针已清空。后续只有用户重新确认后再恢复，不纳入当前 Ready/Next 主线。
-
-**暂缓 TODO**：
-
-- [ ] 定义复验候选优先级：last_checked、quality trend、fail_count、success_count、score、source quality 和 protocol 公平性。
-- [ ] 调度器在不改变外部接口的前提下使用优先级排序，保留合理随机性或分桶公平性，避免饥饿。
-- [ ] 对持续失败代理提高复验优先级但不直接清理；清理/降权策略仍留给后续单独任务。
-- [ ] 暴露最小可观测字段或日志，说明本轮复验选择了哪些类别的代理。
-- [ ] 覆盖排序规则、边界值和 scheduler revalidation 行为测试。
-
-### P0 — `update-failure-hardening`
-
-**目标**：在不影响正常发布节奏的前提下，补齐自更新失败路径的故障注入验证。
-
-**当前状态**：已开始过一个 WIP，但用户要求先不继续；当前草稿隔离在本地 stash `wip: paused update failure hardening`，Trellis 任务指针已清空。后续需要安全窗口或更明确的 no-SSH 验证入口后再恢复。
-
-**暂缓 TODO**：
-
-- [ ] 错误镜像 tag / digest 时，`update_service` 返回结构化错误，旧容器继续运行。
-- [ ] 错误 Watchtower token 时，`update_service` 返回结构化错误，旧容器继续运行。
-- [ ] Watchtower HTTP endpoint 不可达时，`update_service` 返回结构化错误，旧容器继续运行。
-- [ ] 形成一份可重复执行的 dev-only 验证步骤，避免误操作生产配置。
-- [ ] 必要时增加自动化集成测试或最小脚本化检查。
-- [ ] 验证方式仍遵循 no-SSH 规则，只使用 GitHub Actions、MCP、HTTP 状态接口和安全的 dev-only 配置入口。
-
-### P2 — `dashboard-ops-polish-v2`
-
-**目标**：把新增的 xray、订阅源、抓取源和验证能力接入 Web Dashboard，同时继续坚持只展示真实可用动作。
-
-**当前状态**：用户最新要求“先不做这个”，因此暂停。已产生过一份前端草稿，但已经隔离在本地 stash `wip: paused dashboard ops polish v2`，不纳入当前 TODO 主线、不提交、不推送。
-
-**暂缓 TODO**：
-
-- [ ] xray 节点生命周期摘要和失败原因展示。
-- [ ] 订阅源状态、刷新结果和解析预览展示。
-- [ ] fetcher circuit state、手动 probe 结果和错误原因展示打磨。
-- [ ] validator 多目标结果展示。
-- [ ] 移除或禁用所有没有后端支持的操作按钮。
-
-### P2 — `mcp-api-contract-smoke-v2`
-
-**目标**：为最近新增的 REST/MCP 运维入口补齐契约级 smoke，减少 API 与 MCP 字段漂移。
-
-**当前状态**：已创建过 Trellis 草稿并有少量文档/测试 WIP，但用户最新要求“先不做这个”。当前草稿已隔离在本地 stash `wip: paused mcp api contract smoke v2`，Trellis current 指针已清空，不纳入当前 TODO 主线、不提交、不推送。
-
-**暂缓 TODO**：
-
-- [ ] 统一列出 REST endpoint 与 MCP tool 的等价关系。
-- [ ] 对 status、fetchers、subscriptions、xray status、route test、score explanation、proxy check matrix 增加轻量 smoke。
-- [ ] 集成测试只依赖本地进程或公开 HTTP/MCP 入口，不依赖直接 SSH。
-- [ ] README 中把运维入口按“可查询 / dry-run / apply”分类。
-
-### P1 — `fetcher-source-quality-ranking`
-
-**目标**：把代理质量回传到来源维度，帮助识别高产低质、长期失败、近期恢复或需要降噪的 fetcher/source。
-
-**当前状态**：已按用户最新要求暂停。此前有一组可继续的本地 WIP，已隔离在 stash `wip: paused fetcher source quality ranking`；Trellis current 指针已清空。后续只有用户重新确认后再恢复，不纳入当前 Ready/Next 主线。
-
-**暂缓 TODO**：
-
-- [ ] 明确代理与来源之间的最小可追踪字段；旧数据缺少来源时保持兼容，不影响已有代理池读写。
-- [ ] 为 fetcher/source 汇总 scored/alive counts、score buckets、recent success/failure、latency、circuit state 和 risk labels 等轻量指标。
-- [ ] `/api/fetchers` 和 MCP `fetcher_status` 返回来源质量字段，adapter 层只序列化核心结构，不重复计算。
-- [ ] 标记高风险来源：长期失败、解析成功但验证低、近期明显退化、熔断后仍反复失败。
-- [ ] 不自动禁用来源、不删除代理；只给 operator、调度器和后续 Dashboard 提供依据。
-- [ ] 覆盖 core 汇总逻辑、API/MCP shape 和旧数据兼容测试。
+另：下列 Later 项仅有 **archive / 历史草稿**，无 active 任务目录，也不在上述 7 stash 内（或仅部分重叠）——见 inventory「Roadmap drafts」表：`proxy-quality-recommendations-dry-run`、`xray-config-dry-run-and-remove`、`warp-ops-enhancement`。
 
 ## Done
+
+> 以下为**历史完成**记录，非当前主线。当前执行信号以 §Now / §Ready / §Keep-Later 为准。
+
+### P1 — `process-debt-convergence`
+
+**目标**：阶段 0 止血 + 阶段 1 过程债收敛（ROADMAP 校准、Keep-Later 台账、本地噪音清理），不恢复 paused 功能。
+
+**当前状态**：已完成并归档到 `.trellis/tasks/archive/2026-07/07-18-process-debt-convergence`。
+
+**主要完成项**：
+
+- [x] Now 与 Trellis/归档一致；收尾后无业务 Now。
+- [x] `inventory.md` 覆盖 7 条 `wip: paused ...` stash + 相关 Later/archive 草稿，处置均为 Keep-Later。
+- [x] 过期 agent worktree 移除；`temp/` / `.tmp_verify/` / `protoc.exe` 清理；`cargo clean`（约 47G target）。
+- [x] `proxy_ip_suggest.txt` 取消跟踪并 gitignore。
+- [x] ROADMAP 管理原则固化 1-WIP、暂停/完成仪式；Paused 散文改为 Keep-Later 表；Ready/Next 不重排。
+- [x] **未** stash drop/apply；**未**恢复业务功能代码。
 
 ### P1 — `gateway-route-debugging`
 
@@ -559,7 +499,9 @@
 
 ### P1 — `proxy-quality-recommendations-dry-run`
 
-**目标**：基于当前分数和轻量质量历史，给出可解释的清理/降权建议，但默认不修改代理池。当前按用户要求先不推进，保留 paused Trellis 草稿供后续恢复。
+**目标**：基于当前分数和轻量质量历史，给出可解释的清理/降权建议，但默认不修改代理池。
+
+**当前状态**：按用户要求先不推进。历史 planning 已归档到 `.trellis/tasks/archive/2026-07/07-07-proxy-quality-recommendations-dry-run`；**无** active 任务目录。后续仅在用户重新确认后恢复。
 
 **候选功能**：
 
@@ -570,7 +512,9 @@
 
 ### P2 — `xray-config-dry-run-and-remove`
 
-**目标**：让 xray 运维动作可预检、可回退，减少错误配置直接写入运行态的风险。当前按用户要求先不推进，保留 paused Trellis 草稿供后续恢复。
+**目标**：让 xray 运维动作可预检、可回退，减少错误配置直接写入运行态的风险。
+
+**当前状态**：按用户要求先不推进。历史 planning 已归档到 `.trellis/tasks/archive/2026-07/07-07-xray-config-dry-run-and-remove`；**无** active 任务目录。
 
 **候选功能**：
 
@@ -581,7 +525,9 @@
 
 ### P3 — `warp-ops-enhancement`
 
-**目标**：增强 WARP endpoint 优选、健康检查和手动运维能力。当前按用户要求先不推进，保留 planning 草稿供后续恢复。
+**目标**：增强 WARP endpoint 优选、健康检查和手动运维能力。
+
+**当前状态**：按用户要求先不推进。历史 planning 已归档到 `.trellis/tasks/archive/2026-07/07-07-warp-ops-enhancement`；**无** active 任务目录。
 
 **候选功能**：
 
@@ -594,24 +540,22 @@
 
 ### P1 — `fetcher-validator-quality`
 
-**目标**：继续提升代理来源质量、验证结果可解释性和错误诊断能力。
+**目标**：继续提升代理来源质量、验证结果可解释性和错误诊断能力（umbrella 收尾视角）。
 
-**当前状态**：Trellis 任务已存在：`.trellis/tasks/07-07-fetcher-validator-quality/`。第一批实现已覆盖 fetcher 运行报告、单源刷新、API/MCP 运维入口和 `check_proxy` 结构化错误；剩余内部增强暂缓，等待当前 WIP 被隔离或重新确认后再恢复。
+**当前状态**：主交付已归档到 `.trellis/tasks/archive/2026-07/07-07-fetcher-validator-quality`。源级熔断与验证可观测性已拆分为独立 Done 任务。本地仍保留 stash `wip: paused fetcher circuit work`（Keep-Later），**不要**默认 apply。
 
-**已完成并验证**：
+**已完成并验证（历史）**：
 
 - [x] 为每个 fetcher 记录最近抓取时间、成功/失败状态、抓取数量、解析数量和错误原因。
 - [x] 支持按 fetcher 手动刷新，避免每次全量刷新。
 - [x] 验证错误分类：invalid proxy URL、client build failed、timeout、request failed、bad status、body read failed。
 - [x] MCP `check_proxy` 返回结构化错误类型。
-- [x] `cargo fmt --all --check`
-- [x] `cargo test --workspace --all-targets`
-- [x] `cargo clippy --workspace --all-targets -- -D warnings`
 
-**暂缓 TODO**：
+**暂缓 / 已拆分**：
 
-- [ ] 源级熔断已拆为 `fetcher-source-circuit-breaker-mvp`。
-- [ ] 验证结果可观测性已拆为 `validator-observability-v2`。
+- [x] 源级熔断 → `fetcher-source-circuit-breaker-mvp`（Done）
+- [x] 验证结果可观测性 → `validator-observability-v2`（Done）
+- [ ] 残余 stash 仅在用户确认 Resume 时处理
 
 ### P3 — `xray-subscription-ops`
 
@@ -637,32 +581,15 @@
 
 ## Trellis 任务创建建议
 
-建议按以下顺序创建和推进任务：
+> **已过时的长排序列表已压缩。** 实际开工顺序以本文 §Now / §Ready / §Next / §Keep-Later 与 Trellis current 为准，不要把下方历史指针当作强制队列。
 
-1. `xray-node-lifecycle-mvp` — xray 节点生命周期和失败原因。
-2. `subscription-source-ops-mvp` — 订阅源状态、手动刷新和解析预览。
-3. `validator-observability-multitarget` — 已完成，多目标验证矩阵和更细阶段耗时。
-4. `release-observability-no-ssh-v2` — 已完成，发布状态、镜像元数据和最近更新结果的 no-SSH 可观测性。
-5. `proxy-quality-history-lite` — 已完成，代理质量轻量趋势和只读解释字段。
-6. `release-validation-no-ssh-runbook-v2` — 已完成，把 post-push dev 验证清单固定为 GitHub Actions、公开 HTTP 和 MCP 只读入口。
-7. `release-status-contract-smoke-v1` — 已完成，为发布验证依赖的 status/update_status 字段补最小契约 smoke，不恢复完整 REST/MCP smoke。
-8. `pool-quality-metrics-v1` — 已完成，将质量趋势和保留风险暴露为低基数只读指标。
-9. `readonly-dev-smoke-runner-v1` — 已完成，把 no-SSH 只读验证组合成一条本地可重复命令。
-10. `config-runbook-drift-check-v1` — 已完成，防止 README、dev-validation、compose/env/status 字段继续漂移。
-11. `metrics-low-cardinality-audit-v1` — 系统性审计 Prometheus label 是否持续保持低基数。
-12. `release-status-public-smoke-v1` — 已完成，为公开只读发布状态补更轻的 smoke，不恢复完整 REST/MCP smoke。
-13. `dev-update-config-doc-hardening-v1` — 已完成，沉淀当前 dev compose 自更新配置和只读排障说明。
-14. `api-readonly-contract-minimal-v1` — 定义 runner/smoke 依赖的最小只读 API/MCP 字段集合。
-15. `quality-dashboard-readonly-v1` — 用户重新确认后再恢复，只读展示质量趋势，不恢复暂停的操作按钮草稿。
-16. `revalidation-scheduler-priority-v1` — 用户重新确认后再恢复，让质量历史影响复验优先级，但不直接清理代理。
-17. `update-failure-hardening` — 用户确认安全验证入口后再恢复自更新失败路径结构化错误和 no-SSH 验证。
-18. `fetcher-source-quality-ranking` — 用户重新确认后再恢复，来源维度质量排名和退化提示。
-19. `proxy-quality-recommendations-dry-run` — 用户重新确认后再恢复，基于趋势输出清理/降权建议，默认 dry-run。
-20. `mcp-api-contract-smoke-v2` — 用户重新确认后再恢复 REST/MCP 运维入口契约 smoke。
-21. `dashboard-ops-polish-v2` — 用户重新确认后再恢复 Dashboard 运维整合草稿。
-22. `xray-config-dry-run-and-remove` — 用户重新确认后再恢复 xray 配置 dry-run 和单节点移除。
-23. `warp-ops-enhancement` — 用户重新确认后再恢复 WARP 运维增强。
-24. `gateway-route-debugging` — 已完成归档；debug header 如未来需要再单独规划。
+当前可信排队（过程债期间）：
+
+1. 完成并归档 `process-debt-convergence`（过程治理）。
+2. Ready：`metrics-low-cardinality-audit-v1`。
+3. Next：`api-readonly-contract-minimal-v1`。
+4. Keep-Later 项仅在用户明确 Resume 后单开任务；**禁止**默认恢复 stash。
+5. archive `2026-07/` 中的历史任务保留只读，不删不改正文充当 active。
 
 ## 任务 PRD 模板
 

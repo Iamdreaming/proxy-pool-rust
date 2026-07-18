@@ -1,0 +1,31 @@
+{
+  "id": "process-debt-convergence",
+  "name": "process-debt-convergence",
+  "title": "仓库过程债专项收敛",
+  "description": "阶段0+1过程债收敛：ROADMAP校准、Keep-Later台账、本地清理；不恢复功能、不drop stash",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": "proxy-server",
+  "priority": "P1",
+  "creator": "nightrain",
+  "assignee": "nightrain",
+  "createdAt": "2026-07-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "docs/ROADMAP.md",
+    ".gitignore",
+    "proxy_ip_suggest.txt",
+    ".trellis/tasks/07-18-process-debt-convergence/inventory.md"
+  ],
+  "notes": "D1 Keep-Later+keep stash; D2 Now=this then empty; D3 standard clean; D4 structure; D5 no Ready reorder",
+  "meta": {}
+}

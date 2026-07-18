@@ -1,0 +1,337 @@
+# agent-aa1c1840bd35c8918 @ 2b45195
+# status was dirty; backup before worktree remove
+ M crates/proxy-core/src/scheduler.rs
+ M crates/proxy-mcp/src/lib.rs
+
+diff --git a/crates/proxy-core/src/scheduler.rs b/crates/proxy-core/src/scheduler.rs
+index 5dd3189..f73ee0a 100644
+--- a/crates/proxy-core/src/scheduler.rs
++++ b/crates/proxy-core/src/scheduler.rs
+@@ -9,7 +9,7 @@ use crate::models::{Protocol, Proxy};
+ use crate::store::ProxyStore;
+ use crate::validator::Validator;
+ use std::sync::Arc;
+-use tokio::sync::{mpsc, oneshot, Mutex};
++use tokio::sync::{Mutex, mpsc, oneshot};
+ 
+ /// Result of a scheduler refresh cycle.
+ #[derive(Debug, Clone, Default, serde::Serialize)]
+diff --git a/crates/proxy-mcp/src/lib.rs b/crates/proxy-mcp/src/lib.rs
+index 8f66603..ebcf642 100644
+--- a/crates/proxy-mcp/src/lib.rs
++++ b/crates/proxy-mcp/src/lib.rs
+@@ -68,6 +68,44 @@ fn to_json(value: serde_json::Value) -> String {
+     serde_json::to_string_pretty(&value).expect("infallible: Value serialization")
+ }
+ 
++/// Extract a digest from Docker image inspect JSON.
++///
++/// Prefers `RepoDigests[0]` (returns the part after `@`),
++/// falls back to `Id`, then `"unknown"`.
++fn extract_digest(inspect: &serde_json::Value) -> String {
++    if let Some(digests) = inspect.get("RepoDigests").and_then(|v| v.as_array())
++        && let Some(first) = digests.first().and_then(|v| v.as_str())
++    {
++        if let Some(digest) = first.split('@').nth(1) {
++            return digest.to_string();
++        }
++        return first.to_string();
++    }
++    inspect
++        .get("Id")
++        .and_then(|v| v.as_str())
++        .unwrap_or("unknown")
++        .to_string()
++}
++
++/// Extract the image ID from Docker container inspect JSON's `.Image` field.
++fn extract_container_image_id(inspect: &serde_json::Value) -> String {
++    inspect
++        .get("Image")
++        .and_then(|v| v.as_str())
++        .unwrap_or("unknown")
++        .to_string()
++}
++
++/// URL-encode an image name for use in Docker Engine API path segments.
++///
++/// Encodes `/` into `%2F` and `:` into `%3A` so that image names like
++/// `ghcr.io/iamdreaming/proxy-pool-rust:latest` work as path parameters
++/// in Docker Engine API requests such as `/images/{name}/json`.
++fn url_encode_image_name(name: &str) -> String {
++    name.replace('/', "%2F").replace(':', "%3A")
++}
++
+ // ---------------------------------------------------------------------------
+ // MCP Server implementation
+ // ---------------------------------------------------------------------------
+@@ -278,10 +316,11 @@ impl ProxyPoolMcp {
+         let socket_path = "/var/run/docker.sock";
+         let image = "ghcr.io/iamdreaming/proxy-pool-rust:latest";
+         let container_name = "proxy-pool";
++        let image_api_path = format!("/images/{}/json", url_encode_image_name(image));
+ 
+-        // Step 1: Inspect current container to get previous_digest
++        // Step 1: Inspect current container to get previous_container_image_id
+         tracing::info!("update_service: inspecting current container {container_name}");
+-        let old_inspect = match docker_api_get(
++        let old_container_inspect = match docker_api_get(
+             socket_path,
+             &format!("/containers/{container_name}/json"),
+         )
+@@ -296,13 +335,16 @@ impl ProxyPoolMcp {
+             }
+         };
+ 
+-        let previous_digest = old_inspect
+-            .get("Image")
+-            .and_then(|v| v.as_str())
+-            .unwrap_or("unknown")
+-            .to_string();
++        let previous_container_image_id = extract_container_image_id(&old_container_inspect);
+ 
+-        // Step 2: Pull latest image (pre-fetch so Watchtower doesn't need to)
++        // Step 2: Inspect image tag to get previous_digest (before pull)
++        tracing::info!("update_service: inspecting image {image} for pre-pull digest");
++        let previous_digest = match docker_api_get(socket_path, &image_api_path).await {
++            Ok(inspect) => extract_digest(&inspect),
++            Err(_) => "unknown".to_string(),
++        };
++
++        // Step 3: Pull latest image (pre-fetch so Watchtower doesn't need to)
+         tracing::info!("update_service: pulling image {image}");
+         if let Err(e) = docker_api_post(
+             socket_path,
+@@ -314,10 +356,23 @@ impl ProxyPoolMcp {
+                 "status": "error",
+                 "message": format!("docker pull failed: {e}"),
+                 "previous_digest": previous_digest,
++                "previous_container_image_id": previous_container_image_id,
+             }));
+         }
+ 
+-        // Step 3: Trigger Watchtower to update the container
++        // Step 4: Inspect image tag again after pull to get current_digest
++        tracing::info!("update_service: inspecting image {image} for post-pull digest");
++        let (current_digest, digest_changed) =
++            match docker_api_get(socket_path, &image_api_path).await {
++                Ok(inspect) => {
++                    let cd = extract_digest(&inspect);
++                    let changed = cd != previous_digest;
++                    (cd, changed)
++                }
++                Err(_) => ("unknown".to_string(), false),
++            };
++
++        // Step 5: Trigger Watchtower to update the container
+         // Watchtower is an independent container that handles stop/recreate/start
+         // safely — it doesn't have the "self-surgery" problem.
+         tracing::info!("update_service: triggering Watchtower update");
+@@ -338,8 +393,11 @@ impl ProxyPoolMcp {
+                 // The success signal is the new container's git_hash changing (verified externally).
+                 to_json(serde_json::json!({
+                     "status": "update_triggered",
+-                    "previous_digest": previous_digest,
+                     "image": image,
++                    "previous_digest": previous_digest,
++                    "current_digest": current_digest,
++                    "digest_changed": digest_changed,
++                    "previous_container_image_id": previous_container_image_id,
+                     "message": "Watchtower update triggered. The container will be recreated shortly.",
+                 }))
+             }
+@@ -350,12 +408,14 @@ impl ProxyPoolMcp {
+                     "status": "error",
+                     "message": format!("Watchtower returned {status}: {body}"),
+                     "previous_digest": previous_digest,
++                    "previous_container_image_id": previous_container_image_id,
+                 }))
+             }
+             Err(e) => to_json(serde_json::json!({
+                 "status": "error",
+                 "message": format!("failed to reach Watchtower: {e}"),
+                 "previous_digest": previous_digest,
++                "previous_container_image_id": previous_container_image_id,
+             })),
+         }
+     }
+@@ -392,7 +452,7 @@ async fn read_http_response(
+     per_read_timeout_secs: u64,
+ ) -> Result<Vec<u8>, String> {
+     use tokio::io::AsyncReadExt;
+-    use tokio::time::{timeout, Duration};
++    use tokio::time::{Duration, timeout};
+ 
+     let mut buf = Vec::with_capacity(8192);
+     let mut tmp = [0u8; 8192];
+@@ -403,7 +463,12 @@ async fn read_http_response(
+         if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+             break;
+         }
+-        match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
++        match timeout(
++            Duration::from_secs(per_read_timeout_secs),
++            stream.read(&mut tmp),
++        )
++        .await
++        {
+             Ok(Ok(0)) => return Ok(buf), // EOF before headers — let parse_docker_response handle it
+             Ok(Ok(n)) => {
+                 buf.extend_from_slice(&tmp[..n]);
+@@ -417,10 +482,7 @@ async fn read_http_response(
+     }
+ 
+     // Find header/body boundary
+-    let header_end = buf
+-        .windows(4)
+-        .position(|w| w == b"\r\n\r\n")
+-        .unwrap();
++    let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+     let header_str = String::from_utf8_lossy(&buf[..header_end]);
+     let body_start = header_end + 4;
+     let body_received = buf.len().saturating_sub(body_start);
+@@ -433,7 +495,12 @@ async fn read_http_response(
+             if body_part.windows(5).any(|w| w == b"0\r\n\r\n") {
+                 break;
+             }
+-            match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
++            match timeout(
++                Duration::from_secs(per_read_timeout_secs),
++                stream.read(&mut tmp),
++            )
++            .await
++            {
+                 Ok(Ok(0)) => break,
+                 Ok(Ok(n)) => {
+                     buf.extend_from_slice(&tmp[..n]);
+@@ -442,9 +509,7 @@ async fn read_http_response(
+                     }
+                 }
+                 Ok(Err(e)) => return Err(format!("read: {e}")),
+-                Err(_) => {
+-                    return Err(format!("read: timed out after {per_read_timeout_secs}s"))
+-                }
++                Err(_) => return Err(format!("read: timed out after {per_read_timeout_secs}s")),
+             }
+         }
+     } else if let Some(content_length) = extract_content_length(&header_str) {
+@@ -452,7 +517,12 @@ async fn read_http_response(
+         let needed = content_length.saturating_sub(body_received);
+         let mut remaining = needed;
+         while remaining > 0 {
+-            match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
++            match timeout(
++                Duration::from_secs(per_read_timeout_secs),
++                stream.read(&mut tmp),
++            )
++            .await
++            {
+                 Ok(Ok(0)) => break,
+                 Ok(Ok(n)) => {
+                     buf.extend_from_slice(&tmp[..n]);
+@@ -462,9 +532,7 @@ async fn read_http_response(
+                     }
+                 }
+                 Ok(Err(e)) => return Err(format!("read: {e}")),
+-                Err(_) => {
+-                    return Err(format!("read: timed out after {per_read_timeout_secs}s"))
+-                }
++                Err(_) => return Err(format!("read: timed out after {per_read_timeout_secs}s")),
+             }
+         }
+     }
+@@ -493,7 +561,7 @@ fn extract_content_length(header_str: &str) -> Option<usize> {
+ async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
+     use tokio::io::AsyncWriteExt;
+     use tokio::net::UnixStream;
+-    use tokio::time::{timeout, Duration};
++    use tokio::time::{Duration, timeout};
+ 
+     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+         .await
+@@ -522,7 +590,7 @@ async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Val
+ async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
+     use tokio::io::AsyncWriteExt;
+     use tokio::net::UnixStream;
+-    use tokio::time::{timeout, Duration};
++    use tokio::time::{Duration, timeout};
+ 
+     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+         .await
+@@ -555,7 +623,7 @@ async fn docker_api_post_json(
+ ) -> Result<serde_json::Value, String> {
+     use tokio::io::AsyncWriteExt;
+     use tokio::net::UnixStream;
+-    use tokio::time::{timeout, Duration};
++    use tokio::time::{Duration, timeout};
+ 
+     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+         .await
+@@ -587,7 +655,7 @@ async fn docker_api_post_json(
+ async fn docker_api_delete(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
+     use tokio::io::AsyncWriteExt;
+     use tokio::net::UnixStream;
+-    use tokio::time::{timeout, Duration};
++    use tokio::time::{Duration, timeout};
+ 
+     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+         .await
+@@ -648,9 +716,8 @@ fn parse_docker_response(buf: &[u8]) -> Result<serde_json::Value, String> {
+ 
+     // Check status line
+     let status_line = header_part.lines().next().unwrap_or("");
+-    let is_success = status_line.contains("200")
+-        || status_line.contains("201")
+-        || status_line.contains("204");
++    let is_success =
++        status_line.contains("200") || status_line.contains("201") || status_line.contains("204");
+ 
+     // Handle chunked transfer-encoding
+     let body = if header_part.contains("chunked") {
+@@ -780,4 +847,46 @@ mod tests {
+         let handle = SchedulerHandle::new(cmd_tx);
+         let _handle2 = handle.clone();
+     }
++
++    #[test]
++    fn test_extract_digest_with_repo_digests() {
++        let json = serde_json::json!({
++            "Id": "sha256:abc123",
++            "RepoDigests": ["ghcr.io/iamdreaming/proxy-pool-rust@sha256:def456"],
++            "RepoTags": ["ghcr.io/iamdreaming/proxy-pool-rust:latest"]
++        });
++        assert_eq!(extract_digest(&json), "sha256:def456");
++    }
++
++    #[test]
++    fn test_extract_digest_fallback_to_id() {
++        let json = serde_json::json!({
++            "Id": "sha256:abc123",
++            "RepoTags": ["ghcr.io/iamdreaming/proxy-pool-rust:latest"]
++        });
++        assert_eq!(extract_digest(&json), "sha256:abc123");
++    }
++
++    #[test]
++    fn test_extract_digest_unknown() {
++        let json = serde_json::json!({});
++        assert_eq!(extract_digest(&json), "unknown");
++    }
++
++    #[test]
++    fn test_extract_container_image_id_from_container_inspect() {
++        let json = serde_json::json!({
++            "Image": "sha256:xyz789",
++            "Config": {
++                "Image": "ghcr.io/iamdreaming/proxy-pool-rust:latest"
++            }
++        });
++        assert_eq!(extract_container_image_id(&json), "sha256:xyz789");
++    }
++
++    #[test]
++    fn test_extract_container_image_id_unknown() {
++        let json = serde_json::json!({});
++        assert_eq!(extract_container_image_id(&json), "unknown");
++    }
+ }

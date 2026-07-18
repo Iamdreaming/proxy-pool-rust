@@ -1,0 +1,279 @@
+# agent-abbe4cf84128e155e @ 2b45195
+# status was dirty; backup before worktree remove
+ M crates/proxy-api/src/routes.rs
+ M crates/proxy-core/src/scheduler.rs
+ M crates/proxy-mcp/src/lib.rs
+ M crates/proxy-server/src/main.rs
+ M deploy/Dockerfile
+ M deploy/docker-compose.yml
+?? crates/proxy-server/build.rs
+
+diff --git a/crates/proxy-api/src/routes.rs b/crates/proxy-api/src/routes.rs
+index 1637aa0..46594ff 100644
+--- a/crates/proxy-api/src/routes.rs
++++ b/crates/proxy-api/src/routes.rs
+@@ -333,7 +333,26 @@ mod tests {
+             },
+         };
+         let json = serde_json::to_string(&resp).unwrap();
+-        assert!(json.contains("\"http\":10"));
++        assert!(json.contains("\"version\":\"0.1.0\""));
+         assert!(json.contains("\"git_hash\":\"abc1234\""));
++        assert!(json.contains("\"http\":10"));
++        assert!(json.contains("\"https\":5"));
++        assert!(json.contains("\"socks5\":3"));
++    }
++
++    #[test]
++    fn test_status_response_serialization_unknown_hash() {
++        let resp = StatusResponse {
++            version: "0.1.0",
++            git_hash: "unknown",
++            pool: PoolStatus {
++                http: 0,
++                https: 0,
++                socks5: 0,
++            },
++        };
++        let json = serde_json::to_string(&resp).unwrap();
++        assert!(json.contains("\"version\":\"0.1.0\""));
++        assert!(json.contains("\"git_hash\":\"unknown\""));
+     }
+ }
+diff --git a/crates/proxy-core/src/scheduler.rs b/crates/proxy-core/src/scheduler.rs
+index 5dd3189..f73ee0a 100644
+--- a/crates/proxy-core/src/scheduler.rs
++++ b/crates/proxy-core/src/scheduler.rs
+@@ -9,7 +9,7 @@ use crate::models::{Protocol, Proxy};
+ use crate::store::ProxyStore;
+ use crate::validator::Validator;
+ use std::sync::Arc;
+-use tokio::sync::{mpsc, oneshot, Mutex};
++use tokio::sync::{Mutex, mpsc, oneshot};
+ 
+ /// Result of a scheduler refresh cycle.
+ #[derive(Debug, Clone, Default, serde::Serialize)]
+diff --git a/crates/proxy-mcp/src/lib.rs b/crates/proxy-mcp/src/lib.rs
+index 8f66603..7fc4d2a 100644
+--- a/crates/proxy-mcp/src/lib.rs
++++ b/crates/proxy-mcp/src/lib.rs
+@@ -392,7 +392,7 @@ async fn read_http_response(
+     per_read_timeout_secs: u64,
+ ) -> Result<Vec<u8>, String> {
+     use tokio::io::AsyncReadExt;
+-    use tokio::time::{timeout, Duration};
++    use tokio::time::{Duration, timeout};
+ 
+     let mut buf = Vec::with_capacity(8192);
+     let mut tmp = [0u8; 8192];
+@@ -403,7 +403,12 @@ async fn read_http_response(
+         if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+             break;
+         }
+-        match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
++        match timeout(
++            Duration::from_secs(per_read_timeout_secs),
++            stream.read(&mut tmp),
++        )
++        .await
++        {
+             Ok(Ok(0)) => return Ok(buf), // EOF before headers — let parse_docker_response handle it
+             Ok(Ok(n)) => {
+                 buf.extend_from_slice(&tmp[..n]);
+@@ -417,10 +422,7 @@ async fn read_http_response(
+     }
+ 
+     // Find header/body boundary
+-    let header_end = buf
+-        .windows(4)
+-        .position(|w| w == b"\r\n\r\n")
+-        .unwrap();
++    let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+     let header_str = String::from_utf8_lossy(&buf[..header_end]);
+     let body_start = header_end + 4;
+     let body_received = buf.len().saturating_sub(body_start);
+@@ -433,7 +435,12 @@ async fn read_http_response(
+             if body_part.windows(5).any(|w| w == b"0\r\n\r\n") {
+                 break;
+             }
+-            match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
++            match timeout(
++                Duration::from_secs(per_read_timeout_secs),
++                stream.read(&mut tmp),
++            )
++            .await
++            {
+                 Ok(Ok(0)) => break,
+                 Ok(Ok(n)) => {
+                     buf.extend_from_slice(&tmp[..n]);
+@@ -442,9 +449,7 @@ async fn read_http_response(
+                     }
+                 }
+                 Ok(Err(e)) => return Err(format!("read: {e}")),
+-                Err(_) => {
+-                    return Err(format!("read: timed out after {per_read_timeout_secs}s"))
+-                }
++                Err(_) => return Err(format!("read: timed out after {per_read_timeout_secs}s")),
+             }
+         }
+     } else if let Some(content_length) = extract_content_length(&header_str) {
+@@ -452,7 +457,12 @@ async fn read_http_response(
+         let needed = content_length.saturating_sub(body_received);
+         let mut remaining = needed;
+         while remaining > 0 {
+-            match timeout(Duration::from_secs(per_read_timeout_secs), stream.read(&mut tmp)).await {
++            match timeout(
++                Duration::from_secs(per_read_timeout_secs),
++                stream.read(&mut tmp),
++            )
++            .await
++            {
+                 Ok(Ok(0)) => break,
+                 Ok(Ok(n)) => {
+                     buf.extend_from_slice(&tmp[..n]);
+@@ -462,9 +472,7 @@ async fn read_http_response(
+                     }
+                 }
+                 Ok(Err(e)) => return Err(format!("read: {e}")),
+-                Err(_) => {
+-                    return Err(format!("read: timed out after {per_read_timeout_secs}s"))
+-                }
++                Err(_) => return Err(format!("read: timed out after {per_read_timeout_secs}s")),
+             }
+         }
+     }
+@@ -493,7 +501,7 @@ fn extract_content_length(header_str: &str) -> Option<usize> {
+ async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
+     use tokio::io::AsyncWriteExt;
+     use tokio::net::UnixStream;
+-    use tokio::time::{timeout, Duration};
++    use tokio::time::{Duration, timeout};
+ 
+     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+         .await
+@@ -522,7 +530,7 @@ async fn docker_api_get(socket_path: &str, path: &str) -> Result<serde_json::Val
+ async fn docker_api_post(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
+     use tokio::io::AsyncWriteExt;
+     use tokio::net::UnixStream;
+-    use tokio::time::{timeout, Duration};
++    use tokio::time::{Duration, timeout};
+ 
+     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+         .await
+@@ -555,7 +563,7 @@ async fn docker_api_post_json(
+ ) -> Result<serde_json::Value, String> {
+     use tokio::io::AsyncWriteExt;
+     use tokio::net::UnixStream;
+-    use tokio::time::{timeout, Duration};
++    use tokio::time::{Duration, timeout};
+ 
+     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+         .await
+@@ -587,7 +595,7 @@ async fn docker_api_post_json(
+ async fn docker_api_delete(socket_path: &str, path: &str) -> Result<serde_json::Value, String> {
+     use tokio::io::AsyncWriteExt;
+     use tokio::net::UnixStream;
+-    use tokio::time::{timeout, Duration};
++    use tokio::time::{Duration, timeout};
+ 
+     let mut stream = timeout(Duration::from_secs(10), UnixStream::connect(socket_path))
+         .await
+@@ -648,9 +656,8 @@ fn parse_docker_response(buf: &[u8]) -> Result<serde_json::Value, String> {
+ 
+     // Check status line
+     let status_line = header_part.lines().next().unwrap_or("");
+-    let is_success = status_line.contains("200")
+-        || status_line.contains("201")
+-        || status_line.contains("204");
++    let is_success =
++        status_line.contains("200") || status_line.contains("201") || status_line.contains("204");
+ 
+     // Handle chunked transfer-encoding
+     let body = if header_part.contains("chunked") {
+diff --git a/crates/proxy-server/src/main.rs b/crates/proxy-server/src/main.rs
+index acc639d..c6d9f7b 100644
+--- a/crates/proxy-server/src/main.rs
++++ b/crates/proxy-server/src/main.rs
+@@ -8,10 +8,11 @@
+ //! - Subscription refresh loop
+ //! - Xray outbound sync (if xray.enabled)
+ 
+-/// Git hash injected at build time via `GIT_HASH` env var / build-arg.
++/// Git hash injected at build time via `GIT_HASH` env var or build-script
++/// auto-detection from `git rev-parse --short HEAD`.
+ const GIT_HASH: &str = match option_env!("GIT_HASH") {
+     Some(h) => h,
+-    None => "dev",
++    None => "unknown",
+ };
+ 
+ use proxy_api::AppState;
+diff --git a/deploy/Dockerfile b/deploy/Dockerfile
+index 9032765..a6c39ca 100644
+--- a/deploy/Dockerfile
++++ b/deploy/Dockerfile
+@@ -42,6 +42,7 @@ RUN mkdir -p crates/proxy-core/src && echo "" > crates/proxy-core/src/lib.rs \
+  && mkdir -p crates/proxy-gateway/src && echo "" > crates/proxy-gateway/src/lib.rs \
+  && mkdir -p crates/proxy-mcp/src && echo "" > crates/proxy-mcp/src/lib.rs \
+  && mkdir -p crates/proxy-server/src && echo "fn main(){}" > crates/proxy-server/src/main.rs \
++ && echo "fn main(){}" > crates/proxy-server/build.rs \
+  && mkdir -p crates/proxy-sub/src && echo "" > crates/proxy-sub/src/lib.rs \
+  && mkdir -p crates/proxy-xray/src && echo "" > crates/proxy-xray/src/lib.rs
+ 
+@@ -72,7 +73,7 @@ COPY crates/ crates/
+ 
+ # Build the actual binary (only business code recompiles)
+ # Use musl target for static linking — no glibc dependency in runtime image
+-ARG GIT_HASH=dev
++ARG GIT_HASH=unknown
+ ENV GIT_HASH=${GIT_HASH}
+ RUN cargo build --release -p proxy-server --target x86_64-unknown-linux-musl \
+  && cp /app/target/x86_64-unknown-linux-musl/release/proxy-server /app/target/release/proxy-server
+diff --git a/deploy/docker-compose.yml b/deploy/docker-compose.yml
+index 0b1b138..1d1eb2a 100644
+--- a/deploy/docker-compose.yml
++++ b/deploy/docker-compose.yml
+@@ -17,7 +17,7 @@ services:
+     #   context: ..
+     #   dockerfile: deploy/Dockerfile
+     #   args:
+-    #     GIT_HASH: dev
++    #     GIT_HASH: unknown
+     container_name: proxy-pool
+     ports:
+       - "9080:9080" # Gateway (HTTP CONNECT + SOCKS5)
+
+### untracked: crates/proxy-server/build.rs
+----- BEGIN build.rs -----
+/// Build script that injects the git hash at compile time.
+///
+/// Priority order:
+/// 1. `GIT_HASH` env var (set by Docker build-arg or CI)
+/// 2. `git rev-parse --short HEAD` (auto-detected from the repo)
+/// 3. `"unknown"` fallback (not in a git repo or git not available)
+use std::io::Result;
+
+fn main() -> Result<()> {
+    // If GIT_HASH is already set (e.g. via Docker build-arg), honour it.
+    if std::env::var("GIT_HASH").is_ok() {
+        return Ok(());
+    }
+
+    // Try to detect from git.
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output();
+
+    let hash = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => String::from("unknown"),
+    };
+
+    println!("cargo:rustc-env=GIT_HASH={hash}");
+
+    // Re-run if the HEAD commit changes.
+    println!("cargo:rerun-if-env-changed=GIT_HASH");
+
+    Ok(())
+}
+----- END build.rs -----

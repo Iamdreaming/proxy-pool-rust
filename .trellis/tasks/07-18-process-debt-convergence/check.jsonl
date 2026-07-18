@@ -1,0 +1,5 @@
+{"file": ".trellis/tasks/07-18-process-debt-convergence/prd.md", "reason": "AC1-AC9 checklist for process-debt convergence"}
+{"file": ".trellis/tasks/07-18-process-debt-convergence/design.md", "reason": "Forbidden actions (stash drop/apply) and artifact single-source rules"}
+{"file": ".trellis/tasks/07-18-process-debt-convergence/implement.md", "reason": "Validation commands and file whitelist for git diff"}
+{"file": "docs/ROADMAP.md", "reason": "Verify Now/Keep-Later/principles after edit; Ready/Next order unchanged"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Ensure process docs do not invent fake cross-layer contracts"}

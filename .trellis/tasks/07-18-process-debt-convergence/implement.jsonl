@@ -1,0 +1,7 @@
+{"file": "docs/ROADMAP.md", "reason": "Primary artifact to recalibrate Now/Keep-Later/principles; read current structure before edit"}
+{"file": ".trellis/tasks/07-18-process-debt-convergence/prd.md", "reason": "Requirements D1-D5 and acceptance criteria for implement agent"}
+{"file": ".trellis/tasks/07-18-process-debt-convergence/design.md", "reason": "Target ROADMAP shape, inventory schema, cleanup sequence, risks"}
+{"file": ".trellis/tasks/07-18-process-debt-convergence/implement.md", "reason": "Ordered checklist and validation commands"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Project thinking guides index; process work should not invent parallel guide trees"}
+{"file": ".gitignore", "reason": "Will add proxy_ip_suggest.txt; keep existing ignore patterns intact"}
+{"file": "docs/ops-cleanup.md", "reason": "Ops docs style reference only; do not conflate pool cleanup with process-debt cleanup"}
