@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/proxy-core/backend/xray-route-eligibility.md", "reason": "premium/xray path must still respect eligibility"}
+{"file": ".trellis/spec/proxy-core/backend/quality-guidelines.md", "reason": "review checklist"}
+{"file": ".trellis/tasks/07-17-scenario-quality-tiers/prd.md", "reason": "AC1-AC6 and D2 hard boundary"}
+{"file": ".trellis/tasks/07-17-scenario-quality-tiers/design.md", "reason": "legacy YAML compat and plan order"}
+{"file": ".trellis/tasks/07-17-scenario-quality-tiers/implement.md", "reason": "checklist completeness"}

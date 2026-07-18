@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/proxy-core/backend/xray-route-eligibility.md", "reason": "do not break xray eligibility while changing exit order"}
+{"file": ".trellis/spec/proxy-core/backend/quality-guidelines.md", "reason": "proxy-core test and style expectations"}
+{"file": ".trellis/spec/proxy-gateway/backend/quality-guidelines.md", "reason": "gateway must not regress if it consumes route decisions"}
+{"file": ".trellis/tasks/07-17-scenario-quality-tiers/prd.md", "reason": "D1-D6 and AC1-AC6"}
+{"file": ".trellis/tasks/07-17-scenario-quality-tiers/design.md", "reason": "YAML dual-parse and resolution order"}
+{"file": ".trellis/tasks/07-17-scenario-quality-tiers/implement.md", "reason": "execution checklist"}
