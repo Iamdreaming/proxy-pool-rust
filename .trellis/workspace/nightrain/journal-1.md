@@ -227,3 +227,38 @@ Implemented TCP precheck (2s/200 per cycle) before xray port/config/HTTP admissi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Scenario quality tiers closeout
+
+**Date**: 2026-07-18
+**Task**: Scenario quality tiers closeout
+**Package**: proxy-core
+**Branch**: `main`
+
+### Summary
+
+Closed scenario-quality-tiers: any/standard/premium exit tables, dual-parse routes YAML, RouteDecision.tier diagnostics; AC1-6 verified (proxy-core 172 / proxy-api 21 / clippy green).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `45e808d` | (see git log) |
+| `550dd83` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
-- **Last Active**: 2026-07-17
+- **Total Sessions**: 6
+- **Last Active**: 2026-07-18
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~229 | Active |
+| `journal-1.md` | ~264 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-07-18 | Scenario quality tiers closeout | `45e808d`, `550dd83` | `main` |
 | 5 | 2026-07-17 | Xray TCP admission precheck deploy | `0458f80`, `5c7c678` | `main` |
 | 4 | 2026-07-17 | Xray active health demotion + route eligibility | `7518f10` | `main` |
 | 3 | 2026-07-11 | auth-proxy-support 交付收尾 + xray 只读排查 | `514663b`, `4a18095` | `main` |
