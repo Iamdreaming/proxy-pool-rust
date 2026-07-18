@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
+- **Total Sessions**: 7
 - **Last Active**: 2026-07-18
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~264 | Active |
+| `journal-1.md` | ~298 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-07-18 | 过程债专项收敛 | `4e35d88` | `main` |
 | 6 | 2026-07-18 | Scenario quality tiers closeout | `45e808d`, `550dd83` | `main` |
 | 5 | 2026-07-17 | Xray TCP admission precheck deploy | `0458f80`, `5c7c678` | `main` |
 | 4 | 2026-07-17 | Xray active health demotion + route eligibility | `7518f10` | `main` |

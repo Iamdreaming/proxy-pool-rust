@@ -262,3 +262,37 @@ Closed scenario-quality-tiers: any/standard/premium exit tables, dual-parse rout
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: 过程债专项收敛
+
+**Date**: 2026-07-18
+**Task**: 过程债专项收敛
+**Package**: proxy-core
+**Branch**: `main`
+
+### Summary
+
+完成阶段0+1过程债收敛：ROADMAP校准(Now置空/Keep-Later表/1-WIP原则)、7条paused stash台账(Keep-Later且未drop/apply)、清理过期worktree与约47G target、取消跟踪proxy_ip_suggest.txt；AC1-9通过；工作提交4e35d88。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4e35d88` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
