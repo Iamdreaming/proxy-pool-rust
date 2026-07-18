@@ -1,19 +1,78 @@
-# Route rules: map request hosts to exit groups.
+# Route rules: map request hosts to exit groups, with optional quality tiers.
 #
-# Each group lists domain suffixes. A bare domain like "github.com"
-# matches that host and any subdomain (api.github.com).
-# A "*.cn" entry matches any host ending in ".cn".
-# The special entry "default" marks the fallback group.
+# Matching: longest domain suffix wins. A bare domain like "github.com"
+# matches that host and any subdomain (api.github.com). A "*.cn" entry
+# matches any host ending in ".cn". The special entry "default" marks the
+# fallback group for unmatched hosts.
+#
+# ---------------------------------------------------------------------------
+# Quality tiers (exit order)
+# ---------------------------------------------------------------------------
+#   any       FreePool → Warp → Xray → NoProxy   (may borrow higher exits)
+#   standard  Xray → Warp → FreePool → NoProxy   (free pool allowed late)
+#   premium   Xray → Warp → NoProxy              (NEVER free_pool)
+#
+# Direct-only: group name `direct` (or any group without a tier and without
+# an exits override) uses Direct only — not one of the three tiers.
+#
+# Default tier when `tier` is omitted (legacy list form or extended form):
+#   direct      → Direct only
+#   free_pool   → any
+#   warp / xray → premium
+#   other names → any  (safe default; avoid surprise NoProxy storms)
+#
+# The group that holds `default` decides unmatched hosts. Example below puts
+# default under `direct` (domestic-friendly). Move `default` into a free_pool
+# or any-tier group if unmatched overseas hosts should not go Direct.
+#
+# ---------------------------------------------------------------------------
+# Legacy form (still valid): groups.<name> is a domain list
+# ---------------------------------------------------------------------------
+# groups:
+#   free_pool:
+#     - "github.com"
+#
+# ---------------------------------------------------------------------------
+# Extended form: domains + optional tier + optional exits override
+# ---------------------------------------------------------------------------
+# groups:
+#   openai:
+#     tier: premium
+#     domains:
+#       - "openai.com"
+#     # exits: [xray, warp, no_proxy]   # optional; premium cannot include free_pool
 
 groups:
   direct:
-    - "*.cn"         # All .cn domains → direct (no proxy)
-    - default        # Fallback for unmatched domains
+    # Direct-only (no tier). Unmatched hosts fall here via `default`.
+    domains:
+      - "*.cn"         # All .cn domains → direct (no proxy)
+      - default        # Fallback for unmatched domains
 
   warp:
-    - "cloudflare.com"
+    # Default tier for group name `warp` is premium (no free_pool).
+    # Explicit tier shown for documentation.
+    tier: premium
+    domains:
+      - "cloudflare.com"
 
   free_pool:
-    - "github.com"
-    - "google.com"
-    - "*.googleapis.com"
+    tier: any
+    domains:
+      - "github.com"
+      - "google.com"
+      - "*.googleapis.com"
+
+  # Example premium scenario: high-value targets never use free_pool dirty IPs.
+  # Uncomment or adapt for production.
+  # openai:
+  #   tier: premium
+  #   domains:
+  #     - "openai.com"
+  #     - "chatgpt.com"
+  #
+  # Example standard scenario: prefer encrypted exits, free_pool still allowed.
+  # standard_web:
+  #   tier: standard
+  #   domains:
+  #     - "example.com"

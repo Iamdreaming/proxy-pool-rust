@@ -4,7 +4,7 @@ use crate::capability::{CapabilityStore, CapabilityTag};
 use crate::circuit;
 use crate::geoip::GeoIPLookup;
 use crate::models::{EncryptedProxyState, Protocol, Proxy, WarpInstance};
-use crate::router::{RouteMatch, Router};
+use crate::router::{QualityTier, RouteMatch, Router};
 use crate::store::ProxyStore;
 use crate::warp::balancer::WarpBalancer;
 use chrono::{DateTime, Utc};
@@ -76,6 +76,18 @@ impl RouteExit {
         }
     }
 
+    /// Parse a snake_case exit name from YAML / diagnostics.
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "direct" => Some(RouteExit::Direct),
+            "free_pool" => Some(RouteExit::FreePool),
+            "warp" => Some(RouteExit::Warp),
+            "xray" => Some(RouteExit::Xray),
+            "no_proxy" => Some(RouteExit::NoProxy),
+            _ => None,
+        }
+    }
+
     fn metric_index(self) -> usize {
         match self {
             RouteExit::Direct => 0,
@@ -139,6 +151,12 @@ pub struct RouteDecision {
     /// Matched suffix rule or `default`, if a router was configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_rule: Option<String>,
+    /// Resolved quality tier (`any` / `standard` / `premium`), when applicable.
+    ///
+    /// `null`/omitted for Direct-only groups and paths that do not use tier tables
+    /// (e.g. some hardcoded domain helpers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
     /// High-level reason for the candidate order.
     pub matched_reason: String,
     /// GeoIP decision, present only when GeoIP was consulted.
@@ -512,6 +530,7 @@ impl UpstreamSelector {
                 protocol,
                 matched_group: plan.route_match.as_ref().map(|m| m.group.clone()),
                 matched_rule: plan.route_match.as_ref().map(|m| m.matched_rule.clone()),
+                tier: plan.tier.map(|t| t.as_str().to_string()),
                 matched_reason: plan.matched_reason,
                 geoip: plan.geoip,
                 candidates,
@@ -534,14 +553,9 @@ impl UpstreamSelector {
 
     async fn build_plan(&self, host: &str) -> RoutePlan {
         if let Some(router) = &self.router {
-            let route_match = router.match_route(host);
-            if let Some(plan) = route_match_plan(host, route_match.clone()) {
-                return plan;
-            }
-
-            let mut plan = self.geoip_plan(host).await;
-            plan.route_match = Some(route_match);
-            return plan;
+            // Router present: tier/group policy owns non-default matches;
+            // default match keeps domain helpers then default-group policy.
+            return route_match_plan(host, router.match_route(host), router);
         }
 
         if let Some(exits) = direct_reachable_domain_exits(host) {
@@ -550,6 +564,7 @@ impl UpstreamSelector {
                 exits,
                 route_match: None,
                 geoip: None,
+                tier: None,
             };
         }
 
@@ -559,6 +574,8 @@ impl UpstreamSelector {
                 exits,
                 route_match: None,
                 geoip: None,
+                // Hardcoded business list uses premium-like exits (no free_pool).
+                tier: Some(QualityTier::Premium),
             };
         }
 
@@ -584,11 +601,15 @@ impl UpstreamSelector {
                 )
             };
 
+            // Overseas geoip path matches premium order (xray → warp → no_proxy).
+            let tier = geoip_decision.overseas.then_some(QualityTier::Premium);
+
             return RoutePlan {
                 matched_reason: reason,
                 exits,
                 route_match: None,
                 geoip: Some(geoip_decision),
+                tier,
             };
         }
 
@@ -597,6 +618,8 @@ impl UpstreamSelector {
             exits: general_fallback_exits(),
             route_match: None,
             geoip: None,
+            // R3: no routes / general fallback = any.
+            tier: Some(QualityTier::Any),
         }
     }
 
@@ -775,6 +798,8 @@ struct RoutePlan {
     exits: Vec<RouteExit>,
     route_match: Option<RouteMatch>,
     geoip: Option<RouteGeoIpDecision>,
+    /// Resolved quality tier for diagnostics; stringified only at the API boundary.
+    tier: Option<QualityTier>,
 }
 
 enum ResolvedExit {
@@ -787,73 +812,95 @@ struct ResolvedUpstream {
     detail: Option<String>,
 }
 
-fn exits_for_known_group(group: &str) -> Option<Vec<RouteExit>> {
-    match group {
-        "direct" => Some(vec![RouteExit::Direct]),
-        "free_pool" => Some(vec![
+/// Exit order tables for quality tiers (D1/D6).
+pub fn exits_for_tier(tier: QualityTier) -> Vec<RouteExit> {
+    match tier {
+        QualityTier::Any => vec![
             RouteExit::FreePool,
             RouteExit::Warp,
             RouteExit::Xray,
             RouteExit::NoProxy,
-        ]),
-        "warp" => Some(vec![RouteExit::Warp, RouteExit::Xray, RouteExit::NoProxy]),
-        "xray" => Some(vec![RouteExit::Xray, RouteExit::Warp, RouteExit::NoProxy]),
-        _ => None,
+        ],
+        QualityTier::Standard => vec![
+            RouteExit::Xray,
+            RouteExit::Warp,
+            RouteExit::FreePool,
+            RouteExit::NoProxy,
+        ],
+        QualityTier::Premium => vec![RouteExit::Xray, RouteExit::Warp, RouteExit::NoProxy],
+    }
+}
+
+/// Resolve exits + tier diagnostics for a configured route group.
+fn resolve_group_policy(router: &Router, group: &str) -> (Vec<RouteExit>, Option<QualityTier>) {
+    if let Some(names) = router.exit_override_for(group) {
+        let exits: Vec<RouteExit> = names.iter().filter_map(|n| RouteExit::from_name(n)).collect();
+        return (exits, router.tier_for(group));
+    }
+
+    match router.tier_for(group) {
+        Some(tier) => (exits_for_tier(tier), Some(tier)),
+        // No tier and no override → Direct-only (typically group `direct`).
+        // `is_direct_only` is exactly this case once overrides are ruled out above.
+        None => (vec![RouteExit::Direct], None),
     }
 }
 
 fn general_fallback_exits() -> Vec<RouteExit> {
-    vec![
-        RouteExit::FreePool,
-        RouteExit::Warp,
-        RouteExit::Xray,
-        RouteExit::NoProxy,
-    ]
+    exits_for_tier(QualityTier::Any)
 }
 
 fn geoip_exits(overseas: bool) -> Vec<RouteExit> {
     if overseas {
-        // D3: xray first, WARP fallback. D4: stable overseas = xray + WARP only.
-        vec![RouteExit::Xray, RouteExit::Warp, RouteExit::NoProxy]
+        // Overseas without router: premium-like (xray → warp → no_proxy).
+        exits_for_tier(QualityTier::Premium)
     } else {
         vec![RouteExit::Direct]
     }
 }
 
-fn route_match_plan(host: &str, route_match: RouteMatch) -> Option<RoutePlan> {
+fn route_match_plan(host: &str, route_match: RouteMatch, router: &Router) -> RoutePlan {
     if !route_match.is_default {
-        return exits_for_known_group(&route_match.group).map(|exits| RoutePlan {
+        // Non-default match: tier/group policy wins over BUSINESS_OVERSEAS hardcode.
+        let (exits, tier) = resolve_group_policy(router, &route_match.group);
+        return RoutePlan {
             matched_reason: "route_rule".into(),
             exits,
             route_match: Some(route_match),
             geoip: None,
-        });
+            tier,
+        };
     }
 
+    // Default match: keep domain helpers first, then default-group policy.
     if let Some(exits) = direct_reachable_domain_exits(host) {
-        return Some(RoutePlan {
+        return RoutePlan {
             matched_reason: "direct_reachable_domain".into(),
             exits,
             route_match: Some(route_match),
             geoip: None,
-        });
+            tier: None,
+        };
     }
 
     if let Some(exits) = business_domain_exits(host) {
-        return Some(RoutePlan {
+        return RoutePlan {
             matched_reason: "business_domain_overseas".into(),
             exits,
             route_match: Some(route_match),
             geoip: None,
-        });
+            tier: Some(QualityTier::Premium),
+        };
     }
 
-    exits_for_known_group(&route_match.group).map(|exits| RoutePlan {
+    let (exits, tier) = resolve_group_policy(router, &route_match.group);
+    RoutePlan {
         matched_reason: "route_default_group".into(),
         exits,
         route_match: Some(route_match),
         geoip: None,
-    })
+        tier,
+    }
 }
 
 fn geoip_route_decision(country: &str, country_overseas: bool) -> (bool, &'static str) {
@@ -994,15 +1041,45 @@ fn xray_cooldown_active(proxy: &Proxy, cooldowns: &HashMap<u16, Instant>, now: I
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::router::Router;
+    use std::collections::HashMap;
+
+    fn test_router() -> Router {
+        let mut groups = HashMap::new();
+        groups.insert("direct".into(), vec!["*.cn".into(), "default".into()]);
+        groups.insert("free_pool".into(), vec!["github.com".into()]);
+        groups.insert("warp".into(), vec!["cloudflare.com".into()]);
+        groups.insert("xray".into(), vec!["xray.test".into()]);
+        groups.insert("custom".into(), vec!["custom.example".into()]);
+        groups.insert("openai".into(), vec!["openai.com".into(), "chatgpt.com".into()]);
+        // openai gets default custom tier=any unless we load extended YAML.
+        Router::new(groups).unwrap()
+    }
+
+    fn premium_router() -> Router {
+        Router::from_yaml_str(
+            r#"
+groups:
+  direct:
+    domains: ["*.cn", default]
+  free_pool:
+    tier: any
+    domains: ["github.com"]
+  openai:
+    tier: premium
+    domains: ["openai.com", "chatgpt.com"]
+  standard_sites:
+    tier: standard
+    domains: ["example-std.com"]
+"#,
+        )
+        .unwrap()
+    }
 
     #[test]
-    fn known_group_candidate_orders_match_runtime_contract() {
+    fn exits_for_tier_tables_match_d6() {
         assert_eq!(
-            exits_for_known_group("direct").unwrap(),
-            vec![RouteExit::Direct]
-        );
-        assert_eq!(
-            exits_for_known_group("free_pool").unwrap(),
+            exits_for_tier(QualityTier::Any),
             vec![
                 RouteExit::FreePool,
                 RouteExit::Warp,
@@ -1011,14 +1088,52 @@ mod tests {
             ]
         );
         assert_eq!(
-            exits_for_known_group("warp").unwrap(),
-            vec![RouteExit::Warp, RouteExit::Xray, RouteExit::NoProxy]
+            exits_for_tier(QualityTier::Standard),
+            vec![
+                RouteExit::Xray,
+                RouteExit::Warp,
+                RouteExit::FreePool,
+                RouteExit::NoProxy
+            ]
         );
         assert_eq!(
-            exits_for_known_group("xray").unwrap(),
+            exits_for_tier(QualityTier::Premium),
             vec![RouteExit::Xray, RouteExit::Warp, RouteExit::NoProxy]
         );
-        assert!(exits_for_known_group("custom").is_none());
+        assert!(!exits_for_tier(QualityTier::Premium).contains(&RouteExit::FreePool));
+    }
+
+    #[test]
+    fn known_group_candidate_orders_match_runtime_contract() {
+        let router = test_router();
+        assert_eq!(
+            resolve_group_policy(&router, "direct"),
+            (vec![RouteExit::Direct], None)
+        );
+        assert_eq!(
+            resolve_group_policy(&router, "free_pool"),
+            (exits_for_tier(QualityTier::Any), Some(QualityTier::Any))
+        );
+        // warp/xray both map to premium (xray → warp → no_proxy).
+        assert_eq!(
+            resolve_group_policy(&router, "warp"),
+            (
+                exits_for_tier(QualityTier::Premium),
+                Some(QualityTier::Premium)
+            )
+        );
+        assert_eq!(
+            resolve_group_policy(&router, "xray"),
+            (
+                exits_for_tier(QualityTier::Premium),
+                Some(QualityTier::Premium)
+            )
+        );
+        // Custom groups without explicit tier default to any.
+        assert_eq!(
+            resolve_group_policy(&router, "custom"),
+            (exits_for_tier(QualityTier::Any), Some(QualityTier::Any))
+        );
     }
 
     #[test]
@@ -1075,6 +1190,7 @@ mod tests {
 
     #[test]
     fn router_default_does_not_mask_business_domain() {
+        let router = test_router();
         let plan = route_match_plan(
             "api.openai.com",
             RouteMatch {
@@ -1082,11 +1198,12 @@ mod tests {
                 matched_rule: "default".into(),
                 is_default: true,
             },
-        )
-        .unwrap();
+            &router,
+        );
 
         assert_eq!(plan.matched_reason, "business_domain_overseas");
         assert_eq!(plan.exits, geoip_exits(true));
+        assert_eq!(plan.tier, Some(QualityTier::Premium));
         let route_match = plan.route_match.unwrap();
         assert_eq!(route_match.group, "direct");
         assert!(route_match.is_default);
@@ -1094,6 +1211,7 @@ mod tests {
 
     #[test]
     fn direct_reachable_domain_wins_before_default_and_geoip_fallback() {
+        let router = test_router();
         let plan = route_match_plan(
             "github.com",
             RouteMatch {
@@ -1101,8 +1219,8 @@ mod tests {
                 matched_rule: "default".into(),
                 is_default: true,
             },
-        )
-        .unwrap();
+            &router,
+        );
 
         assert_eq!(plan.matched_reason, "direct_reachable_domain");
         assert_eq!(plan.exits, vec![RouteExit::Direct]);
@@ -1111,6 +1229,7 @@ mod tests {
 
     #[test]
     fn explicit_route_rule_wins_over_business_domain_fallback() {
+        let router = test_router();
         let plan = route_match_plan(
             "api.openai.com",
             RouteMatch {
@@ -1118,13 +1237,15 @@ mod tests {
                 matched_rule: "openai.com".into(),
                 is_default: false,
             },
-        )
-        .unwrap();
+            &router,
+        );
 
         assert_eq!(plan.matched_reason, "route_rule");
         assert_eq!(plan.exits, vec![RouteExit::Direct]);
+        assert_eq!(plan.tier, None);
         assert!(!plan.route_match.unwrap().is_default);
 
+        // Custom groups default to tier=any (no longer fall through to geoip).
         let custom_plan = route_match_plan(
             "api.openai.com",
             RouteMatch {
@@ -1132,8 +1253,81 @@ mod tests {
                 matched_rule: "openai.com".into(),
                 is_default: false,
             },
+            &router,
         );
-        assert!(custom_plan.is_none());
+        assert_eq!(custom_plan.matched_reason, "route_rule");
+        assert_eq!(custom_plan.exits, exits_for_tier(QualityTier::Any));
+        assert_eq!(custom_plan.tier, Some(QualityTier::Any));
+    }
+
+    #[test]
+    fn tiered_route_plans_follow_quality_tables() {
+        let router = premium_router();
+
+        let any_plan = route_match_plan(
+            "github.com",
+            router.match_route("github.com"),
+            &router,
+        );
+        assert_eq!(any_plan.tier, Some(QualityTier::Any));
+        assert_eq!(any_plan.exits, exits_for_tier(QualityTier::Any));
+        assert!(any_plan.exits.contains(&RouteExit::FreePool));
+
+        let premium_plan = route_match_plan(
+            "api.openai.com",
+            router.match_route("api.openai.com"),
+            &router,
+        );
+        assert_eq!(premium_plan.tier, Some(QualityTier::Premium));
+        assert_eq!(premium_plan.exits, exits_for_tier(QualityTier::Premium));
+        assert!(!premium_plan.exits.contains(&RouteExit::FreePool));
+        assert_eq!(premium_plan.exits.last().copied(), Some(RouteExit::NoProxy));
+
+        let chatgpt_plan = route_match_plan(
+            "chatgpt.com",
+            router.match_route("chatgpt.com"),
+            &router,
+        );
+        assert_eq!(chatgpt_plan.tier, Some(QualityTier::Premium));
+        assert!(!chatgpt_plan.exits.contains(&RouteExit::FreePool));
+
+        let standard_plan = route_match_plan(
+            "example-std.com",
+            router.match_route("example-std.com"),
+            &router,
+        );
+        assert_eq!(standard_plan.tier, Some(QualityTier::Standard));
+        assert_eq!(standard_plan.exits, exits_for_tier(QualityTier::Standard));
+    }
+
+    #[test]
+    fn exit_override_replaces_tier_table_in_plan() {
+        let router = Router::from_yaml_str(
+            r#"
+groups:
+  direct:
+    domains: [default]
+  custom:
+    tier: standard
+    domains: ["override.example"]
+    exits: [warp, xray, no_proxy]
+"#,
+        )
+        .unwrap();
+
+        let plan = route_match_plan(
+            "override.example",
+            router.match_route("override.example"),
+            &router,
+        );
+        assert_eq!(plan.matched_reason, "route_rule");
+        assert_eq!(plan.tier, Some(QualityTier::Standard));
+        // Override wins over standard table (which would put FreePool after Warp).
+        assert_eq!(
+            plan.exits,
+            vec![RouteExit::Warp, RouteExit::Xray, RouteExit::NoProxy]
+        );
+        assert!(!plan.exits.contains(&RouteExit::FreePool));
     }
 
     #[test]
@@ -1156,6 +1350,7 @@ mod tests {
             protocol: "http".into(),
             matched_group: Some("free_pool".into()),
             matched_rule: Some("example.com".into()),
+            tier: Some("any".into()),
             matched_reason: "route_rule".into(),
             geoip: None,
             candidates: vec![RouteCandidate {
@@ -1177,6 +1372,7 @@ mod tests {
         assert!(json.contains("\"free_pool\""));
         assert!(json.contains("\"no_proxy\""));
         assert!(json.contains("\"matched_group\":\"free_pool\""));
+        assert!(json.contains("\"tier\":\"any\""));
     }
 
     #[test]

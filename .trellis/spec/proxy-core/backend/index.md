@@ -12,3 +12,4 @@ breaker, WARP integration, dedup, EWMA, and pacing.
 | [Logging Guidelines](./logging-guidelines.md) | `tracing` usage, log-level conventions, what to log and what not to |
 | [Settings Edit API Contract](./config-edit-api.md) | Cross-layer settings read/write contract, redaction, validation, and restart semantics |
 | [Xray Route Eligibility](./xray-route-eligibility.md) | `try_xray` / `route_test` fresh-success filter (D2), circuit-open exclusion, latency preference |
+| [Scenario Quality Tiers](./scenario-quality-tiers.md) | `QualityTier` exit-order tables, routes YAML dual-parse, premium hard boundary, `RouteDecision.tier` |

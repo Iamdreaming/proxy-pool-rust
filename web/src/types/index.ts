@@ -157,6 +157,8 @@ export interface RouteDecision {
   protocol: string
   matched_group?: string
   matched_rule?: string
+  /** Quality tier: any | standard | premium; omitted for direct-only */
+  tier?: string
   matched_reason: string
   geoip?: RouteGeoIpDecision
   candidates: RouteCandidate[]

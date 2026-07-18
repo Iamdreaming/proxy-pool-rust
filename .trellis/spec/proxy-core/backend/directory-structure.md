@@ -50,7 +50,8 @@ crates/proxy-core/
 | `validator` | Concurrent proxy validation | `Validator` |
 | `circuit` | Circuit breaker state machine | `CircuitBreakerConfig`, `is_circuit_open()`, `trip()`, `reset()`, `should_trip()` |
 | `geoip` | GeoIP lookup with caching | `GeoIPLookup`, `GeoInfo` |
-| `router` | Domain-based routing rules | `Router` |
+| `router` | Domain-based routing + quality tiers | `Router`, `QualityTier`, `RouteMatch` |
+| `route_debug` | Gateway route plan / selection / diagnostics | `UpstreamSelector`, `RouteDecision`, `RouteExit`, `exits_for_tier` |
 | `dedup` | Proxy list deduplication | `dedup()` |
 | `ewma` | Latency smoothing | `update_ewma()`, `DEFAULT_ALPHA` |
 | `pacing` | Connection rate limiting | `ConnectionPacer` |
