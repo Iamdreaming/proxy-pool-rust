@@ -585,6 +585,5 @@ groups:
         assert_eq!(router.match_group("cloudflare.com"), "warp");
         assert_eq!(router.match_group("foo.cn"), "direct");
         assert_eq!(router.match_group("unknown.example"), "overseas");
-        assert_ne!(router.match_group("unknown.example"), "direct");
     }
 }
