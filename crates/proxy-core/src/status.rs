@@ -707,6 +707,20 @@ mod tests {
     use crate::store::explain_score;
     use chrono::TimeZone;
 
+    /// Closed set of normalized failure-reason labels emitted by metrics.
+    const FAILURE_REASONS: &[&str] = &[
+        "unknown",
+        "timeout",
+        "bad_status",
+        "body_read_failed",
+        "invalid_proxy_url",
+        "client_build_failed",
+        "request_failed",
+        "circuit_open",
+        "validation_failed",
+        "other",
+    ];
+
     fn default_weights() -> ScoreWeights {
         ScoreWeights {
             latency: 0.5,
@@ -907,25 +921,83 @@ mod tests {
 
     #[test]
     fn failure_reason_normalization_is_bounded() {
-        assert_eq!(normalize_failure_reason(None), "unknown");
-        assert_eq!(normalize_failure_reason(Some("")), "unknown");
-        assert_eq!(
-            normalize_failure_reason(Some("bad status: 500")),
-            "bad_status"
-        );
-        assert_eq!(
-            normalize_failure_reason(Some("request failed for http://1.2.3.4")),
-            "request_failed"
-        );
-        assert_eq!(
-            normalize_failure_reason(Some("opaque upstream said 1.2.3.4:8080 failed")),
-            "other"
-        );
+        let cases: &[(Option<&str>, &str)] = &[
+            (None, "unknown"),
+            (Some(""), "unknown"),
+            (Some("   "), "unknown"),
+            (Some("connection timeout after 5s"), "timeout"),
+            (Some("bad status: 500"), "bad_status"),
+            (Some("bad_status from upstream"), "bad_status"),
+            (Some("body read failed: eof"), "body_read_failed"),
+            (Some("body_read_failed"), "body_read_failed"),
+            (Some("invalid proxy url: not-a-url"), "invalid_proxy_url"),
+            (Some("invalid_proxy_url"), "invalid_proxy_url"),
+            (Some("client build failed: tls"), "client_build_failed"),
+            (Some("client_build_failed"), "client_build_failed"),
+            (
+                Some("request failed for http://evil.example/path via 1.2.3.4:8080"),
+                "request_failed",
+            ),
+            (Some("request_failed"), "request_failed"),
+            (Some("circuit open until probe"), "circuit_open"),
+            (Some("validation failed on target"), "validation_failed"),
+            (Some("validation_failed"), "validation_failed"),
+            (Some("opaque upstream said 1.2.3.4:8080 failed"), "other"),
+            (
+                Some("upstream returned garbage for https://evil.example/x"),
+                "other",
+            ),
+        ];
+        for &(input, expected) in cases {
+            assert_eq!(normalize_failure_reason(input), expected, "{input:?}");
+            assert!(
+                FAILURE_REASONS.contains(&expected),
+                "expected {expected} must stay in closed set"
+            );
+        }
     }
 
-    #[test]
-    fn metrics_include_pool_dependency_warp_and_xray_values() {
-        let status = ServiceStatus {
+    /// Parse Prometheus sample lines into (metric_name, labels, value_token).
+    /// Skips HELP/TYPE comment lines. Labels are key="value" pairs inside `{}`.
+    type PrometheusLabels = Vec<(String, String)>;
+    type PrometheusSample = (String, PrometheusLabels, String);
+
+    fn parse_prometheus_samples(metrics: &str) -> Vec<PrometheusSample> {
+        let mut samples = Vec::new();
+        for line in metrics.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (name_and_labels, value) = match line.rsplit_once(' ') {
+                Some(parts) => parts,
+                None => continue,
+            };
+            if let Some(brace) = name_and_labels.find('{') {
+                let name = &name_and_labels[..brace];
+                let labels_body = name_and_labels[brace + 1..].trim_end_matches('}');
+                let mut labels = PrometheusLabels::new();
+                for part in labels_body.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let Some((key, raw_value)) = part.split_once('=') else {
+                        continue;
+                    };
+                    let value = raw_value.trim().trim_matches('"').to_string();
+                    labels.push((key.trim().to_string(), value));
+                }
+                samples.push((name.to_string(), labels, value.to_string()));
+            } else {
+                samples.push((name_and_labels.to_string(), Vec::new(), value.to_string()));
+            }
+        }
+        samples
+    }
+
+    fn sample_status_for_metrics() -> ServiceStatus {
+        ServiceStatus {
             version: "0.1.0",
             git_hash: "abc1234",
             uptime_sec: 42,
@@ -955,10 +1027,16 @@ mod tests {
                     below_min_score: 2,
                     hard_failure_evict: 1,
                 },
-                top_failure_reasons: vec![FailureReasonCount {
-                    reason: "timeout",
-                    count: 2,
-                }],
+                top_failure_reasons: vec![
+                    FailureReasonCount {
+                        reason: "timeout",
+                        count: 2,
+                    },
+                    FailureReasonCount {
+                        reason: "other",
+                        count: 1,
+                    },
+                ],
             },
             redis: DependencyStatus::ok(),
             warp: WarpStatus {
@@ -972,8 +1050,12 @@ mod tests {
                 removed_nodes: 2,
                 total_nodes: 8,
             },
-        };
+        }
+    }
 
+    #[test]
+    fn metrics_include_pool_dependency_warp_and_xray_values() {
+        let status = sample_status_for_metrics();
         let metrics = render_prometheus_metrics(&status);
         assert!(metrics.contains("proxy_pool_size{protocol=\"http\"} 2"));
         assert!(metrics.contains("proxy_pool_size{protocol=\"total\"} 6"));
@@ -991,6 +1073,145 @@ mod tests {
         assert!(metrics.contains("proxy_xray_active_nodes 5"));
         assert!(metrics.contains("proxy_xray_failed_nodes 1"));
         assert!(metrics.contains("proxy_pool_tier 3"));
+    }
+
+    #[test]
+    fn metrics_label_allowlist_is_closed() {
+        // Allowed labeled metrics and their label value sets (compile-time fixed).
+        const POOL_PROTOCOLS: &[&str] = &["http", "https", "socks5", "total"];
+        const SCORE_BUCKETS: &[&str] = &["untested", "poor", "fair", "good", "excellent"];
+        const RETENTION_DECISIONS: &[&str] = &["below_min_score", "hard_failure_evict"];
+        const UNLABELED_METRICS: &[&str] = &[
+            "proxy_pool_tier",
+            "proxy_quality_recent_samples_total",
+            "proxy_quality_recent_success_rate",
+            "proxy_quality_recent_failures_total",
+            "proxy_quality_stale_proxies_total",
+            "proxy_quality_stale_after_seconds",
+            "proxy_redis_ready",
+            "proxy_warp_instances_configured",
+            "proxy_warp_instances_healthy",
+            "proxy_xray_active_nodes",
+            "proxy_xray_failed_nodes",
+            "proxy_uptime_seconds",
+        ];
+
+        let labeled: &[(&str, &str, &[&str])] = &[
+            ("proxy_pool_size", "protocol", POOL_PROTOCOLS),
+            ("proxy_quality_score_bucket", "bucket", SCORE_BUCKETS),
+            (
+                "proxy_quality_retention_candidates",
+                "decision",
+                RETENTION_DECISIONS,
+            ),
+            (
+                "proxy_quality_failure_reasons_total",
+                "reason",
+                FAILURE_REASONS,
+            ),
+        ];
+
+        let metrics = render_prometheus_metrics(&sample_status_for_metrics());
+        let samples = parse_prometheus_samples(&metrics);
+        assert!(
+            !samples.is_empty(),
+            "expected at least one prometheus sample line"
+        );
+
+        for (name, labels, _value) in &samples {
+            if labels.is_empty() {
+                assert!(
+                    UNLABELED_METRICS.contains(&name.as_str()),
+                    "unexpected unlabeled metric: {name}"
+                );
+                continue;
+            }
+            let Some((_, key, allowed)) = labeled
+                .iter()
+                .find(|(metric, _, _)| *metric == name.as_str())
+            else {
+                panic!("unexpected labeled metric: {name}");
+            };
+            assert_eq!(labels.len(), 1, "{name} must have exactly one label");
+            assert_eq!(labels[0].0, *key, "{name} label key");
+            assert!(
+                allowed.contains(&labels[0].1.as_str()),
+                "disallowed {key} label on {name}: {}",
+                labels[0].1
+            );
+        }
+    }
+
+    #[test]
+    fn metrics_failure_reason_render_has_no_high_cardinality_substrings() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 7, 0, 0, 0).unwrap();
+
+        let mut request_failed_proxy = Proxy::new("1.1.1.1", 8080, Protocol::Http);
+        request_failed_proxy.last_check = Some(now);
+        // Distinct timestamps: quality_history dedupes identical consecutive samples.
+        // Three identical raw failures → count 3 after normalize.
+        for i in 0..3 {
+            request_failed_proxy.quality_history.record_failure(
+                now + chrono::Duration::seconds(i),
+                "request failed for http://evil.example/path via 1.2.3.4:8080",
+            );
+        }
+
+        let mut other_proxy = Proxy::new("2.2.2.2", 8080, Protocol::Http);
+        other_proxy.last_check = Some(now);
+        other_proxy
+            .quality_history
+            .record_failure(now, "opaque upstream said 1.2.3.4:8080 failed");
+        other_proxy.quality_history.record_failure(
+            now + chrono::Duration::seconds(1),
+            "upstream returned garbage for https://evil.example/x",
+        );
+
+        let quality = build_quality_status(
+            &[request_failed_proxy, other_proxy],
+            explain_for_test,
+            now,
+        );
+        let mut status = sample_status_for_metrics();
+        status.quality = quality;
+
+        let metrics = render_prometheus_metrics(&status);
+
+        assert!(
+            !metrics.contains("http://evil.example"),
+            "metrics leaked raw URL substring"
+        );
+        assert!(
+            !metrics.contains("https://evil.example"),
+            "metrics leaked raw HTTPS URL substring"
+        );
+        assert!(
+            !metrics.contains("1.2.3.4:8080"),
+            "metrics leaked raw host:port substring"
+        );
+
+        assert!(
+            metrics.contains("proxy_quality_failure_reasons_total{reason=\"request_failed\"} 3")
+        );
+        assert!(metrics.contains("proxy_quality_failure_reasons_total{reason=\"other\"} 2"));
+
+        for (name, labels, _value) in parse_prometheus_samples(&metrics) {
+            if name != "proxy_quality_failure_reasons_total" {
+                continue;
+            }
+            assert_eq!(labels.len(), 1);
+            assert_eq!(labels[0].0, "reason");
+            assert!(
+                FAILURE_REASONS.contains(&labels[0].1.as_str()),
+                "reason label not in closed set: {}",
+                labels[0].1
+            );
+            assert!(
+                !labels[0].1.contains("http://") && !labels[0].1.contains("https://"),
+                "reason label looks like a URL: {}",
+                labels[0].1
+            );
+        }
     }
 
     #[test]

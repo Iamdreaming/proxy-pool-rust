@@ -106,7 +106,7 @@ docker compose logs -f proxy-pool
 | GET | `/api/proxy/best` | 最佳代理 |
 | POST | `/api/proxies/refresh` | 触发刷新（返回抓取/验证/存储计数） |
 | DELETE | `/api/proxy/{key}` | 删除代理（key 格式：protocol:host:port） |
-| GET | `/api/metrics` | Prometheus 指标，包含代理池规模、只读质量摘要、依赖和路由指标 |
+| GET | `/api/metrics` | Prometheus 指标（低基数 label），包含代理池规模、只读质量摘要、依赖和路由指标 |
 | GET | `/api/xray/status` | xray 节点生命周期、活跃/失败计数和最近状态 |
 
 ## MCP Server

@@ -637,3 +637,126 @@ let metrics = render_prometheus_metrics(&status);
 
 The shared core status contract owns aggregate quality semantics; adapters only
 serialize or render that contract.
+
+## Scenario: Prometheus Low-Cardinality Contract
+
+### 1. Scope / Trigger
+
+- Trigger: `GET /api/metrics` exposition used by Prometheus scrapers and no-SSH
+  operators.
+- Owner: `proxy-core` rendering helpers. Adapters only concatenate the two
+  render outputs; they must not invent labels.
+- Goal: keep every label value on a compile-time fixed set or a normalized
+  bounded set so series cardinality cannot grow with hosts, proxies, or raw
+  errors.
+
+### 2. Render Entry Points
+
+| Source | Function | Assembler |
+|--------|----------|-----------|
+| Pool / quality / dependency | `proxy_core::status::render_prometheus_metrics` | `proxy-api` `routes.rs` `metrics` handler |
+| Gateway route attempts | `GatewayRouteMetrics::render_prometheus` via `UpstreamSelector::render_gateway_metrics` | Same handler, appended after the status block |
+
+`GET /api/metrics` currently concatenates **only** these two segments. There is
+no third render source.
+
+### 3. Full Metric Inventory
+
+#### Unlabeled scalar gauges
+
+| Metric | Meaning |
+|--------|---------|
+| `proxy_pool_tier` | 0–3 overseas exit reliability tier |
+| `proxy_quality_recent_samples_total` | Recent validation samples retained |
+| `proxy_quality_recent_success_rate` | Recent success rate (`0.0` when no samples) |
+| `proxy_quality_recent_failures_total` | Recent failures retained |
+| `proxy_quality_stale_proxies_total` | Proxies past the stale threshold |
+| `proxy_quality_stale_after_seconds` | Stale threshold used for classification |
+| `proxy_redis_ready` | Redis readiness `0`/`1` |
+| `proxy_warp_instances_configured` | Configured WARP instances |
+| `proxy_warp_instances_healthy` | Healthy WARP instances |
+| `proxy_xray_active_nodes` | Active xray nodes |
+| `proxy_xray_failed_nodes` | Failed xray nodes |
+| `proxy_uptime_seconds` | Process uptime |
+
+#### Finite / bounded labels
+
+| Metric | Label | Allowed values |
+|--------|-------|----------------|
+| `proxy_pool_size` | `protocol` | `http`, `https`, `socks5`, `total` |
+| `proxy_quality_score_bucket` | `bucket` | `untested`, `poor`, `fair`, `good`, `excellent` |
+| `proxy_quality_retention_candidates` | `decision` | `below_min_score`, `hard_failure_evict` |
+| `proxy_quality_failure_reasons_total` | `reason` | Normalized set below; top-N truncated to `MAX_FAILURE_REASON_METRICS = 5` |
+| `proxy_gateway_route_attempts_total` | `protocol` | `http_connect`, `socks5`, `other` |
+| same | `exit` | `direct`, `free_pool`, `warp`, `xray`, `no_proxy` |
+| same | `status` | `success`, `failure`, `unavailable` |
+
+Gateway counters always expand the full Cartesian product
+`3 × 5 × 3 = 45` series (`METRIC_CELL_COUNT`), including zero-valued cells.
+Series count does **not** grow with request host or proxy address.
+
+#### Failure reason normalize set
+
+`normalize_failure_reason` maps free-form error text to one of:
+
+`unknown` | `timeout` | `bad_status` | `body_read_failed` | `invalid_proxy_url` |
+`client_build_failed` | `request_failed` | `circuit_open` | `validation_failed` | `other`
+
+### 4. Forbidden High-Cardinality Fields
+
+Never use any of the following as a Prometheus **label value** (or as a
+pseudo-label glued into a metric name):
+
+- Proxy address / `host:port` / dedup key
+- Full URL, subscription body, container dynamic ID
+- Raw error strings or un-normalized free-form text
+- Request target host (gateway must not label by destination domain)
+- `git_hash`, image digest, or any unbounded identifier
+
+`ServiceStatus.release` / `git_hash` remain available on status/MCP surfaces but
+are **not** rendered as Prometheus metrics.
+
+### 5. Not Present Today (Future Constraint)
+
+| Area | Current state | Future rule |
+|------|---------------|-------------|
+| Fetcher | No `proxy_fetcher_*` metrics | If added, labels must obey this contract; never use fetcher free-form error text as a label |
+| Release | No `proxy_release_*` metrics | If added, never use `git_hash` or image digest as a label |
+
+### 6. Tests Required
+
+- `metrics_label_allowlist_is_closed` — every `(metric, key, value)` from
+  `render_prometheus_metrics` is in the allowlist; unlabeled names are locked.
+- `metrics_failure_reason_render_has_no_high_cardinality_substrings` — raw URL /
+  `host:port` errors normalize first; rendered label values never contain those
+  substrings.
+- `failure_reason_normalization_is_bounded` — covers all normalize branches.
+- `gateway_metrics_emit_exactly_45_series` — fixed series count.
+- `gateway_metrics_label_allowlist_is_closed` — protocol/exit/status values only.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// High-cardinality: destination host and raw error as labels.
+writeln!(
+    out,
+    "proxy_route{{host=\"{host}\",error=\"{raw_error}\"}} 1"
+).ok();
+```
+
+#### Correct
+
+```rust
+// Bounded labels only; free-form text is normalized before rendering.
+let reason = normalize_failure_reason(Some(raw_error));
+writeln!(
+    out,
+    "proxy_quality_failure_reasons_total{{reason=\"{reason}\"}} {count}"
+).ok();
+// Gateway expands fixed protocol × exit × status cells (45 series).
+```
+
+Adapters must call the shared render helpers and never recompute label sets
+locally.

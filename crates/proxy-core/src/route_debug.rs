@@ -37,11 +37,19 @@ pub enum Upstream {
     /// Route through a pool proxy.
     Proxy(Proxy),
     /// Route through a WARP instance.
-    Warp { id: u32, socks5_host: String, socks5_port: u16 },
+    Warp {
+        id: u32,
+        socks5_host: String,
+        socks5_port: u16,
+    },
     /// Route through an xray-node local SOCKS5 port.
     Xray { local_socks5_port: u16 },
     /// Chain through a pool proxy and then WARP.
-    WarpChain { proxy: Proxy, socks5_host: String, socks5_port: u16 },
+    WarpChain {
+        proxy: Proxy,
+        socks5_host: String,
+        socks5_port: u16,
+    },
     /// No upstream is available.
     NoProxy,
 }
@@ -394,7 +402,14 @@ impl UpstreamSelector {
     /// Feed concrete gateway attempt outcomes back into route health.
     pub async fn record_upstream_attempt(&self, upstream: &Upstream, status: GatewayAttemptStatus) {
         match (upstream, status) {
-            (Upstream::Warp { id, socks5_host, socks5_port }, GatewayAttemptStatus::Failure) => {
+            (
+                Upstream::Warp {
+                    id,
+                    socks5_host,
+                    socks5_port,
+                },
+                GatewayAttemptStatus::Failure,
+            ) => {
                 if let Some(balancer) = &self.balancer {
                     balancer.mark_failed(*id).await;
                     tracing::warn!(
@@ -757,8 +772,7 @@ impl UpstreamSelector {
                 let mut active_xray: Vec<&Proxy> = proxies
                     .iter()
                     .filter(|p| {
-                        xray_is_route_eligible(p)
-                            && !xray_cooldown_active(p, &failed_until, now)
+                        xray_is_route_eligible(p) && !xray_cooldown_active(p, &failed_until, now)
                     })
                     .collect();
                 if active_xray.is_empty() {
@@ -834,7 +848,10 @@ pub fn exits_for_tier(tier: QualityTier) -> Vec<RouteExit> {
 /// Resolve exits + tier diagnostics for a configured route group.
 fn resolve_group_policy(router: &Router, group: &str) -> (Vec<RouteExit>, Option<QualityTier>) {
     if let Some(names) = router.exit_override_for(group) {
-        let exits: Vec<RouteExit> = names.iter().filter_map(|n| RouteExit::from_name(n)).collect();
+        let exits: Vec<RouteExit> = names
+            .iter()
+            .filter_map(|n| RouteExit::from_name(n))
+            .collect();
         return (exits, router.tier_for(group));
     }
 
@@ -1051,7 +1068,10 @@ mod tests {
         groups.insert("warp".into(), vec!["cloudflare.com".into()]);
         groups.insert("xray".into(), vec!["xray.test".into()]);
         groups.insert("custom".into(), vec!["custom.example".into()]);
-        groups.insert("openai".into(), vec!["openai.com".into(), "chatgpt.com".into()]);
+        groups.insert(
+            "openai".into(),
+            vec!["openai.com".into(), "chatgpt.com".into()],
+        );
         // openai gets default custom tier=any unless we load extended YAML.
         Router::new(groups).unwrap()
     }
@@ -1264,11 +1284,7 @@ groups:
     fn tiered_route_plans_follow_quality_tables() {
         let router = premium_router();
 
-        let any_plan = route_match_plan(
-            "github.com",
-            router.match_route("github.com"),
-            &router,
-        );
+        let any_plan = route_match_plan("github.com", router.match_route("github.com"), &router);
         assert_eq!(any_plan.tier, Some(QualityTier::Any));
         assert_eq!(any_plan.exits, exits_for_tier(QualityTier::Any));
         assert!(any_plan.exits.contains(&RouteExit::FreePool));
@@ -1283,11 +1299,8 @@ groups:
         assert!(!premium_plan.exits.contains(&RouteExit::FreePool));
         assert_eq!(premium_plan.exits.last().copied(), Some(RouteExit::NoProxy));
 
-        let chatgpt_plan = route_match_plan(
-            "chatgpt.com",
-            router.match_route("chatgpt.com"),
-            &router,
-        );
+        let chatgpt_plan =
+            route_match_plan("chatgpt.com", router.match_route("chatgpt.com"), &router);
         assert_eq!(chatgpt_plan.tier, Some(QualityTier::Premium));
         assert!(!chatgpt_plan.exits.contains(&RouteExit::FreePool));
 
@@ -1393,6 +1406,45 @@ groups:
     }
 
     #[test]
+    fn gateway_metrics_fixed_series_are_closed_and_complete() {
+        let rendered = GatewayRouteMetrics::new().render_prometheus();
+
+        let mut expected = 0usize;
+        for protocol in GatewayRouteProtocol::ALL {
+            for exit in RouteExit::ALL {
+                for status in GatewayAttemptStatus::ALL {
+                    let needle = format!(
+                        "proxy_gateway_route_attempts_total{{protocol=\"{}\",exit=\"{}\",status=\"{}\"}}",
+                        protocol.label(),
+                        exit.label(),
+                        status.label()
+                    );
+                    assert!(
+                        rendered.contains(&needle),
+                        "missing fixed gateway series: {needle}"
+                    );
+                    expected += 1;
+                }
+            }
+        }
+
+        let series_count = rendered
+            .lines()
+            .filter(|line| line.starts_with("proxy_gateway_route_attempts_total{"))
+            .count();
+        assert_eq!(series_count, expected);
+        assert_eq!(
+            series_count,
+            GatewayRouteProtocol::ALL.len()
+                * RouteExit::ALL.len()
+                * GatewayAttemptStatus::ALL.len()
+        );
+        // Freeze the Prometheus contract cardinality for scrapers.
+        assert_eq!(series_count, 45);
+        assert_eq!(METRIC_CELL_COUNT, 45);
+    }
+
+    #[test]
     fn pool_proxy_cooldown_active_only_before_deadline() {
         let now = Instant::now();
         let mut cooldowns = HashMap::new();
@@ -1445,7 +1497,8 @@ groups:
             local_socks5_port: 20000,
         });
         proxy.success_count = 3;
-        proxy.last_check = Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 1));
+        proxy.last_check =
+            Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 1));
 
         assert!(!xray_has_validation_evidence(&proxy));
         assert!(!xray_is_route_eligible(&proxy));
@@ -1459,7 +1512,8 @@ groups:
         });
         proxy.success_count = 2;
         // last_check is stale, but quality_history has a fresh success.
-        proxy.last_check = Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 60));
+        proxy.last_check =
+            Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 60));
         proxy
             .quality_history
             .record_success(Utc::now() - chrono::Duration::seconds(30), Some(120.0));
@@ -1507,7 +1561,8 @@ groups:
             local_socks5_port: 20002,
         });
         stale.success_count = 1;
-        stale.last_check = Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 10));
+        stale.last_check =
+            Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 10));
         stale.latency_ms = Some(10.0);
 
         let candidates: Vec<&Proxy> = [&slow, &fast, &stale]
@@ -1526,7 +1581,8 @@ groups:
             local_socks5_port: 20000,
         });
         stale.success_count = 2;
-        stale.last_check = Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 5));
+        stale.last_check =
+            Some(Utc::now() - chrono::Duration::seconds(XRAY_ROUTE_FRESH_SUCCESS_SECS + 5));
 
         let mut open = Proxy::new("127.0.0.1", 20001, Protocol::Socks5);
         open.encrypted_state = Some(EncryptedProxyState::Active {

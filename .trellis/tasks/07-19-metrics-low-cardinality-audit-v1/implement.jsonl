@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/proxy-core/backend/quality-guidelines.md", "reason": "Primary home for Prometheus low-cardinality contract expansion (metric inventory, allowlists, forbidden labels)."}
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "Index blurb may mention metrics cardinality contract after quality-guidelines update."}
+{"file": ".trellis/tasks/07-19-metrics-low-cardinality-audit-v1/prd.md", "reason": "Requirements, allowlist tables, AC, decisions D1-D4."}
+{"file": ".trellis/tasks/07-19-metrics-low-cardinality-audit-v1/design.md", "reason": "Test strategy, exposition parsing approach, boundaries."}
+{"file": ".trellis/tasks/07-19-metrics-low-cardinality-audit-v1/implement.md", "reason": "Ordered checklist and validation commands."}

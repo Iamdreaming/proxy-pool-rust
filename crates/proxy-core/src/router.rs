@@ -331,10 +331,7 @@ fn parse_group_value(name: &str, value: &serde_yaml::Value) -> Result<ParsedGrou
     })
 }
 
-fn yaml_map_get<'a>(
-    map: &'a serde_yaml::Mapping,
-    key: &str,
-) -> Option<&'a serde_yaml::Value> {
+fn yaml_map_get<'a>(map: &'a serde_yaml::Mapping, key: &str) -> Option<&'a serde_yaml::Value> {
     map.get(serde_yaml::Value::String(key.into()))
 }
 
@@ -488,7 +485,12 @@ groups:
         let router = Router::from_yaml_str(yaml).unwrap();
         assert_eq!(
             router.exit_override_for("custom").unwrap(),
-            &["xray".to_string(), "warp".into(), "free_pool".into(), "no_proxy".into()][..]
+            &[
+                "xray".to_string(),
+                "warp".into(),
+                "free_pool".into(),
+                "no_proxy".into()
+            ][..]
         );
         assert_eq!(router.tier_for("custom"), Some(QualityTier::Standard));
     }
@@ -519,7 +521,10 @@ groups:
     exits: [xray, free_pool, no_proxy]
 "#;
         let err = Router::from_yaml_str(yaml).unwrap_err();
-        assert!(err.contains("premium") && err.contains("free_pool"), "{err}");
+        assert!(
+            err.contains("premium") && err.contains("free_pool"),
+            "{err}"
+        );
     }
 
     #[test]
