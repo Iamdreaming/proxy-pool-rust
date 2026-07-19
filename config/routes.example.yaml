@@ -1,13 +1,13 @@
 # Route rules: map request hosts to exit groups, with optional quality tiers.
 #
+# Primary profile: overseas-stable (Availability-First)
+# ---------------------------------------------------------------------------
 # Matching: longest domain suffix wins. A bare domain like "github.com"
 # matches that host and any subdomain (api.github.com). A "*.cn" entry
 # matches any host ending in ".cn". The special entry "default" marks the
 # fallback group for unmatched hosts.
 #
-# ---------------------------------------------------------------------------
 # Quality tiers (exit order)
-# ---------------------------------------------------------------------------
 #   any       FreePool → Warp → Xray → NoProxy   (may borrow higher exits)
 #   standard  Xray → Warp → FreePool → NoProxy   (free pool allowed late)
 #   premium   Xray → Warp → NoProxy              (NEVER free_pool)
@@ -21,50 +21,62 @@
 #   warp / xray → premium
 #   other names → any  (safe default; avoid surprise NoProxy storms)
 #
-# The group that holds `default` decides unmatched hosts. Example below puts
-# default under `direct` (domestic-friendly). Move `default` into a free_pool
-# or any-tier group if unmatched overseas hosts should not go Direct.
+# Default match + GeoIP (when GeoIP is configured and default group is NOT
+# direct-only):
+#   domestic (e.g. CN) → Direct
+#   overseas / UNKNOWN → default group's tier exits (below: premium)
+# Without GeoIP, unmatched hosts use the default group's policy only.
+#
+# L1 dependency: premium ends in NoProxy. Deploy healthy WARP and/or active
+# xray nodes, or gateway may return 502 instead of leaking via Direct.
+# See docs/ROADMAP.md Availability-First and scenario-quality-tiers spec.
 #
 # ---------------------------------------------------------------------------
-# Legacy form (still valid): groups.<name> is a domain list
+# Alternate profile (commented): domestic-friendly
 # ---------------------------------------------------------------------------
 # groups:
+#   direct:
+#     domains:
+#       - "*.cn"
+#       - default        # unmatched also Direct; no GeoIP rewrite of direct-only
 #   free_pool:
-#     - "github.com"
-#
-# ---------------------------------------------------------------------------
-# Extended form: domains + optional tier + optional exits override
-# ---------------------------------------------------------------------------
-# groups:
-#   openai:
+#     tier: any
+#     domains:
+#       - "github.com"
+#   overseas:
 #     tier: premium
 #     domains:
 #       - "openai.com"
-#     # exits: [xray, warp, no_proxy]   # optional; premium cannot include free_pool
 
 groups:
   direct:
-    # Direct-only (no tier). Unmatched hosts fall here via `default`.
+    # Direct-only (no tier). Domestic TLDs only — do NOT put default here
+    # for overseas-stable.
     domains:
-      - "*.cn"         # All .cn domains → direct (no proxy)
-      - default        # Fallback for unmatched domains
+      - "*.cn"
 
-  warp:
-    # Default tier for group name `warp` is premium (no free_pool).
-    # Explicit tier shown for documentation.
+  overseas:
+    # Unmatched hosts land here (default). premium: Xray → Warp → NoProxy.
+    # With GeoIP: domestic unmatched → Direct; overseas unmatched → this table.
     tier: premium
     domains:
-      - "cloudflare.com"
+      - default
 
   free_pool:
+    # Explicit dirty-ok hosts only. Never put `default` here for overseas-stable.
     tier: any
     domains:
       - "github.com"
       - "google.com"
       - "*.googleapis.com"
 
+  warp:
+    # Explicit premium hosts (optional). Default tier for name `warp` is premium.
+    tier: premium
+    domains:
+      - "cloudflare.com"
+
   # Example premium scenario: high-value targets never use free_pool dirty IPs.
-  # Uncomment or adapt for production.
   # openai:
   #   tier: premium
   #   domains:

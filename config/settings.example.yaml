@@ -87,11 +87,21 @@ geoip:
   cache_ttl_sec: 86400
   domestic_countries: ["CN"]
 
+# routes_path: "config/routes.yaml"
+# Copy from config/routes.example.yaml (primary profile: overseas-stable).
+# Unmatched hosts use tier premium (Xray → Warp → NoProxy). With GeoIP loaded,
+# domestic unmatched hosts still go Direct; overseas unmatched use premium.
+# Requires healthy WARP and/or active xray nodes; otherwise gateway may 502
+# instead of leaking via Direct. Omit routes_path to use GeoIP/hardcoded/
+# any-fallback only (no YAML router).
+
 free_pool:
   max_retry: 3
 
 xray:
   enabled: false
+  # For overseas-stable routes (default → premium), enable xray and/or ensure
+  # WARP instances are healthy so unmatched overseas traffic has a reliable exit.
   binary_path: "xray"
   api_port: 10085
   port_range_start: 20000

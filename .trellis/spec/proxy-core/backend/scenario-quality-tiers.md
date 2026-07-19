@@ -92,7 +92,20 @@ groups:
 
 1. Non-default route match → group tier / exits override (domain helpers skipped)
 2. Default match → `direct_reachable` / `business_domain` helpers, then default-group policy
-3. No router → domain helpers → geoip (`overseas` uses premium table; domestic Direct)
+3. **Default + GeoIP refine** (when GeoIP configured **and** default group is **not** direct-only):
+   - domestic → Direct (`matched_reason=geoip_domestic`)
+   - overseas / UNKNOWN → keep default-group exits/tier (`geoip_overseas` / `geoip_unknown_overseas`)
+   - direct-only default (domestic-friendly) is **not** rewritten by GeoIP
+4. No router → domain helpers → geoip (`overseas` uses premium table; domestic Direct)
+
+### Example profile: overseas-stable
+
+`config/routes.example.yaml` primary profile:
+
+- `default` ∈ `overseas` group with `tier: premium` (not under `direct`)
+- `*.cn` → `direct` (Direct-only)
+- free_pool holds explicit dirty-ok hosts only; never owns `default` under overseas-stable
+- domestic-friendly alternate (`default` under `direct`) remains as a **commented** block only
 
 ### Asymmetric fail policy (D2/D3)
 
@@ -141,7 +154,10 @@ warp:
 | reject unknown tier / premium+free_pool / unknown exit | error strings |
 | any vs premium plan order | different first exit |
 | override standard exits | plan uses override list |
-| `routes.example.yaml` | parses; free_pool=any, warp=premium |
+| `routes.example.yaml` | parses; free_pool=any; **default group premium** (overseas-stable); `*.cn`→direct |
+| default+GeoIP domestic (non direct-only default) | Direct; reason `geoip_domestic` |
+| default+GeoIP overseas | keeps default-group exits (premium in example) |
+| domestic-friendly default∈direct | Direct-only; not rewritten by GeoIP gate |
 | `RouteDecision.tier` | present on tiered plans |
 
 ## 7. Wrong vs Correct
@@ -187,6 +203,7 @@ QualityTier::Premium => vec![RouteExit::Xray, RouteExit::Warp, RouteExit::NoProx
 
 ## Common Mistakes
 
-1. **Assuming unmatched hosts go overseas**: whichever group holds `default` wins; example puts `default` under `direct`.
+1. **Assuming unmatched hosts go Direct**: overseas-stable example puts `default` under **premium** (`overseas`); only domestic-friendly puts `default` under `direct`.
 2. **Expecting warp group to prefer WARP first**: default is premium order (Xray first); use `exits` override.
 3. **Changing xray admission for tiers**: out of scope — only gateway exit order changes.
+4. **Expecting default match to always ignore GeoIP**: when default group is not direct-only and GeoIP is loaded, domestic unmatched hosts go Direct; overseas keep the group tier.

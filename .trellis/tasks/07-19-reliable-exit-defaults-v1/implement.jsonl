@@ -1,0 +1,6 @@
+{"file": "config/routes.example.yaml", "reason": "Primary default routes profile"}
+{"file": "config/settings.example.yaml", "reason": "routes_path operator hint"}
+{"file": "README.md", "reason": "Routing decision section"}
+{"file": ".trellis/spec/proxy-core/backend/scenario-quality-tiers.md", "reason": "Tier exit tables"}
+{"file": "docs/ROADMAP.md", "reason": "P0-A queue and Now handover"}
+{"file": ".trellis/tasks/07-19-reliable-exit-defaults-v1/design.md", "reason": "Target YAML shape and tests"}

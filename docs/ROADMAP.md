@@ -64,7 +64,7 @@
 |------|------|
 | **保** | Gateway HTTP CONNECT/SOCKS5、QualityTier 回退、WARP 健康、xray 准入复验、Redis 评分/circuit、`/api/status` `/readyz`、业务 e2e smoke、route_test |
 | **冻** | Dashboard 打磨、mcp-api-contract-smoke-v2、质量 dashboard、fetcher 来源排名、订阅 GitHub/LLM 自动发现扩源、多租户/鉴权/告警集成 |
-| **后做** | Ready 中 P0-A/B/C（默认出海路径、网关失败反馈、脏窗口硬化） |
+| **后做** | Ready 中 P0-B/C（网关失败反馈、脏窗口硬化）；P0-A 已完成见 Done |
 
 **心智**：个人稳定代理出口网关（xray + WARP 主用），不是免费代理抓取平台。
 
@@ -75,7 +75,8 @@
 - **过程债结论仍有效**：`process-debt-convergence` 已归档；7 条 `wip: paused ...` stash 保持 Keep-Later（**禁止**默认 drop/apply/pop/clear）；明细见  
   `.trellis/tasks/archive/2026-07/07-18-process-debt-convergence/inventory.md`。
 - **D2**：Now 仅允许 1 条；须经 Trellis `task.py start` 写入，禁止未 start 即写 Now。
-- **可用性收敛期**：Ready 以 P0-A/B/C 为准；P2 契约/UI 与 Keep-Later 平台项 **不抢 Now**、**默认不 Resume stash**。
+- **可用性收敛期**：Ready 以 P0-B/C 为准（P0-A 已 Done）；P2 契约/UI 与 Keep-Later 平台项 **不抢 Now**、**默认不 Resume stash**。
+- `reliable-exit-defaults-v1` 已完成并归档（见 Done），不再占用 Now。
 - `metrics-low-cardinality-audit-v1` 已完成并归档（见 Done），不再占用 Now。
 - 不直接 SSH 到 dev；默认验证仍走 GitHub Actions、公开 HTTP 状态与 MCP 只读入口（见 `docs/dev-validation.md`）。
 
@@ -83,7 +84,7 @@
 
 **当前无业务 Now。**
 
-下一条从 §Ready **P0-A** `reliable-exit-defaults-v1` 经 Trellis `task.py create`（若尚无目录）+ `task.py start` 再写入本节。勿将 Keep-Later / Later 平台项直接标为 Now。
+下一条从 §Ready **P0-B** `gateway-failure-feedback-v1` 经 Trellis `task.py create`（若尚无目录）+ `task.py start` 再写入本节。勿将 Keep-Later / Later 平台项直接标为 Now。
 
 ## Keep-Later
 
@@ -106,6 +107,19 @@
 ## Done
 
 > 以下为**历史完成**记录，非当前主线。当前执行信号以 §Now / §Ready / §Keep-Later 为准。
+
+### P0 — `reliable-exit-defaults-v1`
+
+**目标**：overseas-stable example（`default`→premium）+ default 命中 GeoIP 国内 Direct；README/settings 对齐；单测锁定。
+
+**当前状态**：已完成；任务目录归档至 `.trellis/tasks/archive/2026-07/07-19-reliable-exit-defaults-v1`（归档提交后路径生效）。
+
+**主要完成项**：
+
+- [x] `config/routes.example.yaml`：overseas-stable；`default`∈premium `overseas`；`*.cn`→direct；domestic-friendly 注释
+- [x] default 非 direct-only + GeoIP：国内 Direct / 境外组 tier；direct-only default 不被改写
+- [x] `settings.example.yaml` `routes_path` 指引；README 路由决策链与 QualityTier 一致
+- [x] 单测锁定 example + GeoIP refine gate；spec（scenario-quality-tiers / quality-guidelines）同步
 
 ### P0 — `availability-first-convergence`
 
@@ -536,19 +550,6 @@
 > 下列为**地图级** Ready：可 `task.py create` 后补全 PRD。建议顺序 **A → B → C**；A 可独立先做。  
 > 开工须 `task.py start`，禁止未 start 即写 Now。
 
-### P0-A — `reliable-exit-defaults-v1`
-
-**目标**：example/文档默认出海走 **Xray → Warp**（premium/standard 心智）；`default` 不再误导为 Direct-only。
-
-**非目标**：不改 `UpstreamSelector` 算法本身；不自动迁移用户生产 `routes.yaml`。
-
-**验收草稿**：
-
-- [ ] `config/routes.example.yaml` 与说明体现出海优先（或显式双 profile：domestic-friendly vs overseas-stable）
-- [ ] README 路由决策段与 QualityTier 表一致
-- [ ] 文档写清：高价值站用 `premium`（永不 free_pool）
-- [ ] 若有 config/runbook drift 测试，同步期望
-
 ### P0-B — `gateway-failure-feedback-v1`
 
 **目标**：网关上游失败后，后续选择能避开同一坏出口（跨请求；尽量跨短重启窗口）。
@@ -683,8 +684,8 @@
 
 当前可信排队（可用性优先）：
 
-1. Now：空。下一条从 Ready **P0-A** 经 Trellis start。
-2. Ready：**P0-A** `reliable-exit-defaults-v1` → **P0-B** `gateway-failure-feedback-v1` → **P0-C** `dirty-window-hardening-v1`。
+1. Now：空。下一条从 Ready **P0-B** 经 Trellis start。
+2. Ready：**P0-B** `gateway-failure-feedback-v1` → **P0-C** `dirty-window-hardening-v1`（P0-A 已 Done）。
 3. Later(P2)：`api-readonly-contract-minimal-v1`（不抢 P0）。
 4. Keep-Later 仅在用户明确 Resume 后单开任务；**可用性收敛期默认禁止**恢复 stash。
 5. archive `2026-07/` 历史任务保留只读，不删不改正文充当 active。

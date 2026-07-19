@@ -78,13 +78,21 @@ docker compose logs -f proxy-pool
 
 ## 路由决策链
 
-网关收到请求后按以下顺序选择出口：
+网关按 **QualityTier** 与路由规则选择出口（见 `config/routes.example.yaml`）：
 
 ```
-1. 路由规则匹配 → direct / free_pool / warp / xray
-2. GeoIP 自动分流 → 境内直连，境外走代理
-3. 回退链 → 池代理 → WARP → xray → 502
+1. 有 routes.yaml：最长后缀匹配 → 组 tier / exits
+   - premium:  Xray → Warp → NoProxy          （永不 free_pool）
+   - standard: Xray → Warp → FreePool → NoProxy
+   - any:      FreePool → Warp → Xray → NoProxy
+   - direct 组（无 tier）: Direct only
+2. default 命中且 default 组非 direct-only、GeoIP 可用：
+   - 国内 → Direct；境外 / UNKNOWN → 该组 tier 出口（example 为 premium）
+3. 无 routes_path：硬编码业务域 / GeoIP / any 回退
 ```
+
+示例默认 **overseas-stable**：`default` → `premium`（可靠出口）；`*.cn` → Direct。  
+高价值站应放在 `premium` 组。free pool 仅适合显式脏流量域，不进 premium。
 
 ## API 端点
 

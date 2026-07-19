@@ -395,13 +395,15 @@ proxy_gateway_route_attempts_total{protocol="<http_connect|socks5|other>",exit="
 | Missing MCP `protocol` | Defaults to `http` through MCP protocol resolution |
 | Unknown protocol | Falls back to `http`, matching existing MCP behavior |
 | Router suffix matches | `matched_reason=route_rule`, `matched_rule=<suffix>` |
-| Router default group selected | `matched_reason=route_default_group`, `matched_rule=default` |
+| Router default group selected | `matched_reason=route_default_group`, `matched_rule=default` (no GeoIP, or default group is direct-only) |
 | Router default group selected but host is a built-in direct-reachable domain | `matched_reason=direct_reachable_domain`, candidate order is `direct` |
-| Router default group is direct but host is a built-in business overseas domain | `matched_reason=business_domain_overseas`, candidate order is `warp -> xray -> free_pool -> no_proxy` |
+| Router default group is direct but host is a built-in business overseas domain | `matched_reason=business_domain_overseas`, candidate order is premium-like (`xray -> warp -> no_proxy`) |
+| Router default (non direct-only) + GeoIP domestic | `matched_reason=geoip_domestic`, candidate order is `direct`; `geoip` present |
+| Router default (non direct-only) + GeoIP overseas / UNKNOWN | `matched_reason=geoip_overseas` or `geoip_unknown_overseas`; exits/tier from default group (example: premium) |
 | Explicit non-default route rule matches a built-in business overseas domain | The explicit rule wins when its group maps to a known exit |
 | No router but GeoIP available and domestic | Candidate order is `direct` |
-| No router but GeoIP available and overseas | Candidate order is `warp -> xray -> free_pool -> no_proxy` |
-| No router but GeoIP country is `UNKNOWN` | `matched_reason=geoip_unknown_overseas`, candidate order is `warp -> xray -> free_pool -> no_proxy` |
+| No router but GeoIP available and overseas | Candidate order is premium-like (`xray -> warp -> no_proxy`) |
+| No router but GeoIP country is `UNKNOWN` | `matched_reason=geoip_unknown_overseas`, candidate order is premium-like |
 | No router and no GeoIP | Candidate order is `free_pool -> warp -> xray -> no_proxy` |
 | Free pool has several usable proxies | The decision may include repeated `exit=free_pool` candidates with different `detail` values |
 | Gateway upstream connection fails before success response | Record `status=failure`, try later concrete candidates, and only then return HTTP 502 / SOCKS failure |

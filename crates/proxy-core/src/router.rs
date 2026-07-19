@@ -572,15 +572,19 @@ groups:
     #[test]
     fn example_routes_yaml_loads_with_expected_tiers() {
         // Relative to crate CARGO_MANIFEST_DIR → workspace config/.
+        // Primary profile: overseas-stable (default → premium overseas group).
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../config/routes.example.yaml");
         let router = Router::from_yaml(&path).expect("routes.example.yaml should parse");
         assert_eq!(router.tier_for("direct"), None);
         assert!(router.is_direct_only("direct"));
+        assert_eq!(router.tier_for("overseas"), Some(QualityTier::Premium));
         assert_eq!(router.tier_for("free_pool"), Some(QualityTier::Any));
         assert_eq!(router.tier_for("warp"), Some(QualityTier::Premium));
         assert_eq!(router.match_group("api.github.com"), "free_pool");
         assert_eq!(router.match_group("cloudflare.com"), "warp");
-        assert_eq!(router.match_group("unknown.example"), "direct");
+        assert_eq!(router.match_group("foo.cn"), "direct");
+        assert_eq!(router.match_group("unknown.example"), "overseas");
+        assert_ne!(router.match_group("unknown.example"), "direct");
     }
 }

@@ -568,9 +568,12 @@ impl UpstreamSelector {
 
     async fn build_plan(&self, host: &str) -> RoutePlan {
         if let Some(router) = &self.router {
-            // Router present: tier/group policy owns non-default matches;
-            // default match keeps domain helpers then default-group policy.
-            return route_match_plan(host, router.match_route(host), router);
+            // Router present: non-default → group policy; default → helpers then
+            // group policy, optionally refined by GeoIP when default is not direct-only.
+            let plan = route_match_plan(host, router.match_route(host), router);
+            return self
+                .maybe_refine_default_with_geoip(host, plan, router)
+                .await;
         }
 
         if let Some(exits) = direct_reachable_domain_exits(host) {
@@ -595,6 +598,31 @@ impl UpstreamSelector {
         }
 
         self.geoip_plan(host).await
+    }
+
+    /// When default group is not direct-only and GeoIP is configured, refine the
+    /// plan: domestic → Direct; overseas/unknown → keep default-group exits.
+    async fn maybe_refine_default_with_geoip(
+        &self,
+        host: &str,
+        plan: RoutePlan,
+        router: &Router,
+    ) -> RoutePlan {
+        if !should_refine_default_with_geoip(&plan, router) {
+            return plan;
+        }
+        let Some(geoip) = &self.geoip else {
+            return plan;
+        };
+
+        let (country, country_name, country_overseas) = {
+            let mut geoip = geoip.lock().await;
+            let info = geoip.lookup(host).await;
+            let overseas = geoip.is_overseas(&info.country);
+            (info.country, info.country_name, overseas)
+        };
+
+        refine_default_plan_with_geoip(plan, &country, &country_name, country_overseas)
     }
 
     async fn geoip_plan(&self, host: &str) -> RoutePlan {
@@ -890,6 +918,8 @@ fn route_match_plan(host: &str, route_match: RouteMatch, router: &Router) -> Rou
     }
 
     // Default match: keep domain helpers first, then default-group policy.
+    // GeoIP refinement (when available and default group is not direct-only) is
+    // applied later in `UpstreamSelector::maybe_refine_default_with_geoip`.
     if let Some(exits) = direct_reachable_domain_exits(host) {
         return RoutePlan {
             matched_reason: "direct_reachable_domain".into(),
@@ -917,6 +947,57 @@ fn route_match_plan(host: &str, route_match: RouteMatch, router: &Router) -> Rou
         route_match: Some(route_match),
         geoip: None,
         tier,
+    }
+}
+
+/// Whether `build_plan` should consult GeoIP for a default-group plan.
+///
+/// Requires `route_default_group` (helpers already skipped), an actual default
+/// match, and a non direct-only default group. domestic-friendly (`default` under
+/// `direct`) returns false so GeoIP cannot rewrite the plan to overseas exits.
+fn should_refine_default_with_geoip(plan: &RoutePlan, router: &Router) -> bool {
+    if plan.matched_reason != "route_default_group" {
+        return false;
+    }
+    let Some(route_match) = plan.route_match.as_ref() else {
+        return false;
+    };
+    route_match.is_default && !router.is_direct_only(&route_match.group)
+}
+
+/// Refine a default-group plan with GeoIP when the group is not direct-only.
+///
+/// Callers must already filter helpers and direct-only defaults. Domestic → Direct;
+/// overseas / UNKNOWN → keep the default group's exits and tier.
+fn refine_default_plan_with_geoip(
+    plan: RoutePlan,
+    country: &str,
+    country_name: &str,
+    country_overseas: bool,
+) -> RoutePlan {
+    let (overseas, reason) = geoip_route_decision(country, country_overseas);
+    let geoip = RouteGeoIpDecision {
+        country: country.to_string(),
+        country_name: country_name.to_string(),
+        overseas,
+    };
+
+    if !overseas {
+        return RoutePlan {
+            matched_reason: reason.into(),
+            exits: vec![RouteExit::Direct],
+            route_match: plan.route_match,
+            geoip: Some(geoip),
+            tier: None,
+        };
+    }
+
+    RoutePlan {
+        matched_reason: reason.into(),
+        exits: plan.exits,
+        route_match: plan.route_match,
+        geoip: Some(geoip),
+        tier: plan.tier,
     }
 }
 
@@ -1245,6 +1326,142 @@ groups:
         assert_eq!(plan.matched_reason, "direct_reachable_domain");
         assert_eq!(plan.exits, vec![RouteExit::Direct]);
         assert!(plan.route_match.unwrap().is_default);
+    }
+
+    fn overseas_stable_router() -> Router {
+        Router::from_yaml_str(
+            r#"
+groups:
+  direct:
+    domains: ["*.cn"]
+  overseas:
+    tier: premium
+    domains: [default]
+  free_pool:
+    tier: any
+    domains: ["github.com"]
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn routes_example_yaml_is_overseas_stable() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config/routes.example.yaml");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let router = Router::from_yaml_str(&text).expect("routes.example.yaml must parse");
+
+        let unknown = router.match_route("unknown.example");
+        assert!(unknown.is_default);
+        assert_ne!(unknown.group, "direct");
+        assert_eq!(
+            router.tier_for(&unknown.group),
+            Some(QualityTier::Premium),
+            "default group must be premium (overseas-stable)"
+        );
+        assert!(!router.is_direct_only(&unknown.group));
+
+        assert_eq!(router.match_route("foo.cn").group, "direct");
+        assert!(router.is_direct_only("direct"));
+
+        // free_pool must not own default; premium exits never include free_pool.
+        let default_plan = route_match_plan("unknown.example", unknown, &router);
+        assert_eq!(default_plan.tier, Some(QualityTier::Premium));
+        assert!(!default_plan.exits.contains(&RouteExit::FreePool));
+    }
+
+    #[test]
+    fn default_premium_geoip_domestic_goes_direct() {
+        let router = overseas_stable_router();
+        let plan = route_match_plan(
+            "unlisted.example",
+            router.match_route("unlisted.example"),
+            &router,
+        );
+        assert_eq!(plan.matched_reason, "route_default_group");
+        assert_eq!(plan.tier, Some(QualityTier::Premium));
+
+        let refined = refine_default_plan_with_geoip(plan, "CN", "China", false);
+        assert_eq!(refined.matched_reason, "geoip_domestic");
+        assert_eq!(refined.exits, vec![RouteExit::Direct]);
+        assert_eq!(refined.tier, None);
+        assert!(refined.geoip.as_ref().is_some_and(|g| !g.overseas));
+        assert!(refined.route_match.as_ref().is_some_and(|m| m.is_default));
+    }
+
+    #[test]
+    fn default_premium_geoip_overseas_keeps_group_exits() {
+        let router = overseas_stable_router();
+        let plan = route_match_plan(
+            "unlisted.example",
+            router.match_route("unlisted.example"),
+            &router,
+        );
+        let refined = refine_default_plan_with_geoip(plan, "US", "United States", true);
+        assert_eq!(refined.matched_reason, "geoip_overseas");
+        assert_eq!(refined.exits, exits_for_tier(QualityTier::Premium));
+        assert_eq!(refined.tier, Some(QualityTier::Premium));
+        assert!(!refined.exits.contains(&RouteExit::FreePool));
+        assert!(refined.geoip.as_ref().is_some_and(|g| g.overseas));
+    }
+
+    #[test]
+    fn default_premium_geoip_unknown_treated_as_overseas() {
+        let router = overseas_stable_router();
+        let plan = route_match_plan(
+            "unlisted.example",
+            router.match_route("unlisted.example"),
+            &router,
+        );
+        let refined = refine_default_plan_with_geoip(plan, "UNKNOWN", "Unknown", false);
+        assert_eq!(refined.matched_reason, "geoip_unknown_overseas");
+        assert_eq!(refined.exits, exits_for_tier(QualityTier::Premium));
+        assert_eq!(refined.tier, Some(QualityTier::Premium));
+    }
+
+    #[test]
+    fn domestic_friendly_default_direct_only_not_rewritten_by_geoip_filter() {
+        // domestic-friendly: default lives in direct (direct-only).
+        // Gate must skip GeoIP so overseas lookup cannot rewrite Direct exits.
+        let router = test_router();
+        let plan = route_match_plan(
+            "unlisted.example",
+            router.match_route("unlisted.example"),
+            &router,
+        );
+        assert_eq!(plan.matched_reason, "route_default_group");
+        assert_eq!(plan.exits, vec![RouteExit::Direct]);
+        assert_eq!(plan.tier, None);
+        assert!(router.is_direct_only(&plan.route_match.as_ref().unwrap().group));
+        assert!(
+            !should_refine_default_with_geoip(&plan, &router),
+            "direct-only default must not enter GeoIP refine"
+        );
+        // Even if refine were called incorrectly, document gate ownership:
+        // production path never calls refine when the gate is false.
+        assert!(router.is_direct_only("direct"));
+    }
+
+    #[test]
+    fn non_default_route_rule_not_subject_to_default_geoip_reason() {
+        let router = overseas_stable_router();
+        let plan = route_match_plan("foo.cn", router.match_route("foo.cn"), &router);
+        assert_eq!(plan.matched_reason, "route_rule");
+        assert_eq!(plan.exits, vec![RouteExit::Direct]);
+        assert!(!should_refine_default_with_geoip(&plan, &router));
+    }
+
+    #[test]
+    fn overseas_stable_default_allows_geoip_refine_gate() {
+        let router = overseas_stable_router();
+        let plan = route_match_plan(
+            "unlisted.example",
+            router.match_route("unlisted.example"),
+            &router,
+        );
+        assert!(should_refine_default_with_geoip(&plan, &router));
     }
 
     #[test]

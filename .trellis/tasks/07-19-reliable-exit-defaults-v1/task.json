@@ -1,0 +1,31 @@
+{
+  "id": "reliable-exit-defaults-v1",
+  "name": "reliable-exit-defaults-v1",
+  "title": "可靠出口默认路径：出海优先 example 与文档",
+  "description": "Overseas-stable routes.example + README/settings docs; no selector algorithm change.",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "docs",
+  "package": "proxy-core",
+  "priority": "P0",
+  "creator": "nightrain",
+  "assignee": "nightrain",
+  "createdAt": "2026-07-19",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "config/routes.example.yaml",
+    "config/settings.example.yaml",
+    "README.md",
+    "docs/ROADMAP.md"
+  ],
+  "notes": "D1 default→premium. Awaiting plan review then task.py start.",
+  "meta": {}
+}
