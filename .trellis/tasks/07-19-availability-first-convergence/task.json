@@ -1,0 +1,30 @@
+{
+  "id": "availability-first-convergence",
+  "name": "availability-first-convergence",
+  "title": "可用性优先收敛：ROADMAP 重排与 P0 拆分",
+  "description": "Docs-only: ROADMAP availability-first rewrite + P0-A/B/C map; no gateway code.",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "docs",
+  "package": "proxy-core",
+  "priority": "P0",
+  "creator": "nightrain",
+  "assignee": "nightrain",
+  "createdAt": "2026-07-19",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "docs/ROADMAP.md",
+    "docs/proxy-usage.md",
+    "docs/ops-cleanup.md"
+  ],
+  "notes": "Start only after metrics task archived or paused (1-WIP). Deliverable is docs/ROADMAP.md.",
+  "meta": {}
+}

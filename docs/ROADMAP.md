@@ -29,31 +29,65 @@
 
 | 优先级 | 含义 | 示例 |
 |--------|------|------|
-| P0 | 阻塞后续迭代或部署闭环 | CI/CD、自更新、版本信息、健康检查 |
-| P1 | 核心代理池质量 | 抓取、验证、评分、熔断、fallback |
-| P2 | 可观测性和运维效率 | metrics、MCP 运维工具、route dry-run、Dashboard MVP |
-| P3 | 能力扩展 | WARP pinning、xray 生命周期、高级订阅管理 |
+| P0 | 阻塞「持续可用」 | 可靠出口默认路径、网关失败反馈、脏窗口缩短、服务存活信号 |
+| P1 | 出口质量与供给 | xray 准入/复验、WARP 健康、复验优先级、free pool 降权 |
+| P2 | 观测与运维效率 | metrics 契约、route dry-run、最小只读 API/MCP 契约 |
+| P3 | 能力扩展 / UI | Dashboard、WARP pinning、订阅自动发现、多区域调度 |
+
+> **可用性收敛期**：P2/P3 不得默认抢占 Now；Keep-Later 平台项默认不 Resume。
+
+## Availability-First
+
+**单一目标**：客户端连 Gateway `:9080`，在需要的时段内尽量一直有可用出口。
+
+**健康定义**（三元 AND，日常 Go/No-Go）：
+
+1. Gateway 进程/端口可用（数据面在线）
+2. `pool.tier` ≥ `minimal`（至少 1 个健康 WARP）；目标态 `stable`（xray active ≥ 3 且 WARP healthy ≥ 1）
+3. 业务 smoke 通过（真实目标站，而非仅 Cloudflare trace）
+
+不把「池子总数很大」「MCP 工具很多」「Dashboard 好看」算成功。
+
+### 分层（L0–L4）
+
+| 层 | 组件 | 策略 |
+|----|------|------|
+| L0 | Gateway + Redis + 复验调度 + 路由回退 | 必须稳；改动优先保证这里 |
+| L1 | WARP 健康实例 + xray 激活节点 + 干净订阅 | **主供给**；海外默认走这里 |
+| L2 | free pool 抓取/评分/熔断 | 可选兜底；**不进 premium**；冻结扩张 |
+| L3 | status/readyz/metrics 关键集、route_test、业务 smoke | 服务排障，最小集 |
+| L4 | Dashboard、完整 MCP 契约、订阅自动发现全家桶、WARP optimizer 花活 | **冻结** |
+
+### 保 / 冻 / 后做
+
+| 类别 | 内容 |
+|------|------|
+| **保** | Gateway HTTP CONNECT/SOCKS5、QualityTier 回退、WARP 健康、xray 准入复验、Redis 评分/circuit、`/api/status` `/readyz`、业务 e2e smoke、route_test |
+| **冻** | Dashboard 打磨、mcp-api-contract-smoke-v2、质量 dashboard、fetcher 来源排名、订阅 GitHub/LLM 自动发现扩源、多租户/鉴权/告警集成 |
+| **后做** | Ready 中 P0-A/B/C（默认出海路径、网关失败反馈、脏窗口硬化） |
+
+**心智**：个人稳定代理出口网关（xray + WARP 主用），不是免费代理抓取平台。
 
 ## Current Planning Decision
 
-**过程债收敛**（`process-debt-convergence`）已完成并归档：ROADMAP 失真 Now 已校准，7 条 `wip: paused ...` stash 登记为 Keep-Later（**仍保留、未 drop/apply**），过期 worktree/本地噪音已清理。**不改变**线上代理池业务语义。
+**可用性优先收敛**（`availability-first-convergence`）为当前方向决策：重排优先级与队列，**本任务只改文档与任务地图，不改网关/调度业务语义**。
 
-- **D1 仍有效**：Keep-Later stash **禁止**默认 drop/apply/pop/clear；明细见  
+- **过程债结论仍有效**：`process-debt-convergence` 已归档；7 条 `wip: paused ...` stash 保持 Keep-Later（**禁止**默认 drop/apply/pop/clear）；明细见  
   `.trellis/tasks/archive/2026-07/07-18-process-debt-convergence/inventory.md`。
-- **D2**：当前 **无业务 Now**；下一条须从 Ready 经 Trellis `task.py start` 进入，禁止未 start 即写 Now。
-- **D5**：Ready / Next 未因本任务重排。
-- 旧 Now 文案中的 `business-e2e-smoke-v1` 已归档至 `.trellis/tasks/archive/2026-07/07-07-business-e2e-smoke-v1`，不得再冒充 Now。
+- **D2**：Now 仅允许 1 条；须经 Trellis `task.py start` 写入，禁止未 start 即写 Now。
+- **可用性收敛期**：Ready 以 P0-A/B/C 为准；P2 契约/UI 与 Keep-Later 平台项 **不抢 Now**、**默认不 Resume stash**。
+- `metrics-low-cardinality-audit-v1` 已完成并归档（见 Done），不再占用 Now。
 - 不直接 SSH 到 dev；默认验证仍走 GitHub Actions、公开 HTTP 状态与 MCP 只读入口（见 `docs/dev-validation.md`）。
 
 ## Now
 
 **当前无业务 Now。**
 
-下一条从 §Ready 挑选后，经 Trellis `task.py start` 再写入本节。勿将已归档或 Keep-Later 项直接标为 Now。
+下一条从 §Ready **P0-A** `reliable-exit-defaults-v1` 经 Trellis `task.py create`（若尚无目录）+ `task.py start` 再写入本节。勿将 Keep-Later / Later 平台项直接标为 Now。
 
 ## Keep-Later
 
-> 明细与恢复注意以  
+> **可用性收敛期默认不 Resume。** 明细与恢复注意以  
 > `.trellis/tasks/archive/2026-07/07-18-process-debt-convergence/inventory.md`  
 > 为准。stash **message** 为稳定键；`stash@{n}` 会漂移。处置当前均为 Keep-Later。
 
@@ -72,6 +106,34 @@
 ## Done
 
 > 以下为**历史完成**记录，非当前主线。当前执行信号以 §Now / §Ready / §Keep-Later 为准。
+
+### P0 — `availability-first-convergence`
+
+**目标**：把执行主线收敛为「持续正常使用代理」：重写优先级、Availability-First 分层、Ready P0 地图与冻结清单（文档 only）。
+
+**当前状态**：已完成；任务目录归档至 `.trellis/tasks/archive/2026-07/07-19-availability-first-convergence`（归档提交后路径生效）。
+
+**主要完成项**：
+
+- [x] 优先级定义改为可用性优先（P0=持续可用）
+- [x] Availability-First 节：目标句、健康定义、L0–L4、保/冻/后做
+- [x] Ready：P0-A / P0-B / P0-C 地图（目标/非目标/验收草稿）
+- [x] `api-readonly-contract-minimal-v1` 降为 Later(P2)；Keep-Later 默认不 Resume
+- [x] metrics 审计收尾进 Done；Now 置空
+- [x] 无 gateway/scheduler 业务代码变更
+
+### P2 — `metrics-low-cardinality-audit-v1`
+
+**目标**：系统性审计 `/api/metrics` 业务指标与 label，用测试与 spec 锁死低基数约束。
+
+**当前状态**：已完成并归档到 `.trellis/tasks/archive/2026-07/07-19-metrics-low-cardinality-audit-v1`。
+
+**主要完成项**：
+
+- [x] 全量指标+label 清单写入 `quality-guidelines.md`（Prometheus Low-Cardinality Contract）
+- [x] 白名单 / gateway 45 series / failure-reason 负向测试
+- [x] 明确 fetcher/release 当前无 metrics；未来新增须遵守同一规则
+- [x] 不新增业务指标，不抽共享 helper
 
 ### P1 — `process-debt-convergence`
 
@@ -471,22 +533,58 @@
 
 ## Ready
 
-### P2 — `metrics-low-cardinality-audit-v1`
+> 下列为**地图级** Ready：可 `task.py create` 后补全 PRD。建议顺序 **A → B → C**；A 可独立先做。  
+> 开工须 `task.py start`，禁止未 start 即写 Now。
 
-**目标**：系统性审计 Prometheus 指标 label，确保最近新增质量、路由、fetcher、release 指标持续保持低基数。
+### P0-A — `reliable-exit-defaults-v1`
 
-**候选功能**：
+**目标**：example/文档默认出海走 **Xray → Warp**（premium/standard 心智）；`default` 不再误导为 Direct-only。
 
-- [ ] 列出当前 `/api/metrics` 中的业务指标和 label。
-- [ ] 确认没有代理地址、完整 URL、订阅内容、原始错误字符串、容器动态 ID 等高基数字段进入 label。
-- [ ] 对失败原因、协议、bucket、状态类 label 给出允许值或归一化规则。
-- [ ] 必要时补测试或文档，防止后续新增指标破坏低基数约束。
+**非目标**：不改 `UpstreamSelector` 算法本身；不自动迁移用户生产 `routes.yaml`。
+
+**验收草稿**：
+
+- [ ] `config/routes.example.yaml` 与说明体现出海优先（或显式双 profile：domestic-friendly vs overseas-stable）
+- [ ] README 路由决策段与 QualityTier 表一致
+- [ ] 文档写清：高价值站用 `premium`（永不 free_pool）
+- [ ] 若有 config/runbook drift 测试，同步期望
+
+### P0-B — `gateway-failure-feedback-v1`
+
+**目标**：网关上游失败后，后续选择能避开同一坏出口（跨请求；尽量跨短重启窗口）。
+
+**非目标**：不做质量推荐产品；不 Resume `revalidation-scheduler-priority` stash。
+
+**验收草稿**：
+
+- [ ] 失败路径单测：同一坏 proxy/xray 在反馈窗口内不再被优先选中
+- [ ] 文档说明与 circuit / 进程内 cooldown / Redis 的关系
+- [ ] 不扩大到 Dashboard 或 MCP 新工具
+
+### P0-C — `dirty-window-hardening-v1`
+
+**目标**：缩短脏代理可被选中的窗口；消除 `free_pool.max_retry` 配置谎言；Basic 订阅 validate-then-admit 或等价隔离。
+
+**非目标**：大规模关闭 fetcher；自动清理 UI；订阅自动发现扩源。
+
+**验收草稿**：
+
+- [ ] example 与代码默认 `validate_interval` 对齐，或显式注释 tradeoff
+- [ ] `max_retry` 接线或删除死字段
+- [ ] Basic 入池路径测试覆盖「未验证不进可选池」或隔离队列
+- [ ] free pool 仍不进 premium（回归 QualityTier 测试）
 
 ## Next
 
-### P0 — `api-readonly-contract-minimal-v1`
+（可用性收敛期 **无** 抢 P0 的 Next。原只读契约见 Later。）
+
+## Later
+
+### P2 — `api-readonly-contract-minimal-v1`
 
 **目标**：把当前真正用于自动验证的只读 API/MCP 字段整理成最小契约，避免重新打开已暂停的完整 `mcp-api-contract-smoke-v2` 范围。
+
+**当前状态**：**不阻塞可用性**；从原 Next/P0 降级为 Later(P2)。仅在 P0-A/B/C 空窗且运维明确需要时开工。
 
 **候选功能**：
 
@@ -494,8 +592,6 @@
 - [ ] 定义 MCP `service_status`、`update_status` 和 `explain_proxy_scores` 的最小只读字段集合。
 - [ ] 明确不覆盖 mutating tools、不覆盖全部运维入口、不触发 `update_service`。
 - [ ] 为后续 runner 和 smoke 任务提供稳定字段清单。
-
-## Later
 
 ### P1 — `proxy-quality-recommendations-dry-run`
 
@@ -569,7 +665,7 @@
 
 ## Parking Lot
 
-这些想法暂不承诺实现，等核心闭环稳定后再评估：
+这些想法暂不承诺实现，等 **L0/L1 可用性闭环**稳定后再评估：
 
 - [ ] 多区域出口调度。
 - [ ] Dashboard 高级图表。
@@ -578,18 +674,20 @@
 - [ ] 管理 API 鉴权。
 - [ ] 自动回滚到上一镜像 digest。
 - [ ] 外部告警集成，如 Telegram、Webhook、Prometheus Alertmanager。
+- [ ] 订阅 GitHub / Telegram / LLM search 自动发现扩源（可用性收敛期冻结）。
+- [ ] WARP optimizer pinning / 高级运维面板（与 Keep-Later `warp-ops` 草稿重叠时仍以冻结为准）。
 
 ## Trellis 任务创建建议
 
-> **已过时的长排序列表已压缩。** 实际开工顺序以本文 §Now / §Ready / §Next / §Keep-Later 与 Trellis current 为准，不要把下方历史指针当作强制队列。
+> 实际开工顺序以本文 §Now / §Ready / §Keep-Later 与 Trellis current 为准。
 
-当前可信排队（过程债期间）：
+当前可信排队（可用性优先）：
 
-1. 完成并归档 `process-debt-convergence`（过程治理）。
-2. Ready：`metrics-low-cardinality-audit-v1`。
-3. Next：`api-readonly-contract-minimal-v1`。
-4. Keep-Later 项仅在用户明确 Resume 后单开任务；**禁止**默认恢复 stash。
-5. archive `2026-07/` 中的历史任务保留只读，不删不改正文充当 active。
+1. Now：空。下一条从 Ready **P0-A** 经 Trellis start。
+2. Ready：**P0-A** `reliable-exit-defaults-v1` → **P0-B** `gateway-failure-feedback-v1` → **P0-C** `dirty-window-hardening-v1`。
+3. Later(P2)：`api-readonly-contract-minimal-v1`（不抢 P0）。
+4. Keep-Later 仅在用户明确 Resume 后单开任务；**可用性收敛期默认禁止**恢复 stash。
+5. archive `2026-07/` 历史任务保留只读，不删不改正文充当 active。
 
 ## 任务 PRD 模板
 

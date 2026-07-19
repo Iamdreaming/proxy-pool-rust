@@ -1,0 +1,6 @@
+{"file": "docs/ROADMAP.md", "reason": "Primary edit target for queue rewrite"}
+{"file": "docs/proxy-usage.md", "reason": "Stable overseas vs free-pool honesty"}
+{"file": "docs/ops-cleanup.md", "reason": "pool.tier health signal semantics"}
+{"file": ".trellis/spec/proxy-core/backend/scenario-quality-tiers.md", "reason": "QualityTier exit order contract"}
+{"file": ".trellis/spec/proxy-gateway/backend/index.md", "reason": "Gateway data-plane boundary"}
+{"file": ".trellis/tasks/07-19-availability-first-convergence/design.md", "reason": "Queue structure and P0 map"}
