@@ -42,7 +42,7 @@ All must hold:
 ### Selection (`try_xray`)
 
 1. Load SOCKS5 pool entries that are xray local exits (`127.0.0.1` + Active).
-2. Filter with `xray_is_route_eligible` **and** gateway runtime cooldown (`xray_failed_until` / connection failure fast path) — same filter for dry-run `route_test` and live selection.
+2. Filter with `xray_is_route_eligible` **and** gateway runtime cooldown (process-local `xray_failed_until` **or** Redis TTL `gateway:cooldown:xray:{port}`; Redis read fail-open) — same filter for dry-run `route_test` and live selection.
 3. Among remaining: prefer **lowest `latency_ms`** (missing latency treated as worst); random among equal-latency ties.
 4. Empty set → `None` so WARP / no_proxy fallback runs.
 
@@ -52,7 +52,8 @@ All must hold:
 |-------|------|
 | Active revalidate (proxy-xray) | Tears down dead actives; refreshes quality on success |
 | Route eligibility (this spec) | Hides stale / circuit-open / never-successful actives immediately |
-| Gateway `XRAY_FAILURE_COOLDOWN` (300s) | Traffic-triggered skip between revalidate cycles |
+| Gateway failure cooldown (300s) | Traffic-triggered skip: **process-local map** + **Redis TTL** keys `gateway:cooldown:xray:{port}` / `gateway:cooldown:proxy:{dedup_key}` (P0-B). Does not write score/circuit. Redis read errors fail-open. |
+| Redis circuit / score | Validation/ops plane only — not gateway data-plane |
 
 ## 4. Validation & Error Matrix
 

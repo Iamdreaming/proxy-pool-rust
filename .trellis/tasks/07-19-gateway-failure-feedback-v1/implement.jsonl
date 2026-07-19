@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/proxy-core/backend/index.md", "reason": "proxy-core package index"}
+{"file": ".trellis/spec/proxy-core/backend/xray-route-eligibility.md", "reason": "xray eligibility + gateway cooldown layering"}
+{"file": ".trellis/spec/proxy-core/backend/quality-guidelines.md", "reason": "routing quality contracts"}
+{"file": ".trellis/spec/proxy-gateway/backend/index.md", "reason": "gateway package index"}
+{"file": ".trellis/spec/proxy-gateway/backend/quality-guidelines.md", "reason": "gateway attempt feedback expectations"}
+{"file": "docs/ROADMAP.md", "reason": "P0-B map acceptance draft"}

@@ -275,8 +275,10 @@ const FREE_POOL_CANDIDATE_LIMIT: usize = 8;
 /// Gateway pool candidates are drawn from this many highest-scored proxies so a
 /// large mass of low-score entries cannot dominate the weighted selection.
 const POOL_TOP_CANDIDATE_POOL: usize = 50;
-const POOL_PROXY_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
-const XRAY_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
+const POOL_PROXY_FAILURE_COOLDOWN: Duration =
+    Duration::from_secs(ProxyStore::GATEWAY_FAILURE_COOLDOWN_SECS);
+const XRAY_FAILURE_COOLDOWN: Duration =
+    Duration::from_secs(ProxyStore::GATEWAY_FAILURE_COOLDOWN_SECS);
 
 /// Process-local gateway route metrics.
 pub struct GatewayRouteMetrics {
@@ -426,6 +428,16 @@ impl UpstreamSelector {
                     .write()
                     .await
                     .insert(key.clone(), Instant::now() + POOL_PROXY_FAILURE_COOLDOWN);
+                if let Err(e) = self
+                    .store
+                    .put_gateway_proxy_cooldown(
+                        key.as_str(),
+                        ProxyStore::GATEWAY_FAILURE_COOLDOWN_SECS,
+                    )
+                    .await
+                {
+                    tracing::debug!(proxy = %key, error = %e, "gateway redis proxy cooldown put failed");
+                }
                 tracing::debug!(
                     proxy = %key,
                     "gateway put pool proxy into failure cooldown"
@@ -434,12 +446,29 @@ impl UpstreamSelector {
             (Upstream::Proxy(proxy), GatewayAttemptStatus::Success) => {
                 let key = proxy.dedup_key();
                 self.pool_proxy_failed_until.write().await.remove(&key);
+                if let Err(e) = self.store.clear_gateway_proxy_cooldown(key.as_str()).await {
+                    tracing::debug!(proxy = %key, error = %e, "gateway redis proxy cooldown clear failed");
+                }
             }
             (Upstream::Xray { local_socks5_port }, GatewayAttemptStatus::Failure) => {
                 self.xray_failed_until
                     .write()
                     .await
                     .insert(*local_socks5_port, Instant::now() + XRAY_FAILURE_COOLDOWN);
+                if let Err(e) = self
+                    .store
+                    .put_gateway_xray_cooldown(
+                        *local_socks5_port,
+                        ProxyStore::GATEWAY_FAILURE_COOLDOWN_SECS,
+                    )
+                    .await
+                {
+                    tracing::debug!(
+                        local_socks5_port = *local_socks5_port,
+                        error = %e,
+                        "gateway redis xray cooldown put failed"
+                    );
+                }
                 tracing::debug!(
                     local_socks5_port = *local_socks5_port,
                     "gateway put xray node into failure cooldown"
@@ -450,6 +479,17 @@ impl UpstreamSelector {
                     .write()
                     .await
                     .remove(local_socks5_port);
+                if let Err(e) = self
+                    .store
+                    .clear_gateway_xray_cooldown(*local_socks5_port)
+                    .await
+                {
+                    tracing::debug!(
+                        local_socks5_port = *local_socks5_port,
+                        error = %e,
+                        "gateway redis xray cooldown clear failed"
+                    );
+                }
             }
             (
                 Upstream::Direct | Upstream::WarpChain { .. } | Upstream::NoProxy,
@@ -745,16 +785,37 @@ impl UpstreamSelector {
             .await
         {
             Ok(proxies) => {
-                let failed_until = self.pool_proxy_failed_until.read().await;
-                let now = Instant::now();
-                proxies
-                    .into_iter()
-                    .filter(|proxy| {
-                        !proxy.circuit_open
-                            && proxy.encrypted_state.is_none()
-                            && !pool_proxy_cooldown_active(&failed_until, &proxy.dedup_key(), now)
-                    })
-                    .collect::<Vec<_>>()
+                // Snapshot process-local cooldowns under a short lock, then drop
+                // before any Redis I/O so writers (record_upstream_attempt) are not blocked.
+                let process_ok: Vec<Proxy> = {
+                    let failed_until = self.pool_proxy_failed_until.read().await;
+                    let now = Instant::now();
+                    proxies
+                        .into_iter()
+                        .filter(|proxy| {
+                            !proxy.circuit_open
+                                && proxy.encrypted_state.is_none()
+                                && !pool_proxy_cooldown_active(
+                                    &failed_until,
+                                    &proxy.dedup_key(),
+                                    now,
+                                )
+                        })
+                        .collect()
+                };
+                let mut out = Vec::with_capacity(process_ok.len());
+                for proxy in process_ok {
+                    let key = proxy.dedup_key();
+                    // Redis TTL cooldown (short restart); fail-open on Redis errors.
+                    if gateway_cooldown_blocks(
+                        false,
+                        self.store.is_gateway_proxy_cooling_down(&key).await,
+                    ) {
+                        continue;
+                    }
+                    out.push(proxy);
+                }
+                out
             }
             Err(e) => {
                 tracing::debug!("try_pool_candidates: failed to query store: {e}");
@@ -795,14 +856,34 @@ impl UpstreamSelector {
     async fn try_xray(&self) -> Option<u16> {
         match self.store.all(Protocol::Socks5).await {
             Ok(proxies) => {
-                let failed_until = self.xray_failed_until.read().await;
-                let now = Instant::now();
-                let mut active_xray: Vec<&Proxy> = proxies
-                    .iter()
-                    .filter(|p| {
-                        xray_is_route_eligible(p) && !xray_cooldown_active(p, &failed_until, now)
-                    })
-                    .collect();
+                // Process-local filter under a short lock; Redis checks after drop.
+                let process_ok: Vec<&Proxy> = {
+                    let failed_until = self.xray_failed_until.read().await;
+                    let now = Instant::now();
+                    proxies
+                        .iter()
+                        .filter(|p| {
+                            xray_is_route_eligible(p)
+                                && !xray_cooldown_active(p, &failed_until, now)
+                        })
+                        .collect()
+                };
+                let mut active_xray = Vec::new();
+                for p in process_ok {
+                    let Some(EncryptedProxyState::Active { local_socks5_port }) = p.encrypted_state
+                    else {
+                        continue;
+                    };
+                    if gateway_cooldown_blocks(
+                        false,
+                        self.store
+                            .is_gateway_xray_cooling_down(local_socks5_port)
+                            .await,
+                    ) {
+                        continue;
+                    }
+                    active_xray.push(p);
+                }
                 if active_xray.is_empty() {
                     return None;
                 }
@@ -1059,6 +1140,23 @@ fn pool_proxy_cooldown_active(
     now: Instant,
 ) -> bool {
     matches!(cooldowns.get(key), Some(until) if *until > now)
+}
+
+/// Combine process-local cooldown with Redis TTL result.
+///
+/// Redis errors fail-open (do not block selection); process map still applies via
+/// `process_blocked`.
+fn gateway_cooldown_blocks(process_blocked: bool, redis_result: anyhow::Result<bool>) -> bool {
+    if process_blocked {
+        return true;
+    }
+    match redis_result {
+        Ok(cooling) => cooling,
+        Err(e) => {
+            tracing::debug!(error = %e, "gateway redis cooldown check failed; fail-open");
+            false
+        }
+    }
 }
 
 /// Age in seconds of the latest successful evidence, if any.
@@ -1386,8 +1484,7 @@ groups:
         assert_eq!(plan.matched_reason, "route_default_group");
         assert_eq!(plan.tier, Some(QualityTier::Premium));
 
-        let refined =
-            refine_default_plan_with_geoip(plan, "CN".into(), "China".into(), false);
+        let refined = refine_default_plan_with_geoip(plan, "CN".into(), "China".into(), false);
         assert_eq!(refined.matched_reason, "geoip_domestic");
         assert_eq!(refined.exits, vec![RouteExit::Direct]);
         assert_eq!(refined.tier, None);
@@ -1399,12 +1496,8 @@ groups:
     fn default_premium_geoip_overseas_keeps_group_exits() {
         let router = overseas_stable_router();
         let plan = default_premium_plan(&router);
-        let refined = refine_default_plan_with_geoip(
-            plan,
-            "US".into(),
-            "United States".into(),
-            true,
-        );
+        let refined =
+            refine_default_plan_with_geoip(plan, "US".into(), "United States".into(), true);
         assert_eq!(refined.matched_reason, "geoip_overseas");
         assert_eq!(refined.exits, exits_for_tier(QualityTier::Premium));
         assert_eq!(refined.tier, Some(QualityTier::Premium));
@@ -1683,6 +1776,39 @@ groups:
             "http:9.9.9.9:8080",
             now
         ));
+    }
+
+    #[test]
+    fn gateway_cooldown_blocks_process_or_redis_true() {
+        assert!(gateway_cooldown_blocks(true, Ok(false)));
+        assert!(gateway_cooldown_blocks(false, Ok(true)));
+        assert!(!gateway_cooldown_blocks(false, Ok(false)));
+    }
+
+    #[test]
+    fn gateway_cooldown_blocks_redis_error_fail_open() {
+        assert!(!gateway_cooldown_blocks(
+            false,
+            Err(anyhow::anyhow!("redis down"))
+        ));
+        // Process map still wins even if Redis errors.
+        assert!(gateway_cooldown_blocks(
+            true,
+            Err(anyhow::anyhow!("redis down"))
+        ));
+    }
+
+    #[test]
+    fn gateway_cooldown_key_formats_stable() {
+        assert_eq!(
+            ProxyStore::gateway_proxy_cooldown_key("http:1.2.3.4:8080"),
+            "gateway:cooldown:proxy:http:1.2.3.4:8080"
+        );
+        assert_eq!(
+            ProxyStore::gateway_xray_cooldown_key(20001),
+            "gateway:cooldown:xray:20001"
+        );
+        assert_eq!(ProxyStore::GATEWAY_FAILURE_COOLDOWN_SECS, 300);
     }
 
     #[test]

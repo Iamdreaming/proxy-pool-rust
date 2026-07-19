@@ -358,6 +358,71 @@ impl ProxyStore {
         self.conn()
     }
 
+    /// TTL (seconds) for gateway free_pool / xray failure cooldowns (process map + Redis).
+    pub const GATEWAY_FAILURE_COOLDOWN_SECS: u64 = 300;
+
+    /// Redis key for a free_pool gateway cooldown entry.
+    pub fn gateway_proxy_cooldown_key(dedup_key: &str) -> String {
+        format!("gateway:cooldown:proxy:{dedup_key}")
+    }
+
+    /// Redis key for an xray local-port gateway cooldown entry.
+    pub fn gateway_xray_cooldown_key(port: u16) -> String {
+        format!("gateway:cooldown:xray:{port}")
+    }
+
+    /// Put free_pool proxy into gateway failure cooldown (short TTL, not score/circuit).
+    pub async fn put_gateway_proxy_cooldown(
+        &self,
+        dedup_key: &str,
+        ttl_secs: u64,
+    ) -> anyhow::Result<()> {
+        let key = Self::gateway_proxy_cooldown_key(dedup_key);
+        let mut conn = self.conn();
+        conn.set_ex::<_, _, ()>(key, "1", ttl_secs).await?;
+        Ok(())
+    }
+
+    /// Clear free_pool gateway failure cooldown.
+    pub async fn clear_gateway_proxy_cooldown(&self, dedup_key: &str) -> anyhow::Result<()> {
+        let key = Self::gateway_proxy_cooldown_key(dedup_key);
+        let mut conn = self.conn();
+        let _: () = conn.del(key).await?;
+        Ok(())
+    }
+
+    /// Whether free_pool proxy is under gateway failure cooldown.
+    pub async fn is_gateway_proxy_cooling_down(&self, dedup_key: &str) -> anyhow::Result<bool> {
+        let key = Self::gateway_proxy_cooldown_key(dedup_key);
+        let mut conn = self.conn();
+        let n: i64 = conn.exists(key).await?;
+        Ok(n > 0)
+    }
+
+    /// Put xray local SOCKS5 port into gateway failure cooldown.
+    pub async fn put_gateway_xray_cooldown(&self, port: u16, ttl_secs: u64) -> anyhow::Result<()> {
+        let key = Self::gateway_xray_cooldown_key(port);
+        let mut conn = self.conn();
+        conn.set_ex::<_, _, ()>(key, "1", ttl_secs).await?;
+        Ok(())
+    }
+
+    /// Clear xray gateway failure cooldown.
+    pub async fn clear_gateway_xray_cooldown(&self, port: u16) -> anyhow::Result<()> {
+        let key = Self::gateway_xray_cooldown_key(port);
+        let mut conn = self.conn();
+        let _: () = conn.del(key).await?;
+        Ok(())
+    }
+
+    /// Whether xray local port is under gateway failure cooldown.
+    pub async fn is_gateway_xray_cooling_down(&self, port: u16) -> anyhow::Result<bool> {
+        let key = Self::gateway_xray_cooldown_key(port);
+        let mut conn = self.conn();
+        let n: i64 = conn.exists(key).await?;
+        Ok(n > 0)
+    }
+
     /// Add a proxy to the store (upsert by dedup key).
     ///
     /// Removes any existing entry for the same logical proxy (host:port:protocol)
@@ -1229,6 +1294,21 @@ mod tests {
         assert!(json.contains("\"min_score\":0.1"));
         assert!(json.contains("\"trend\""));
         assert!(json.contains("\"recent_samples\":0"));
+    }
+
+    #[test]
+    fn gateway_cooldown_redis_keys_are_namespaced() {
+        assert_eq!(
+            ProxyStore::gateway_proxy_cooldown_key("socks5:9.9.9.9:1080"),
+            "gateway:cooldown:proxy:socks5:9.9.9.9:1080"
+        );
+        assert_eq!(
+            ProxyStore::gateway_xray_cooldown_key(21000),
+            "gateway:cooldown:xray:21000"
+        );
+        assert_eq!(ProxyStore::GATEWAY_FAILURE_COOLDOWN_SECS, 300);
+        // Must not collide with pool ZSET keys.
+        assert!(!ProxyStore::gateway_proxy_cooldown_key("http:1.1.1.1:80").starts_with("proxies:"));
     }
 
     #[test]

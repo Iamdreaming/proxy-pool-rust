@@ -82,9 +82,13 @@
 
 ## Now
 
-**当前无业务 Now。**
+### P0 — `gateway-failure-feedback-v1`
 
-下一条从 §Ready **P0-B** `gateway-failure-feedback-v1` 经 Trellis `task.py create`（若尚无目录）+ `task.py start` 再写入本节。勿将 Keep-Later / Later 平台项直接标为 Now。
+**目标**：网关上游失败后，后续选择在反馈窗口内避开同一坏出口（free_pool / xray；短 TTL Redis + 进程内）。
+
+**当前状态**：`in_progress`；任务目录 `.trellis/tasks/07-19-gateway-failure-feedback-v1`。
+
+**范围摘要**：`record_upstream_attempt` 写 Redis cooldown keys；`try_pool`/`try_xray` 过滤；不写 score/circuit；无 MCP/Dashboard。
 
 ## Keep-Later
 

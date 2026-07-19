@@ -1167,11 +1167,8 @@ mod tests {
             "upstream returned garbage for https://evil.example/x",
         );
 
-        let quality = build_quality_status(
-            &[request_failed_proxy, other_proxy],
-            explain_for_test,
-            now,
-        );
+        let quality =
+            build_quality_status(&[request_failed_proxy, other_proxy], explain_for_test, now);
         let mut status = sample_status_for_metrics();
         status.quality = quality;
 

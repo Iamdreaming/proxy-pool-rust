@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/proxy-core/backend/quality-guidelines.md", "reason": "quality check contracts"}
+{"file": ".trellis/spec/proxy-core/backend/xray-route-eligibility.md", "reason": "eligibility layering checks"}
+{"file": "docs/ROADMAP.md", "reason": "P0-B AC checklist"}
+{"file": ".trellis/tasks/07-19-gateway-failure-feedback-v1/prd.md", "reason": "acceptance criteria"}
+{"file": ".trellis/tasks/07-19-gateway-failure-feedback-v1/design.md", "reason": "design boundaries"}
